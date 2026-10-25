@@ -303,6 +303,10 @@ Current IMU features include:
 - cue-window movement logs when cue timestamps are supplied per epoch
 - artifact flags for missing IMU, low coverage, missing axes, and non-finite values
 
+Row `i` of a frame is taken at the frame's timestamp plus `i / sample_rate_hz` (52 Hz by
+default), as the REM-event tracker does with EEG rows. Samples lost inside the frame, an
+`IMUSample.gaps` entry after row 0, move the rows after them by that many samples.
+
 IMU rows preserve noisy epochs and expose guard reasons instead of dropping data.
 Future cue schedulers can turn `arousal_guard_reason_codes` into a `CueDecision`
 through `muse_tmr.protocol.tmr_scheduler.arousal_guard_decision()`.

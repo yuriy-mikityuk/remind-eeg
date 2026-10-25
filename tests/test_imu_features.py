@@ -91,6 +91,29 @@ class TestIMUFeatures(unittest.TestCase):
         self.assertEqual(row.arousal_event_count, 1)
         self.assertGreater(row.gyro_peak_dps, 70.0)
 
+    def test_rows_after_a_loss_inside_the_frame_keep_their_time(self):
+        # Two ACCGYRO subpackets in one notification, one lost before it and one between them.
+        moving = {"x": 80.0, "y": 0.0, "z": 0.0}
+        frame = MuseFrame(
+            timestamp=1000.0,
+            imu=IMUSample(
+                timestamp=1000.0,
+                accelerometer_g=still_accel_rows()[:6],
+                gyroscope_dps=still_gyro_rows()[:3] + [moving] * 3,
+                source="test",
+                gaps=((0, 3), (3, 3)),
+            ),
+            source="test",
+        )
+        epoch = EpochBuilder(EpochConfig())._build_epoch(0, 1000.0, (frame,))
+
+        event = extract_imu_features(epoch).movement_events[0]
+
+        # The moving rows 3 to 5 are samples 6 to 8 after the frame's first row.
+        self.assertAlmostEqual(event.start_time, 1000.0 + 6 / SAMPLE_RATE_HZ)
+        self.assertAlmostEqual(event.end_time, 1000.0 + 9 / SAMPLE_RATE_HZ)
+        self.assertEqual(event.sample_count, 3)
+
     def test_cue_related_movement_logs_are_windowed(self):
         accel_rows = still_accel_rows()
         for index in range(10 * SAMPLE_RATE_HZ, 11 * SAMPLE_RATE_HZ):
