@@ -12,9 +12,11 @@ The stage signals are simple textbook shapes. The device behaviour follows the
 repository's own measurements (``docs/numbers.md``): ``p21`` battery drain 10.60 %/h
 and ``p1034`` 23.34 %/h, 29.03 notifications per second, one to three ACCGYRO
 subpackets in a notification as in the committed capture, 1.0 % lost EEG and 0.4 % lost
-optics subpackets, 43 repeats in 23 min, the optics line at about 64 Hz. The morphology
-is an assumption, not a measurement: nothing measured on these nights is evidence about
-sleep, and no detector weight or threshold may be fitted to them.
+optics subpackets, 43 repeats in 23 min, the optics line at about 64 Hz. The optics
+pulse is shaped to aggregate figures from the maintainer's awake p1034 recordings
+(#248), none of their samples. The morphology is an assumption, not a measurement:
+nothing measured on these nights is evidence about sleep, and no detector weight or
+threshold may be fitted to them.
 """
 
 from __future__ import annotations
@@ -76,14 +78,29 @@ _CHANNEL_WEIGHTS = {
 }
 # Head orientations (gravity in the headband's frame, g): on the back, left, right.
 _POSTURES = ((0.05, 0.10, 0.99), (-0.90, 0.10, 0.42), (0.90, 0.10, 0.42))
-# Optics DC level (normalised units) and pulsatile share per channel, OPTICS_CHANNELS
-# order: the outer pair carries less pulse than the inner pair.
+# Optics DC level (normalised units) and pulse height (trough to peak) as a share of it
+# per channel, OPTICS_CHANNELS order: the outer pair carries less pulse than the inner
+# pair. On LO_NIR, the channel the decoder takes its heart rate from, that puts about
+# 0.16 % of the DC level into the 0.7 to 3 Hz band and, with the sensor noise (white,
+# its RMS a share of the DC level), about 0.010 % into 8 to 30 Hz, inside what the awake
+# p1034 recordings show (docs/numbers.md).
 _OPTICS_DC = (9.0, 9.4, 7.5, 7.8, 12.0, 12.4, 10.5, 10.8)
-_OPTICS_PULSE_SHARE = (0.003, 0.003, 0.003, 0.003, 0.012, 0.012, 0.012, 0.012)
+_OPTICS_PULSE_SHARE = (0.006, 0.006, 0.006, 0.006, 0.012, 0.012, 0.012, 0.012)
+_OPTICS_NOISE_SHARE = 0.00006
+# The beat, in fractions of the beat from its onset (the R wave): blood volume as a
+# log-normal systolic wave (mode, width in log units), a Gaussian diastolic wave
+# (height, centre, width) and a narrow dip at the pulse foot (depth, centre, width).
+# The light falls as the volume rises, so the foot is a sharp light maximum.
+_BEAT_SYSTOLIC = (0.34, 0.22)
+_BEAT_DIASTOLIC = (0.84, 0.61, 0.20)
+_BEAT_FOOT_DIP = (0.33, 0.157, 0.021)
 
 # Independent random streams, so turning one component on or off leaves the others
 # as they were.
-_RNG_SCRIPT, _RNG_EEG, _RNG_EVENTS, _RNG_LINE, _RNG_IMU, _RNG_OPTICS, _RNG_BLE, _RNG_MOVES, _RNG_READOUT = range(9)
+(
+    _RNG_SCRIPT, _RNG_EEG, _RNG_EVENTS, _RNG_LINE, _RNG_IMU, _RNG_OPTICS, _RNG_BLE, _RNG_MOVES,
+    _RNG_READOUT, _RNG_WANDER,
+) = range(10)
 
 
 def _rng(seed: int, stream: int) -> np.random.Generator:
@@ -138,6 +155,44 @@ def deflection(duration_s: float, amplitude_uv: float, fs: float = EEG_RATE_HZ) 
 def blink_shape(duration_s: float, amplitude_uv: float, fs: float = EEG_RATE_HZ) -> np.ndarray:
     """One monophasic blink: a Hann bump."""
     return amplitude_uv * np.hanning(int(round(duration_s * fs)))
+
+
+def _beat_sum(phase: np.ndarray) -> np.ndarray:
+    systolic_mode, systolic_width = _BEAT_SYSTOLIC
+    diastolic_height, diastolic_centre, diastolic_width = _BEAT_DIASTOLIC
+    dip_depth, dip_centre, dip_width = _BEAT_FOOT_DIP
+    volume = np.zeros_like(phase)
+    # This beat's waves and the tails of the beats on either side.
+    for shift in (-1.0, 0.0, 1.0, 2.0):
+        u = phase + shift
+        later = u > 0
+        volume[later] += np.exp(-np.log(u[later] / systolic_mode) ** 2 / (2 * systolic_width ** 2))
+        volume += diastolic_height * np.exp(-0.5 * ((u - diastolic_centre) / diastolic_width) ** 2)
+        volume -= dip_depth * np.exp(-0.5 * ((u - dip_centre) / dip_width) ** 2)
+    return volume
+
+
+def _beat_range() -> Tuple[float, float]:
+    volume = _beat_sum(np.linspace(0.0, 1.0, 4001))
+    return float(volume.min()), float(volume.max())
+
+
+_BEAT_RANGE = _beat_range()
+
+
+def beat_volume(phase: np.ndarray) -> np.ndarray:
+    """Blood volume over a heartbeat, 0 at the pulse foot and 1 at the systolic peak.
+
+    ``phase`` is the fraction of the beat since its onset, the R wave. The shape is a
+    log-normal systolic wave and a Gaussian diastolic wave, as pulse waves are described
+    and synthesised in the literature (``docs/references.md``), and a narrow dip at the
+    foot, 0.157 of the beat after the onset. Optics light falls as the volume rises, so
+    the light has a sharp maximum at the foot and a broad trough; the widths are set so
+    that the beat average of the light matches what the awake p1034 recordings show
+    (``docs/synthetic_data.md``).
+    """
+    low, high = _BEAT_RANGE
+    return (_beat_sum(np.mod(np.asarray(phase, dtype=float), 1.0)) - low) / (high - low)
 
 
 # --------------------------------------------------------------------------- #
@@ -342,8 +397,10 @@ class SyntheticNightConfig:
 
     IMU: gravity for one of three head positions, sensor noise, and a burst
     (``movement_scale``) at every movement, which can change position. Optics
-    (``p1034`` only): a pulse at the stage heart rate in ``heart_rate_bpm``, faster for
-    a while after arousals. Battery: ``battery_start_percent`` falling by
+    (``p1034`` only): a pulse of the shape ``beat_volume()`` at the stage heart rate in
+    ``heart_rate_bpm``, faster for a while after arousals, on a baseline that wanders
+    between 0.1 and 0.5 Hz with ``optics_wander_ratio`` times the RMS of the pulse's
+    0.7 to 3 Hz band, and sensor noise. Battery: ``battery_start_percent`` falling by
     ``battery_drain_percent_per_hour`` (None: 10.60 for ``p21``, 23.34 for ``p1034``);
     at 0 % the stream ends.
 
@@ -385,6 +442,7 @@ class SyntheticNightConfig:
     bad_contact_span: Tuple[float, float] = (0.0, 0.0)
     movement_scale: float = 1.0
     heart_rate_bpm: Mapping[str, float] = field(default_factory=lambda: dict(DEFAULT_HEART_RATE_BPM))
+    optics_wander_ratio: float = 0.5
     battery_start_percent: float = 100.0
     battery_drain_percent_per_hour: Optional[float] = None
     notifications_per_second: float = 29.03
@@ -410,6 +468,8 @@ class SyntheticNightConfig:
         for name in ("eeg_loss_fraction", "optics_loss_fraction", "imu_loss_fraction"):
             if not 0.0 <= getattr(self, name) < 0.5:
                 raise ValueError(f"{name} must be in [0, 0.5)")
+        if self.optics_wander_ratio < 0:
+            raise ValueError("optics_wander_ratio must not be negative")
         if self.notifications_per_second <= 0:
             raise ValueError("notifications_per_second must be positive")
         if not self.imu_bundle_shares or min(self.imu_bundle_shares) < 0 or sum(self.imu_bundle_shares) <= 0:
@@ -844,11 +904,9 @@ def _imu_signal(config: SyntheticNightConfig, arousals, movements, duration: flo
     return accel, gyro
 
 
-def _optics_signal(config: SyntheticNightConfig, night: ScriptedNight, arousals, movements, duration):
-    """(n, 8) normalised optics values at 64 Hz: a pulse at the scripted heart rate."""
-    rng = _rng(config.seed, _RNG_OPTICS)
+def _beat_cycles(config: SyntheticNightConfig, night: ScriptedNight, arousals, n: int, rng) -> np.ndarray:
+    """Heartbeats begun by each 64 Hz optics sample: the scripted heart rate, integrated."""
     fs = OPTICS_RATE_HZ
-    n = int(duration * fs) // 2 * 2
     t = np.arange(n) / fs
     hr = _stage_envelope(np.array([config.heart_rate_bpm[s] for s in night.stages]), n, fs, 15.0)
     hr += 1.5 * band_limited_noise(n, 0.002, 0.02, rng, fs=fs)
@@ -863,9 +921,25 @@ def _optics_signal(config: SyntheticNightConfig, night: ScriptedNight, arousals,
         ])
         stop = min(n, first + shape.size)
         hr[first:stop] += boost * shape[: stop - first]
-    phase = np.cumsum(hr / 60.0 / fs) % 1.0
-    pulse = np.exp(-(((phase - 0.12) / 0.05) ** 2)) + 0.45 * np.exp(-(((phase - 0.38) / 0.09) ** 2))
-    breathing = np.sin(2 * np.pi * 0.25 * t + float(rng.uniform(0, 2 * np.pi)))
+    return np.cumsum(hr / 60.0 / fs)
+
+
+def _band_rms(values: np.ndarray, fs: float, low_hz: float, high_hz: float) -> float:
+    spectrum = np.fft.rfft(values - np.mean(values))
+    freqs = np.fft.rfftfreq(values.size, 1.0 / fs)
+    band = (freqs >= low_hz) & (freqs <= high_hz)
+    return float(np.sqrt(2.0 * np.sum(np.abs(spectrum[band]) ** 2)) / values.size)
+
+
+def _optics_signal(config: SyntheticNightConfig, night: ScriptedNight, arousals, movements, duration):
+    """(n, 8) normalised optics values at 64 Hz: a pulse at the scripted heart rate."""
+    rng = _rng(config.seed, _RNG_OPTICS)
+    fs = OPTICS_RATE_HZ
+    n = int(duration * fs) // 2 * 2
+    pulse = beat_volume(_beat_cycles(config, night, arousals, n, rng))
+    # In pulse heights, so the wander has the same ratio to the pulse on every channel.
+    wander = band_limited_noise(n, 0.1, 0.5, _rng(config.seed, _RNG_WANDER), fs=fs)
+    wander *= config.optics_wander_ratio * _band_rms(pulse, fs, 0.7, 3.0)
     moving = np.zeros(n)
     for onset, seconds in movements:
         first = int(onset * fs)
@@ -875,9 +949,28 @@ def _optics_signal(config: SyntheticNightConfig, night: ScriptedNight, arousals,
             moving[first:first + samples] += np.hanning(samples) * burst
     values = np.empty((n, len(OPTICS_CHANNELS)))
     for column, (dc, share) in enumerate(zip(_OPTICS_DC, _OPTICS_PULSE_SHARE)):
-        values[:, column] = dc * (1.0 + 0.002 * breathing - share * pulse + 0.03 * moving)
-        values[:, column] += 0.002 * rng.standard_normal(n)
+        values[:, column] = dc * (1.0 + share * (wander - pulse) + 0.03 * moving)
+        values[:, column] += _OPTICS_NOISE_SHARE * dc * rng.standard_normal(n)
     return values
+
+
+def heartbeat_onsets(night: SyntheticNight) -> np.ndarray:
+    """Seconds from the start at which each scripted heartbeat of a generated night
+    begins, the R wave its optics pulse is timed from; empty on a preset without optics.
+
+    Ground truth for tests: the recording does not hold it, as a headband would not.
+    """
+    config = night.config
+    duration = float(night.generation["duration_seconds"])
+    if not config.has_optics:
+        return np.zeros(0)
+    arousals = tuple(a for a in night.night.arousals if a.onset_seconds + a.duration_seconds <= duration)
+    n = int(duration * OPTICS_RATE_HZ) // 2 * 2
+    cycles = _beat_cycles(config, night.night, arousals, n, _rng(config.seed, _RNG_OPTICS))
+    beats = np.floor(cycles)
+    steps = np.flatnonzero(np.diff(beats) > 0) + 1
+    before, after = cycles[steps - 1], cycles[steps]
+    return (steps - 1 + (beats[steps] - before) / (after - before)) / OPTICS_RATE_HZ
 
 
 # --------------------------------------------------------------------------- #

@@ -35,6 +35,7 @@ from muse_tmr.testing import (
     SYNTHETIC_NOTE,
     SyntheticNightConfig,
     generate_night,
+    heartbeat_onsets,
     scenario_config,
     scenario_names,
     script_night,
@@ -48,6 +49,7 @@ from muse_tmr.testing.agreement import (
     synthetic_agreement,
 )
 from muse_tmr.testing.scenarios import BATTERY_DEATH_SECONDS
+from muse_tmr.testing.synthetic import OPTICS_RATE_HZ, beat_volume
 
 BASELINE_PATH = Path(__file__).resolve().parent / "fixtures" / "synthetic" / "agreement_baseline.json"
 
@@ -79,6 +81,44 @@ def _decode_all(raw_path):
     finally:
         stream.close()
     return decoder
+
+
+def _decode_optics(raw_path):
+    """LO_NIR as decoded, in order, and (seconds, bpm) of each heart rate the decoder
+    derives from it."""
+    stream = MuseRawStream(str(raw_path))
+    stream.open_read()
+    decoder = MuseRealtimeDecoder()
+    light, heart_rate = [], []
+    try:
+        for packet in stream.read_packets():
+            decoded = decoder.decode(packet.data, packet.timestamp)
+            if decoded.ppg:
+                light.extend(decoded.ppg["LO_NIR"])
+            if decoded.heart_rate is not None:
+                seconds = (packet.timestamp - stream.session_start).total_seconds()
+                heart_rate.append((seconds, decoded.heart_rate))
+    finally:
+        stream.close()
+    return np.asarray(light), np.asarray(heart_rate)
+
+
+def _band_rms(values, low_hz, high_hz, fs=OPTICS_RATE_HZ):
+    spectrum = np.fft.rfft(values - np.mean(values))
+    freqs = np.fft.rfftfreq(values.size, 1.0 / fs)
+    band = (freqs >= low_hz) & (freqs <= high_hz)
+    return float(np.sqrt(2.0 * np.sum(np.abs(spectrum[band]) ** 2)) / values.size)
+
+
+def _beat_average(light, onsets, step=0.002):
+    """Light averaged over every beat from its onset, linearly interpolated on a 2 ms
+    grid as long as the median beat, and scaled to 0 at its trough and 1 at its peak."""
+    times = np.arange(light.size) / OPTICS_RATE_HZ
+    window = float(np.median(np.diff(onsets)))
+    grid = np.arange(0.0, window, step)
+    starts = onsets[onsets + window < times[-1]]
+    average = np.mean([np.interp(start + grid, times, light) for start in starts], axis=0)
+    return grid, (average - average.min()) / (average.max() - average.min())
 
 
 async def _replay(recording_dir):
@@ -338,7 +378,7 @@ class GeneratedRecordingTest(unittest.TestCase):
 class ReproducibilityTest(unittest.TestCase):
     # One minute of short_allow_short with seed 0. A change to the generator changes it:
     # update it in the same commit, so the bytes of a seed never move unnoticed.
-    PINNED_SHA256 = "6269543c003183ce3e7c77c2ad5732c3c56aa4c591578d3398bf3219ce49882b"
+    PINNED_SHA256 = "08a283ad2427b023c24ec750893cfcf57ffd7ee56ae5d15214241c745caa8460"
 
     def test_pinned_sha256(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -402,6 +442,86 @@ class StageSignalTest(unittest.TestCase):
             self.assertEqual(stages[int(onset // 30)], "R")
             self.assertEqual(int((onset + seconds) // 30), int(onset // 30))
             self.assertTrue(0.3 <= seconds <= 1.5 and 20.0 <= float(event["amplitude_uv"]) <= 60.0)
+
+
+class OpticsPulseTest(unittest.TestCase):
+    """The optics pulse against what the maintainer's awake p1034 recordings show with
+    LO_NIR averaged on Polar H10 R-peaks (local measurements, the recordings are not
+    published; the sources are in docs/numbers.md). Synthetic input, not sleep."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name)
+        # Without movements, optics losses and BLE gaps the decoded LO_NIR is every sample
+        # in order, and it holds only the pulse, the wander and the noise.
+        still = replace(
+            scenario_config("short_allow_short"), movement_share=0.0, optics_loss_fraction=0.0, ble_gaps_per_hour=0.0
+        )
+        cls.still = generate_night(still, root / "still")
+        cls.light, _ = _decode_optics(cls.still.raw_path)
+        cls.nap = generate_night(output_dir=root / "nap", scenario="no_rem_nap", hours=0.25)
+        _, cls.heart_rate = _decode_optics(cls.nap.raw_path)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_one_beat_from_foot_to_foot(self):
+        phase = np.linspace(0.0, 1.0, 1001)
+        volume = beat_volume(phase)
+        self.assertAlmostEqual(float(volume.min()), 0.0, delta=1e-4)
+        self.assertAlmostEqual(float(volume.max()), 1.0, delta=1e-4)
+        self.assertAlmostEqual(float(phase[np.argmin(volume)]), 0.157, delta=0.002)
+        # Continuous from one beat into the next.
+        self.assertAlmostEqual(float(beat_volume(np.array([1.0 - 1e-9]))[0]), float(volume[0]), places=6)
+        np.testing.assert_allclose(beat_volume(phase + 3.0), volume, atol=1e-9)
+
+    def test_beat_shape(self):
+        grid, beat = _beat_average(self.light, heartbeat_onsets(self.still))
+        step = grid[1] - grid[0]
+        below_half = beat < 0.5
+        # A sharp light maximum at the pulse foot, the steepest fall after it, one broad trough.
+        self.assertTrue(0.11 <= grid[np.argmax(beat)] <= 0.20, grid[np.argmax(beat)])
+        self.assertTrue(0.22 <= grid[np.argmin(np.diff(beat))] + step / 2 <= 0.30, grid[np.argmin(np.diff(beat))])
+        self.assertEqual(int(np.sum(np.diff(below_half.astype(int)) == 1)), 1)
+        self.assertTrue(0.45 <= np.sum(below_half) * step <= 0.64, np.sum(below_half) * step)
+        self.assertTrue(0.04 <= np.mean(beat >= 0.9) <= 0.06, np.mean(beat >= 0.9))
+
+    def test_pulse_noise_and_wander_levels(self):
+        dc = float(np.mean(self.light))
+        cardiac = _band_rms(self.light, 0.7, 3.0) / dc
+        noise = _band_rms(self.light, 8.0, 30.0) / dc
+        self.assertTrue(0.0010 <= cardiac <= 0.0029, cardiac)
+        self.assertTrue(0.00007 <= noise <= 0.00012, noise)
+        self.assertTrue(10.0 <= cardiac / noise <= 33.0, cardiac / noise)
+        wander = _band_rms(self.light, 0.1, 0.5) / dc
+        self.assertAlmostEqual(wander / cardiac, self.still.config.optics_wander_ratio, delta=0.05)
+
+    def test_decoder_heart_rate_follows_the_script(self):
+        onsets = heartbeat_onsets(self.nap)
+        beat_times, scripted = onsets[1:], 60.0 / np.diff(onsets)
+        # A movement buries the pulse in the light, as on a headband; the decoder holds 5 s.
+        moving = [
+            (float(row["onset_s"]), float(row["onset_s"]) + float(row["duration_s"]) + 5.0)
+            for row in _read_csv(self.nap.recording_dir / "arousals.csv")
+            if row["movement"] == "1"
+        ]
+        checked = 0
+        for start in np.arange(0.0, float(self.nap.generation["duration_seconds"]), 30.0):
+            end = start + 30.0
+            if any(first < end and start < last for first, last in moving):
+                continue
+            decoded = self.heart_rate[(self.heart_rate[:, 0] >= start) & (self.heart_rate[:, 0] < end), 1]
+            expected = scripted[(beat_times >= start) & (beat_times < end)]
+            self.assertLessEqual(abs(float(np.median(decoded)) - float(np.median(expected))), 5.0, start)
+            checked += 1
+        self.assertGreaterEqual(checked, 25)
+
+    def test_no_onsets_without_optics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            night = generate_night(output_dir=Path(tmp) / "p21", scenario="clean_night", hours=1 / 60)
+        self.assertEqual(heartbeat_onsets(night).size, 0)
 
 
 class Pilot1Test(unittest.TestCase):

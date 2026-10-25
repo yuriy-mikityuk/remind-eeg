@@ -12,6 +12,7 @@ from muse_tmr.testing.synthetic import (
     SyntheticNight,
     SyntheticNightConfig,
     generate_night,
+    heartbeat_onsets,
     script_night,
 )
 
@@ -24,6 +25,7 @@ __all__ = [
     "SyntheticNight",
     "SyntheticNightConfig",
     "generate_night",
+    "heartbeat_onsets",
     "scenario_config",
     "scenario_names",
     "script_night",
