@@ -380,6 +380,17 @@ class TestSuddenHeartRateRule(unittest.TestCase):
         self.assertEqual(skipped.metadata["hr_series_skipped_count"], 21)
         self.assertEqual(after.action, "allow")
 
+    def test_allow_decisions_log_skipped_hr_values(self):
+        clean = ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=_ppg_with_series(60.0, start=0.0))
+        blind = ArousalGuard().evaluate(
+            timestamp_seconds=0.0, ppg=_ppg_with_series(60.0, start=0.0, used=False)
+        )
+
+        self.assertEqual(clean.action, "allow")
+        self.assertEqual(clean.metadata, {})
+        self.assertEqual(blind.action, "allow")
+        self.assertEqual(blind.metadata, {"hr_series_used_count": 0, "hr_series_skipped_count": 21})
+
     def test_the_margin_counts_a_change_just_under_the_bpm(self):
         self.assertEqual(ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=_ppg_with_changes(9.5)).action, "pause")
         self.assertEqual(ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=_ppg_with_changes(8.5)).action, "allow")

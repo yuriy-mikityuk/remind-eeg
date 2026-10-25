@@ -303,9 +303,13 @@ class ArousalGuard:
                     metadata=metadata,
                 )
             )
-        allow_metadata = (
-            {"ppg_absent_by_design": True} if metadata.get("ppg_absent_by_design") else {}
-        )
+        allow_metadata: Dict[str, object] = {}
+        if metadata.get("ppg_absent_by_design"):
+            allow_metadata["ppg_absent_by_design"] = True
+        if metadata.get("hr_series_skipped_count"):
+            # The HR rule did not see the skipped values: say so in the log of every epoch.
+            allow_metadata["hr_series_used_count"] = metadata["hr_series_used_count"]
+            allow_metadata["hr_series_skipped_count"] = metadata["hr_series_skipped_count"]
         return self._record(
             ArousalGuardDecision(
                 action="allow",
