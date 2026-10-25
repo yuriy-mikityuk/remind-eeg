@@ -2133,7 +2133,7 @@ def _synthesize_night(args: argparse.Namespace) -> int:
         print(f"synthesize-night: {exc}", file=sys.stderr)
         return 2
     output_dir = _resolve_output_dir(args.output)
-    refusal = _not_synthetic_refusal(output_dir)
+    refusal = _synthetic_output_refusal(output_dir, "metadata.json")
     if refusal is not None:
         print(f"synthesize-night: {refusal}", file=sys.stderr)
         return 2
@@ -2175,8 +2175,10 @@ def _demo(args: argparse.Namespace) -> int:
             return 2
     output_dir = _resolve_output_dir(args.output) if args.output is not None else _default_demo_dir()
     recording_dir = output_dir / f"{config.scenario}_seed{config.seed}"
-    # Neither the night nor the reports next to it go into a real recording's folder.
-    refusal = _not_synthetic_refusal(output_dir) or _not_synthetic_refusal(recording_dir)
+    # Neither the night nor the reports next to it overwrite or join anything but an earlier demo.
+    refusal = _synthetic_output_refusal(output_dir, "demo_summary.json") or _synthetic_output_refusal(
+        recording_dir, "metadata.json"
+    )
     if refusal is not None:
         print(f"demo: {refusal}", file=sys.stderr)
         return 2
@@ -2411,14 +2413,27 @@ def _synthetic_night_fields(night) -> str:
     )
 
 
-def _not_synthetic_refusal(directory: Path) -> Optional[str]:
-    """Why no synthetic night may be written into ``directory``: it holds a recording
-    whose metadata.json does not say ``synthetic: true``. None when it may."""
-    if not (directory / "raw_amused.bin").exists():
+def _synthetic_output_refusal(directory: Path, earlier_run: str) -> Optional[str]:
+    """Why a synthetic night or demo may not be written into ``directory``, or None.
+
+    It may be new, empty but for hidden files such as .DS_Store, or hold an earlier run
+    of the same command, whose ``earlier_run`` file (metadata.json of a night,
+    demo_summary.json of a demo) says ``synthetic: true``. Anything else can be a
+    recording, a Polar folder or protocol files, which synthetic output must neither
+    overwrite nor sit next to.
+    """
+    if not directory.exists():
         return None
-    if _says_synthetic(directory / "metadata.json"):
+    if not directory.is_dir():
+        return f"{directory} is not a directory"
+    if all(path.name.startswith(".") for path in directory.iterdir()):
         return None
-    return f"{directory} holds a recording that is not synthetic; choose another directory"
+    if _says_synthetic(directory / earlier_run):
+        return None
+    return (
+        f"{directory} is not empty and has no {earlier_run} that says synthetic: true; "
+        "choose a new or empty directory"
+    )
 
 
 def _says_synthetic(path: Path) -> bool:

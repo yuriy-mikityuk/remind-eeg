@@ -483,7 +483,7 @@ class SynthesizeNightCommandTest(unittest.TestCase):
             (recording / "metadata.json").write_text(json.dumps({"source": {"source_name": "amused"}}), encoding="utf-8")
             code, _, err = _run_cli("synthesize-night", "--scenario", "short_allow_short", "--output", str(recording))
             self.assertEqual(code, 2)
-            self.assertIn("not synthetic", err)
+            self.assertIn("choose a new or empty directory", err)
             self.assertEqual((recording / "raw_amused.bin").read_bytes(), b"recorded")
 
     def test_usage_errors(self):
@@ -661,7 +661,74 @@ class DemoCommandTest(unittest.TestCase):
             (recording / "metadata.json").write_text(json.dumps({"source": {"source_name": "amused"}}), encoding="utf-8")
             code, _, err = _run_cli("demo", "--hours", "0.25", "--no-open", "--output", str(recording))
             self.assertEqual(code, 2)
-            self.assertIn("not synthetic", err)
+            self.assertIn("choose a new or empty directory", err)
+            self.assertEqual(sorted(path.name for path in recording.iterdir()), ["metadata.json", "raw_amused.bin"])
+
+
+class OutputFolderTest(unittest.TestCase):
+    """synthesize-night and demo write into a new or empty folder or over an earlier run of their own."""
+
+    SYNTHESIZE = ("synthesize-night", "--scenario", "short_allow_short", "--hours", "0.02")
+    DEMO = ("demo", "--hours", "0.05", "--no-open")
+
+    def test_refuse_a_polar_folder(self):
+        # record-polar's <session>/polar/ has no raw_amused.bin, but a metadata.json,
+        # summary.json and events.jsonl that a night would overwrite.
+        with tempfile.TemporaryDirectory() as tmp:
+            polar = Path(tmp) / "session" / "polar"
+            polar.mkdir(parents=True)
+            files = {
+                "metadata.json": json.dumps({"source": "polar_h10"}),
+                "summary.json": json.dumps({"duration_seconds": 28800.0}),
+                "events.jsonl": json.dumps({"event": "recording_started"}) + "\n",
+                "raw_notifications.jsonl": json.dumps({"kind": "ecg"}) + "\n",
+            }
+            for name, text in files.items():
+                (polar / name).write_text(text, encoding="utf-8")
+            for argv in (self.SYNTHESIZE, self.DEMO):
+                code, _, err = _run_cli(*argv, "--output", str(polar))
+                self.assertEqual(code, 2, argv[0])
+                self.assertIn("choose a new or empty directory", err)
+            self.assertEqual({path.name: path.read_text(encoding="utf-8") for path in polar.iterdir()}, files)
+
+    def test_refuse_other_files_and_take_hidden_ones(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # demo --output data would otherwise replace data/protocol/puzzle_catalog.json.
+            data = Path(tmp) / "data"
+            (data / "protocol").mkdir(parents=True)
+            catalog = data / "protocol" / "puzzle_catalog.json"
+            catalog.write_text(json.dumps({"puzzles": []}), encoding="utf-8")
+            for argv in (self.SYNTHESIZE, self.DEMO):
+                self.assertEqual(_run_cli(*argv, "--output", str(data))[0], 2, argv[0])
+            self.assertEqual(catalog.read_text(encoding="utf-8"), json.dumps({"puzzles": []}))
+            self.assertEqual([path.name for path in data.iterdir()], ["protocol"])
+
+            for argv in (self.SYNTHESIZE, self.DEMO):
+                opened = Path(tmp) / argv[0]
+                opened.mkdir()
+                (opened / ".DS_Store").write_bytes(b"\0")
+                code, _, err = _run_cli(*argv, "--output", str(opened))
+                self.assertEqual(code, 0, err)
+
+    def test_demo_runs_again_over_an_earlier_demo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "demo"
+            for _ in range(2):
+                code, _, err = _run_cli(*self.DEMO, "--output", str(output))
+                self.assertEqual(code, 0, err)
+
+    def test_demo_refuses_a_recording_where_its_night_goes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "demo"
+            recording = output / "clean_night_seed0"
+            recording.mkdir(parents=True)
+            (output / "demo_summary.json").write_text(json.dumps({"synthetic": True}), encoding="utf-8")
+            (recording / "raw_amused.bin").write_bytes(b"recorded")
+            (recording / "metadata.json").write_text(json.dumps({"source": {"source_name": "amused"}}), encoding="utf-8")
+            code, _, err = _run_cli(*self.DEMO, "--output", str(output))
+            self.assertEqual(code, 2)
+            self.assertIn(f"{recording} is not empty", err)
+            self.assertEqual(sorted(path.name for path in output.iterdir()), ["clean_night_seed0", "demo_summary.json"])
             self.assertEqual(sorted(path.name for path in recording.iterdir()), ["metadata.json", "raw_amused.bin"])
 
 

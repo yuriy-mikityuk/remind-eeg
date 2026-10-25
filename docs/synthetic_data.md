@@ -47,10 +47,12 @@ It writes to `data/synthetic/demo_<timestamp>/` unless `--output` says otherwise
 | `agreement.json` | Binary κ, REM recall and precision of the gate, gate-open fraction and the seconds from each REM onset to the first open gate, from `muse_tmr.validation.rem_metrics`. |
 | `demo_summary.json` | All of that in short, the generated stage of the epoch that planned each cued play, the checks and the timings. |
 
-`synthesize-night` writes the night alone. It refuses a directory that holds a
-`raw_amused.bin` whose `metadata.json` does not say `synthetic: true`, so it cannot
-overwrite a recording. `demo` refuses such a directory as `--output` as well, so its
-reports never land next to a real night.
+`synthesize-night` writes the night alone. Each command writes only into a new
+directory, one that is empty but for hidden files, or one an earlier run of the same
+command wrote: a night whose `metadata.json`, or a demo whose `demo_summary.json`,
+says `synthetic: true`. It refuses any other with exit code 2, so neither can overwrite
+a recording or a Polar folder, land next to one, or replace protocol files such as
+`data/protocol/puzzle_catalog.json`.
 
 ## What the demo shows, and what it does not
 
