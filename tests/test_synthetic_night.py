@@ -19,6 +19,7 @@ from muse_raw_stream import MuseRawStream
 from muse_realtime_decoder import MuseRealtimeDecoder
 
 from muse_tmr.audio import load_cue_library
+from muse_tmr.cli import main as cli_module
 from muse_tmr.cli.main import (
     _demo_baseline_identity,
     _demo_baseline_mismatches,
@@ -663,6 +664,68 @@ class DemoCommandTest(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIn("choose a new or empty directory", err)
             self.assertEqual(sorted(path.name for path in recording.iterdir()), ["metadata.json", "raw_amused.bin"])
+
+
+class DemoBranchTest(unittest.TestCase):
+    """The demo's other ways out, each on three minutes of a night."""
+
+    def _demo(self, output, *argv):
+        code, out, err = _run_cli("demo", "--hours", "0.05", "--no-open", "--output", str(output), *argv)
+        summary_path = output / "demo_summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else None
+        return code, out, err, summary
+
+    def test_a_failed_check_exits_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline_path = Path(tmp) / "baseline.json"
+            baseline_path.write_text(json.dumps({
+                "scenario": "clean_night", "seed": 0, "hours": 0.05, "agreement": {},
+                "pilot3": {"cue_plan_count": 99},
+            }), encoding="utf-8")
+            code, out, _, summary = self._demo(Path(tmp) / "demo", "--baseline", str(baseline_path))
+        self.assertEqual(code, 1)
+        self.assertIs(summary["checks"]["agreement_within_baseline"], False)
+        self.assertEqual(summary["baseline"]["mismatches"], ["pilot3.cue_plan_count 0 != 99"])
+        self.assertIn("demo failed: agreement_within_baseline", out)
+
+    def test_stops_when_pilot3_did_not_run_on_mock_audio(self):
+        # simulate_cue_plan_from_epochs always reports mock audio, so only a patched
+        # report reaches this stop.
+        real_report = cli_module._replay_cue_report
+
+        async def sounddevice_report(args):
+            return replace(await real_report(args), audio_backend="sounddevice")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "demo"
+            with mock.patch("muse_tmr.cli.main._replay_cue_report", sounddevice_report):
+                code, _, err, summary = self._demo(output)
+            self.assertFalse((output / "pilot3_report.json").exists())
+        self.assertEqual(code, 1)
+        self.assertIn("'sounddevice'; the demo runs on mock audio only", err)
+        self.assertIsNone(summary)
+
+    def test_no_open_and_the_default_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("muse_tmr.cli.main._default_path_base", return_value=Path(tmp)), \
+                    mock.patch("webbrowser.open") as browser:
+                code, _, err = _run_cli("demo", "--hours", "0.05", "--no-open")
+            demos = list((Path(tmp) / "data" / "synthetic").iterdir())
+            self.assertEqual(code, 0, err)
+            browser.assert_not_called()
+            self.assertEqual(len(demos), 1)
+            self.assertRegex(demos[0].name, r"^demo_\d{8}_\d{6}$")
+            self.assertTrue((demos[0] / "clean_night_seed0" / "raw_amused.bin").is_file())
+            self.assertTrue((demos[0] / "demo_summary.json").is_file())
+
+    def test_an_optics_preset_needs_ppg_in_pilot1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _, err, summary = self._demo(Path(tmp) / "demo", "--scenario", "optics_line")
+            pilot1 = json.loads((Path(tmp) / "demo" / "pilot1.json").read_text(encoding="utf-8"))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(summary["preset"], "p1034")
+        self.assertEqual(sorted(pilot1["coverage_targets"]), ["eeg", "imu", "ppg"])
+        self.assertTrue(pilot1["coverage_targets"]["ppg"]["passed"])
 
 
 class OutputFolderTest(unittest.TestCase):
