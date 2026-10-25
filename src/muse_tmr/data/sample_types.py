@@ -4,9 +4,9 @@ All timestamps are Unix epoch seconds as floats. EEG values are microvolts,
 IMU acceleration is g, gyroscope values are degrees per second, PPG values are
 raw optics units, heart rate is beats per minute, and battery is percent.
 
-EEG and PPG samples may carry `gaps`, (index, missing) pairs: `missing` samples
-the device produced never arrived and belong right before row `index` of the
-series. The rows themselves stay joined.
+EEG, PPG and IMU samples may carry `gaps`, (index, missing) pairs: `missing`
+samples the device produced never arrived and belong right before row `index` of
+the series. The rows themselves stay joined.
 """
 
 from __future__ import annotations
@@ -112,6 +112,7 @@ class IMUSample:
     accelerometer_g: Optional[AxisRows] = None
     gyroscope_dps: Optional[AxisRows] = None
     source: str = "unknown"
+    gaps: Gaps = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "timestamp", _timestamp_seconds(self.timestamp))
@@ -125,14 +126,18 @@ class IMUSample:
             "gyroscope_dps",
             _axis_rows(self.gyroscope_dps, ("x", "y", "z")),
         )
+        object.__setattr__(self, "gaps", _gaps(self.gaps))
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        data = {
             "timestamp": self.timestamp,
             "accelerometer_g": _rows_to_dict(self.accelerometer_g),
             "gyroscope_dps": _rows_to_dict(self.gyroscope_dps),
             "source": self.source,
         }
+        if self.gaps:
+            data["gaps"] = [list(gap) for gap in self.gaps]
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "IMUSample":
@@ -141,6 +146,7 @@ class IMUSample:
             accelerometer_g=data.get("accelerometer_g"),
             gyroscope_dps=data.get("gyroscope_dps"),
             source=data.get("source", "unknown"),
+            gaps=data.get("gaps", ()),
         )
 
 
@@ -311,6 +317,7 @@ def frame_from_decoded(decoded: Any, source: str = "amused") -> MuseFrame:
             accelerometer_g=decoded.imu.get("accel"),
             gyroscope_dps=decoded.imu.get("gyro"),
             source=source,
+            gaps=gaps.get("imu", ()),
         )
 
     heart_rate = None

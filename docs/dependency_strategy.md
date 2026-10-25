@@ -38,6 +38,10 @@ Fixes already upstream:
 
 - BrainFlow [PR #837](https://github.com/brainflow-dev/brainflow/pull/837), "Fix Muse Athena macOS reconnect hangs", merged 2026-05-21 and released in BrainFlow 5.22.2.
 
+Fixes carried here first:
+
+- amused-py: `MuseRealtimeDecoder` keeps the rows of every ACCGYRO subpacket in a notification, not only the last one's, and marks lost ones in `IMUSample.gaps` ([#244](https://github.com/yuriy-mikityuk/remind-eeg/issues/244)). On 2026-10-25 `muse_realtime_decoder.py` on amused-py `main` (last changed in `ca52abf`) still assigns the IMU rows per subpacket, and the EEG and optics rows too, which this fork already appends.
+
 Nothing has been sent to amused-py or OpenMuse yet.
 
 ## BrainFlow Policy

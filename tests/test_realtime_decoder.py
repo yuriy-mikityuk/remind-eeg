@@ -4,12 +4,18 @@ Tests for Muse Real-time Decoder
 
 import unittest
 import datetime
+import struct
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from muse_raw_stream import MuseRawStream
 from muse_realtime_decoder import MuseRealtimeDecoder, DecodedData
 import muse_athena_protocol as proto
+
+from muse_tmr.data.sample_types import frame_from_decoded
+
+CAPTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'test_data', 'muse_20250824_172756.bin')
 
 
 def build_tag_packet(first_tag, first_data, extra_subpackets=None, counter=0):
@@ -170,6 +176,29 @@ class TestRealtimeDecoder(unittest.TestCase):
         self.assertEqual(stats['ppg_sample_rows'], 4)
         self.assertEqual(stats['ppg_values'], 32)
         self.assertEqual(stats['ppg_samples'], 4)
+
+    def test_two_imu_subpackets_append_rows_in_order(self):
+        """Every ACCGYRO subpacket of a notification reaches the rows, not only the last."""
+        decoded = self.decoder.decode(_notification(
+            (proto.TAG_ACCGYRO, 0, _imu_data(1)),
+            (proto.TAG_EEG_4CH, 0, bytes(28)),
+            (proto.TAG_ACCGYRO, 1, _imu_data(2)),
+        ))
+
+        self.assertEqual(_imu_levels(decoded), [1, 1, 1, 2, 2, 2])
+        self.assertEqual(len(decoded.imu['gyro']), 6)
+        self.assertEqual(decoded.gaps, {})
+        self.assertEqual(self.decoder.get_stats()['imu_samples'], 6)
+
+    def test_three_imu_subpackets_append_rows_in_order(self):
+        decoded = self.decoder.decode(_notification(
+            *((proto.TAG_ACCGYRO, counter, _imu_data(counter + 1)) for counter in range(3))
+        ))
+
+        self.assertEqual(_imu_levels(decoded), [1, 1, 1, 2, 2, 2, 3, 3, 3])
+        self.assertAlmostEqual(decoded.imu['gyro'][8][2], 3 * proto.GYRO_SCALE, places=5)
+        self.assertEqual(decoded.packet_type, 'IMU')
+        self.assertEqual(self.decoder.get_stats()['imu_samples'], 9)
 
     def test_callback_system(self):
         """Test callback registration and triggering"""
@@ -390,6 +419,52 @@ class TestSubpacketCounters(unittest.TestCase):
         self.assertEqual(stats['repeated_subpackets'], {'OPTICS': 1, 'ACCGYRO': 1})
         self.assertEqual(stats['lost_subpackets'], {'OPTICS': 1})
 
+    def test_lost_imu_subpacket_is_marked_as_a_gap(self):
+        self.decoder.decode(_notification((proto.TAG_ACCGYRO, 20, _imu_data(1))))
+        after_loss = self.decoder.decode(_notification((proto.TAG_ACCGYRO, 22, _imu_data(3))))
+        inside = self.decoder.decode(_notification(
+            (proto.TAG_ACCGYRO, 23, _imu_data(4)),
+            (proto.TAG_ACCGYRO, 26, _imu_data(7)),
+        ))
+
+        self.assertEqual(_imu_levels(after_loss), [3, 3, 3])
+        self.assertEqual(after_loss.gaps, {'imu': [(0, 3)]})
+        self.assertEqual(_imu_levels(inside), [4, 4, 4, 7, 7, 7])
+        self.assertEqual(inside.gaps, {'imu': [(3, 6)]})
+        stats = self.decoder.get_stats()
+        self.assertEqual(stats['lost_subpackets'], {'ACCGYRO': 3})
+        self.assertEqual(stats['imu_samples'], 12)
+
+
+class TestCommittedCapture(unittest.TestCase):
+    """tests/test_data/muse_20250824_172756.bin: 120 notifications, 34 of them with two or three ACCGYRO subpackets."""
+
+    def test_frames_get_every_imu_row_in_order(self):
+        stream = MuseRawStream(CAPTURE)
+        stream.open_read()
+        decoder = MuseRealtimeDecoder()
+        frame_rows, subpacket_rows, per_notification = [], [], []
+        try:
+            for packet in stream.read_packets():
+                frame = frame_from_decoded(decoder.decode(packet.data, packet.timestamp))
+                subpackets = proto.parse_payload(packet.data)["ACCGYRO"]
+                per_notification.append(len(subpackets))
+                for subpacket in subpackets:
+                    subpacket_rows.extend(subpacket["data"][:, 0:3].tolist())
+                if frame.imu:
+                    frame_rows.extend([row["x"], row["y"], row["z"]] for row in frame.imu.accelerometer_g)
+                    self.assertEqual(frame.imu.gaps, ())
+        finally:
+            stream.close()
+
+        stats = decoder.get_stats()
+        self.assertEqual((per_notification.count(2), per_notification.count(3)), (32, 2))
+        self.assertEqual(stats['lost_subpackets'], {})
+        self.assertEqual(stats['repeated_subpackets'], {})
+        self.assertEqual(len(frame_rows), stats['imu_samples'])
+        self.assertEqual(stats['imu_samples'], 357)
+        self.assertEqual(frame_rows, subpacket_rows)
+
 
 class TestDecodedData(unittest.TestCase):
     """Test DecodedData dataclass"""
@@ -435,6 +510,16 @@ def _eeg_data(level):
 def _levels(decoded):
     """The AF7 samples of a decoded notification as levels above midscale."""
     return [round(value / proto.EEG_SCALE_UV_PER_COUNT) for value in decoded.eeg['AF7']]
+
+
+def _imu_data(level):
+    """ACCGYRO data bytes with every value of its 3 samples x 6 axes at `level` counts."""
+    return struct.pack('<18h', *([level] * 18))
+
+
+def _imu_levels(decoded):
+    """The accelerometer x of every IMU row of a decoded notification, in counts."""
+    return [round(row[0] / proto.ACC_SCALE) for row in decoded.imu['accel']]
 
 
 def _notification(*subpackets):

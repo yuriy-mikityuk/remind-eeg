@@ -97,14 +97,21 @@ and wraps at 256. BLE sometimes delivers a notification twice, so `MuseRealtimeD
 which both the live amused source and replay use, drops a subpacket whose counter and
 data bytes repeat one of the last 16 of its TAG. A counter that skips ahead means the
 device lost subpackets. Nothing is filled in for them: the rows stay joined, and
-`EEGSample.gaps` and `PPGSample.gaps` list `(index, missing)` pairs, meaning `missing`
-samples belong right before row `index` of that frame's series. `gaps` is written to
-`decoded_frames.jsonl` only when it is not empty. The decoder stats count both per
-sensor type as `repeated_subpackets` and `lost_subpackets`, which reach `progress.json`
-under `source_diagnostics.decoder`.
+`EEGSample.gaps`, `PPGSample.gaps` and `IMUSample.gaps` list `(index, missing)` pairs,
+meaning `missing` samples belong right before row `index` of that frame's series. `gaps`
+is written to `decoded_frames.jsonl` only when it is not empty. The decoder stats count
+both per sensor type as `repeated_subpackets` and `lost_subpackets`, which reach
+`progress.json` under `source_diagnostics.decoder`.
+
+A frame holds every kept subpacket of its notification in the order they came: the EEG
+and PPG rows of each, per channel, and three IMU rows for each ACCGYRO subpacket. Until
+[#244](https://github.com/yuriy-mikityuk/remind-eeg/issues/244) the IMU rows were only
+the last ACCGYRO subpacket's, while `imu_samples` counted them all: the frames of
+`tests/test_data/muse_20250824_172756.bin` got 249 of its 357 IMU rows. A
+`decoded_frames.jsonl` written before that fix lacks the others.
 
 `raw_amused.bin` keeps every notification as received, so replaying an older recording
-applies the same rule.
+applies the same rules and gets every IMU row.
 
 ## Synthetic Recordings
 
