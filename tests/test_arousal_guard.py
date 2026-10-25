@@ -353,8 +353,10 @@ class TestSuddenHeartRateRule(unittest.TestCase):
         # On its own the second row holds no change; nor after a reset, without the
         # link, or more than sudden_hr_change_link_seconds after the first.
         self.assertEqual(ArousalGuard().evaluate(timestamp_seconds=30.0, ppg=after).action, "allow")
-        guard.reset()
-        self.assertEqual(guard.evaluate(timestamp_seconds=30.0, ppg=after).action, "allow")
+        reset = ArousalGuard()
+        reset.evaluate(timestamp_seconds=0.0, ppg=before)
+        reset.reset()
+        self.assertEqual(reset.evaluate(timestamp_seconds=30.0, ppg=after).action, "allow")
         unlinked = ArousalGuard(ArousalGuardConfig(sudden_hr_change_link_seconds=0.0))
         unlinked.evaluate(timestamp_seconds=0.0, ppg=before)
         self.assertEqual(unlinked.evaluate(timestamp_seconds=30.0, ppg=after).action, "allow")

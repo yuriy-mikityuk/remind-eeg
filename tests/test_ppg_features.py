@@ -232,6 +232,30 @@ class TestHeartRateSeries(unittest.TestCase):
         self.assertAlmostEqual(changes[0].delta_bpm, 9.5)
         self.assertEqual(exact, ())
 
+    def test_an_agreeing_value_below_the_quality_is_skipped(self):
+        # Noise from 5 s on: the first window's two estimates agree on 88 bpm, but its
+        # autocorrelation peak is far below 0.5, so the value stays out of the comparison.
+        epoch = optics_epoch({"LO_NIR": pulse_light(60.0, seed=6, noise=(5.0, 20.0, 3.0))})
+        row = extract_ppg_features(epoch)
+
+        low = [
+            point
+            for point in row.hr_series
+            if 0 < point.quality < 0.5 and abs(point.bpm - point.peak_bpm) <= 5.0
+        ]
+        self.assertTrue(low)
+        for point in low:
+            self.assertFalse(point.used)
+        logged = json.loads(row.to_dict()["hr_series_json"])
+        self.assertIn(
+            (low[0].time, low[0].quality, False),
+            [(point["time"], point["quality"], point["used"]) for point in logged],
+        )
+        self.assertEqual(row.sudden_hr_change_count, 0)
+        # Without the quality the noisy value is compared, and the steady pulse "changes".
+        loose = extract_ppg_features(epoch, PPGFeatureConfig(hr_series_min_quality=0.0))
+        self.assertGreaterEqual(loose.sudden_hr_change_count, 1)
+
     def test_low_quality_values_are_skipped_and_logged(self):
         burst = pulse_light(60.0, noise=(10.0, 18.0, 5.0))
         row = extract_ppg_features(optics_epoch({"LO_NIR": burst}))
