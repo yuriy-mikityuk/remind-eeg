@@ -132,8 +132,9 @@ The directory holds what `muse-tmr record` writes, without `decoded_frames.jsonl
   leave 29.03 times a second, each with the subpackets made since the one before, in the
   order they were made. The IMU is read out one, two or three ACCGYRO subpackets at a
   time, as often as notifications of the committed capture carry them, and a readout goes
-  into one notification. Some subpackets are lost, some notifications arrive twice and
-  short BLE gaps lose everything in them, as `SyntheticNightConfig` says.
+  into one notification unless that would pass 244 bytes; then the rest of it goes into
+  the next. Some subpackets are lost, some notifications arrive twice and short BLE gaps
+  lose everything in them, as `SyntheticNightConfig` says.
 - `metadata.json`: `source.source_name` is `synthetic` and `source.metadata.preset` the
   preset (`p21` or `p1034`); top level `synthetic: true`, `note`, `scenario` and `seed`.
 - `events.jsonl`: `recording_started` and `recording_stopped` with the stop reason;

@@ -350,7 +350,8 @@ class SyntheticNightConfig:
     BLE: notifications leave ``notifications_per_second`` times a second, each with the
     subpackets made since the one before in the order they were made, split at 244
     bytes. The IMU is read out one, two or three subpackets at a time, as often as
-    ``imu_bundle_shares`` says, and a readout goes into one notification. Subpackets are
+    ``imu_bundle_shares`` says, and a readout goes into one notification unless that
+    would pass 244 bytes; then the rest of it goes into the next. Subpackets are
     lost at ``*_loss_fraction``. Whole notifications come twice, 1 to 3 notifications
     later, as often as makes ``eeg_repeats_per_hour`` EEG subpackets arrive twice.
     ``ble_gaps_per_hour`` gaps of ``ble_gap_seconds`` lose everything in them.
