@@ -10,8 +10,10 @@ from muse_tmr.features.eeg_features import EEGFeatureRow
 from muse_tmr.features.imu_features import IMUFeatureRow
 from muse_tmr.features.ppg_features import (
     HeartRatePoint,
+    PPGFeatureConfig,
     PPGFeatureRow,
     SuddenHeartRateChange,
+    _series_hr_changes,
     extract_ppg_features,
 )
 from muse_tmr.protocol import (
@@ -390,6 +392,23 @@ class TestSuddenHeartRateRule(unittest.TestCase):
         self.assertEqual(second.action, "pause")
         self.assertAlmostEqual(second.metadata["sudden_hr_change_across_epochs_bpm"], 9.5)
 
+    def test_one_step_seen_from_both_sides_of_a_boundary_counts_once(self):
+        # A 15 bpm step 8 s into the second epoch shows in that row's own comparison and in
+        # the one from the first epoch's values: one step, not two.
+        before = _ppg_with_series(60.0, start=0.0)
+        after = _ppg_with_step_series(start=30.0, step_time=38.0, before_bpm=60.0, after_bpm=75.0)
+
+        once = ArousalGuard()
+        once.evaluate(timestamp_seconds=0.0, ppg=before)
+        single = once.evaluate(timestamp_seconds=30.0, ppg=after)
+        twice = ArousalGuard(ArousalGuardConfig(sudden_hr_change_pause_count=2))
+        twice.evaluate(timestamp_seconds=0.0, ppg=before)
+
+        self.assertEqual(single.action, "pause")
+        self.assertAlmostEqual(single.metadata["sudden_hr_change_across_epochs_bpm"], 15.0)
+        self.assertEqual(single.metadata["sudden_hr_change_pause_steps"], 1)
+        self.assertEqual(twice.evaluate(timestamp_seconds=30.0, ppg=after).action, "allow")
+
     def test_config_rejects_a_negative_link(self):
         with self.assertRaises(ValueError):
             ArousalGuardConfig(sudden_hr_change_link_seconds=-1.0).validate()
@@ -433,6 +452,31 @@ def _ppg_with_series(bpm, *, start, used=True):
         _ppg(),
         start_time=start,
         end_time=start + 30.0,
+        sudden_hr_change_source="optics",
+        hr_series_channel="LO_NIR",
+        hr_series=points,
+    )
+
+
+def _ppg_with_step_series(*, start, step_time, before_bpm, after_bpm):
+    """A row whose series steps from before_bpm to after_bpm at step_time, with the
+    changes extract_ppg_features would log for it."""
+    points = tuple(
+        HeartRatePoint(
+            time=start + 5.0 + second,
+            bpm=before_bpm if start + 5.0 + second < step_time else after_bpm,
+            peak_bpm=before_bpm if start + 5.0 + second < step_time else after_bpm,
+            quality=0.95,
+            used=True,
+        )
+        for second in range(21)
+    )
+    changes = _series_hr_changes(points, PPGFeatureConfig())
+    return replace(
+        _ppg(len(changes), max((abs(change.delta_bpm) for change in changes), default=math.nan)),
+        start_time=start,
+        end_time=start + 30.0,
+        sudden_hr_changes=changes,
         sudden_hr_change_source="optics",
         hr_series_channel="LO_NIR",
         hr_series=points,

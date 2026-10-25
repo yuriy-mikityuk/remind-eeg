@@ -13,6 +13,7 @@ from muse_tmr.features.imu_features import IMUFeatureRow
 from muse_tmr.features.ppg_features import (
     HeartRatePoint,
     PPGFeatureRow,
+    SuddenHeartRateChange,
     heart_rate_change_across_epochs,
 )
 
@@ -57,7 +58,7 @@ class ArousalGuardConfig:
     # row's own (sudden_hr_changes, logged from PPGFeatureConfig.sudden_hr_change_bpm less
     # its hr_series_margin_bpm up) and the largest change between the previous row's
     # heart-rate series and this one's, for values at most sudden_hr_change_link_seconds
-    # apart (0 leaves that comparison out).
+    # apart (0 leaves that comparison out), unless a row change already holds that step.
     # The margin is the error of a series value, so a true change of the bpm still pauses.
     sudden_hr_change_pause_count: int = 1
     sudden_hr_change_pause_bpm: float = 10.0
@@ -428,7 +429,9 @@ class ArousalGuard:
 
     def _sudden_hr_steps(self, ppg: PPGFeatureRow, metadata: Dict[str, object]) -> int:
         """Heart-rate changes of sudden_hr_change_pause_bpm less the margin or more: the
-        row's own, and the largest one from the previous row's series into this one's."""
+        row's own, and the largest one from the previous row's series into this one's
+        unless one of the row's, in the same direction and overlapping it in time, is the
+        same step."""
         bpm = self.config.sudden_hr_change_pause_bpm - self.config.sudden_hr_change_margin_bpm
         counted = [change for change in ppg.sudden_hr_changes if abs(change.delta_bpm) >= bpm]
         if ppg.sudden_hr_changes:
@@ -448,7 +451,9 @@ class ArousalGuard:
             )
             if change is not None:
                 metadata["sudden_hr_change_across_epochs_bpm"] = change.delta_bpm
-                if abs(change.delta_bpm) >= bpm:
+                if abs(change.delta_bpm) >= bpm and not any(
+                    _same_step(change, other) for other in counted
+                ):
                     steps += 1
         return steps
 
@@ -483,6 +488,14 @@ def load_arousal_guard_decisions(input_path: Path) -> Tuple[ArousalGuardDecision
 
 def _unique(reason_codes: Iterable[str]) -> Tuple[str, ...]:
     return tuple(dict.fromkeys(code for code in reason_codes if code))
+
+
+def _same_step(first: SuddenHeartRateChange, second: SuddenHeartRateChange) -> bool:
+    """Two logged changes in one direction whose compared values overlap in time: the
+    same step, seen from both sides of an epoch boundary."""
+    return (first.delta_bpm > 0) == (second.delta_bpm > 0) and max(
+        first.start_time, second.start_time
+    ) <= min(first.end_time, second.end_time)
 
 
 def _eeg_bad_channels(eeg: EEGFeatureRow) -> Tuple[str, ...]:
