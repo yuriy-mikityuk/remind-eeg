@@ -88,7 +88,8 @@ Every default is in `SyntheticNightConfig` and `script_night()` in
 - Optics, `p1034` only: a pulse at a heart rate set per stage, faster after arousals.
 - Battery: falling at the preset's measured drain until it is empty; the stream ends there.
 - BLE: notifications of at most 244 bytes, each carrying the subpackets made since the one
-  before, subpackets lost and notifications repeated at the rates of #160, short gaps.
+  before, one, two or three ACCGYRO subpackets read out together, subpackets lost and
+  notifications repeated at the rates of #160, short gaps.
 
 ## Where the parameters come from
 
@@ -97,7 +98,11 @@ The device side comes from the repository's own measurements: the battery drain 
 the notification rate from the completed night of #108 (835,926 notifications over
 7.998 h), the lost and repeated subpackets from
 [#160](https://github.com/yuriy-mikityuk/remind-eeg/issues/160), the optics line from
-[#154](https://github.com/yuriy-mikityuk/remind-eeg/issues/154).
+[#154](https://github.com/yuriy-mikityuk/remind-eeg/issues/154). How often a notification
+carries one, two or three ACCGYRO subpackets comes from the committed capture
+`tests/test_data/muse_20250824_172756.bin`, 49, 32 and 2 of its 83 notifications with
+any. That capture is 7 s on an optics preset; no committed capture shows how `p21`
+bundles them, and the same shares are used there.
 
 The stage signals are textbook shapes, set by hand: an assumption, not a measurement.
 The eye-movement deflections share their shape with the fixture of
@@ -121,16 +126,17 @@ replays the night twice, for Pilot 3 and for the report:
 |---|---|---|---|---|---|---|
 | `clean_night` | `p21` | 8 h | 96.5 | 3.9 | 50 | 171 |
 | `fragmented_rem` | `p21` | 8 h | 96.5 | 3.6 | 47 | 152 |
-| `no_rem_nap` | `p1034` | 1 h | 17.2 | 0.5 | 14 | 35 |
-| `battery_death_2h29` | `p1034` | 8 h, empty after 2 h 29 min | 42.8 | 1.6 | 36 | 88 |
+| `no_rem_nap` | `p1034` | 1 h | 17.3 | 0.5 | 14 | 35 |
+| `battery_death_2h29` | `p1034` | 8 h, empty after 2 h 29 min | 42.9 | 1.6 | 36 | 88 |
 | `optics_line` | `p1034` | 2 h | 34.5 | 1.0 | 29 | 71 |
 | `bad_contact_af7` | `p21` | 2 h | 24.1 | 0.9 | 12 | 32 |
 | `movement_heavy` | `p21` | 2 h | 24.1 | 0.8 | 12 | 33 |
 | `short_allow_short` | `p1034` | 10 min | 2.9 | 0.1 | 2 | 6 |
 
 On all eight the decoder's lost and repeated subpackets per sensor type equal what
-`generation.json` scripted, and no uncued puzzle gets a `play`. The default `demo`, 2 h
-of `clean_night`, took 39 s.
+`generation.json` scripted, its IMU rows equal the rows `generation.json` says were
+delivered, and no uncued puzzle gets a `play`. The default `demo`, 2 h of `clean_night`,
+took 39 s.
 
 The corpus is generated on demand and never committed: `data/synthetic/` is gitignored
 and `scripts/check_forbidden_files.py` refuses anything under it. There is no pre-rendered
@@ -161,12 +167,6 @@ renews the baseline in the same commit: run the command without `--baseline` and
 
 ## Current limitations
 
-- The decoder keeps only the last ACCGYRO subpacket of a notification
-  ([#244](https://github.com/yuriy-mikityuk/remind-eeg/issues/244)). The device does put
-  more than one in a notification (34 of the 120 notifications of the committed capture
-  `tests/test_data/muse_20250824_172756.bin`), but the generator never does, and
-  `SyntheticNightConfig.validate()` refuses a notification rate that would need it, so the
-  synthetic nights cannot catch that loss until #244 is fixed.
 - No cue plays on the four `p1034` scenarios. The arousal guard pauses every epoch for
   `sudden_heart_rate_change`: the heart rate the decoder derives from the synthetic
   pulse jumps by about 35 bpm within an epoch (the median of the per-epoch maximum),

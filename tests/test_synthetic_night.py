@@ -211,6 +211,14 @@ class ScenarioTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             SyntheticNightConfig(preset="p1041").validate()
 
+    def test_imu_bundles(self):
+        # Since #244 the decoder keeps every ACCGYRO subpacket, so a slow notification
+        # rate that bundles several is fine.
+        SyntheticNightConfig(notifications_per_second=10.0, imu_bundle_shares=(1.0,)).validate()
+        for shares in ((), (0.5, -0.1), (0.0, 0.0)):
+            with self.assertRaises(ValueError):
+                SyntheticNightConfig(imu_bundle_shares=shares).validate()
+
 
 class GeneratedRecordingTest(unittest.TestCase):
     """short_allow_short with more BLE gaps than usual, so every counted path runs."""
@@ -258,6 +266,7 @@ class GeneratedRecordingTest(unittest.TestCase):
 
     def test_bundling_follows_the_tag_format(self):
         sizes = []
+        imu_per_notification = []
         stream = MuseRawStream(str(self.night.raw_path))
         stream.open_read()
         try:
@@ -266,12 +275,19 @@ class GeneratedRecordingTest(unittest.TestCase):
                 self.assertEqual(packet.data[0], len(packet.data))
                 self.assertFalse(inspection["truncated"])
                 self.assertEqual(inspection["unknown_tags"], [])
-                self.assertLessEqual(inspection["tags"].count(proto.TAG_ACCGYRO), 1)
+                imu_per_notification.append(inspection["tags"].count(proto.TAG_ACCGYRO))
                 sizes.append(len(packet.data))
         finally:
             stream.close()
         self.assertLessEqual(max(sizes), enc.MAX_NOTIFICATION_BYTES)
         self.assertGreater(len(set(sizes)), 5)
+        # Like the committed capture, where 49, 32 and 2 of the 83 notifications with
+        # any ACCGYRO carry one, two and three.
+        counts = [imu_per_notification.count(n) for n in (1, 2, 3)]
+        self.assertEqual(max(imu_per_notification), 3)
+        shares = [count / sum(counts) for count in counts]
+        for share, expected in zip(shares, self.night.config.imu_bundle_shares):
+            self.assertAlmostEqual(share, expected, delta=0.03)
 
     def test_decoder_stats_equal_the_scripted_repeats_and_losses(self):
         ble = self.generation["ble"]
@@ -314,12 +330,15 @@ class GeneratedRecordingTest(unittest.TestCase):
         self.assertEqual(modality_frames, ble["frames_with"])
         missing = sum(missing for frame in frames if frame.eeg for _, missing in frame.eeg.gaps)
         self.assertEqual(missing, 4 * (subpackets["EEG"]["lost"] + subpackets["EEG"]["lost_in_gaps"]))
+        self.assertGreater(subpackets["ACCGYRO"]["lost_in_gaps"], 0)
+        missing = sum(missing for frame in frames if frame.imu for _, missing in frame.imu.gaps)
+        self.assertEqual(missing, 3 * (subpackets["ACCGYRO"]["lost"] + subpackets["ACCGYRO"]["lost_in_gaps"]))
 
 
 class ReproducibilityTest(unittest.TestCase):
     # One minute of short_allow_short with seed 0. A change to the generator changes it:
     # update it in the same commit, so the bytes of a seed never move unnoticed.
-    PINNED_SHA256 = "08955b0855c0cc9b37014698bab85f05b62d13c62cf735038435d577808e377e"
+    PINNED_SHA256 = "6269543c003183ce3e7c77c2ad5732c3c56aa4c591578d3398bf3219ce49882b"
 
     def test_pinned_sha256(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -10,7 +10,8 @@ config, the counts the decoder should report and the sha256 of every other file 
 
 The stage signals are simple textbook shapes. The device behaviour follows the
 repository's own measurements (``docs/numbers.md``): ``p21`` battery drain 10.60 %/h
-and ``p1034`` 23.34 %/h, 29.03 notifications per second, 1.0 % lost EEG and 0.4 % lost
+and ``p1034`` 23.34 %/h, 29.03 notifications per second, one to three ACCGYRO
+subpackets in a notification as in the committed capture, 1.0 % lost EEG and 0.4 % lost
 optics subpackets, 43 repeats in 23 min, the optics line at about 64 Hz. The morphology
 is an assumption, not a measurement: nothing measured on these nights is evidence about
 sleep, and no detector weight or threshold may be fitted to them.
@@ -82,7 +83,7 @@ _OPTICS_PULSE_SHARE = (0.003, 0.003, 0.003, 0.003, 0.012, 0.012, 0.012, 0.012)
 
 # Independent random streams, so turning one component on or off leaves the others
 # as they were.
-_RNG_SCRIPT, _RNG_EEG, _RNG_EVENTS, _RNG_LINE, _RNG_IMU, _RNG_OPTICS, _RNG_BLE, _RNG_MOVES = range(8)
+_RNG_SCRIPT, _RNG_EEG, _RNG_EVENTS, _RNG_LINE, _RNG_IMU, _RNG_OPTICS, _RNG_BLE, _RNG_MOVES, _RNG_READOUT = range(9)
 
 
 def _rng(seed: int, stream: int) -> np.random.Generator:
@@ -348,10 +349,11 @@ class SyntheticNightConfig:
 
     BLE: notifications leave ``notifications_per_second`` times a second, each with the
     subpackets made since the one before in the order they were made, split at 244
-    bytes. Subpackets are lost at ``*_loss_fraction``. Whole notifications come twice, 1
-    to 3 notifications later, as often as makes ``eeg_repeats_per_hour`` EEG subpackets
-    arrive twice. ``ble_gaps_per_hour`` gaps of ``ble_gap_seconds`` lose everything in
-    them.
+    bytes. The IMU is read out one, two or three subpackets at a time, as often as
+    ``imu_bundle_shares`` says, and a readout goes into one notification. Subpackets are
+    lost at ``*_loss_fraction``. Whole notifications come twice, 1 to 3 notifications
+    later, as often as makes ``eeg_repeats_per_hour`` EEG subpackets arrive twice.
+    ``ble_gaps_per_hour`` gaps of ``ble_gap_seconds`` lose everything in them.
     """
 
     seed: int = 0
@@ -385,6 +387,7 @@ class SyntheticNightConfig:
     battery_start_percent: float = 100.0
     battery_drain_percent_per_hour: Optional[float] = None
     notifications_per_second: float = 29.03
+    imu_bundle_shares: Tuple[float, ...] = (49 / 83, 32 / 83, 2 / 83)
     eeg_loss_fraction: float = 888 / 90011
     optics_loss_fraction: float = 169 / 44950
     imu_loss_fraction: float = 0.0
@@ -408,10 +411,8 @@ class SyntheticNightConfig:
                 raise ValueError(f"{name} must be in [0, 0.5)")
         if self.notifications_per_second <= 0:
             raise ValueError("notifications_per_second must be positive")
-        # Two IMU subpackets in one notification would lose rows in the decoder, which
-        # keeps the last one only, so a notification must come more often than they do.
-        if 1.0 / self.notifications_per_second + 0.004 >= 3 / IMU_RATE_HZ:
-            raise ValueError("notifications must come more often than IMU subpackets")
+        if not self.imu_bundle_shares or min(self.imu_bundle_shares) < 0 or sum(self.imu_bundle_shares) <= 0:
+            raise ValueError("imu_bundle_shares needs a share for 1, 2, ... subpackets, none negative")
         if not 0.0 < self.ble_gap_seconds[0] <= self.ble_gap_seconds[1] < 1.8:
             raise ValueError("BLE gaps must be under 1.8 s, or the EEG counter would wrap")
         if self.battery_start_percent <= 0 or self.drain_percent_per_hour <= 0:
@@ -917,7 +918,11 @@ def _streams(config, eeg_counts, accel, gyro, optics, duration) -> List[_Stream]
     streams.append(_Stream(
         "ACCGYRO",
         enc.subpacket_records(proto.TAG_ACCGYRO, np.arange(count), data),
-        (np.arange(count) + 1) * 3 / IMU_RATE_HZ,
+        _readout_times(
+            (np.arange(count) + 1) * 3 / IMU_RATE_HZ,
+            config.imu_bundle_shares,
+            _rng(config.seed, _RNG_READOUT),
+        ),
         3,
         config.imu_loss_fraction,
     ))
@@ -941,6 +946,18 @@ def _streams(config, eeg_counts, accel, gyro, optics, duration) -> List[_Stream]
         0.0,
     ))
     return streams
+
+
+def _readout_times(times: np.ndarray, shares: Sequence[float], rng) -> np.ndarray:
+    """``times`` moved to the last subpacket of each readout; readouts of 1, 2, ...
+    consecutive subpackets come as often as ``shares`` says."""
+    if times.size == 0:
+        return times
+    probabilities = np.asarray(shares, dtype=float) / float(sum(shares))
+    sizes = rng.choice(np.arange(1, probabilities.size + 1), size=times.size, p=probabilities)
+    ends = np.minimum(np.cumsum(sizes) - 1, times.size - 1)
+    ends = ends[: int(np.searchsorted(ends, times.size - 1)) + 1]
+    return times[ends[np.searchsorted(ends, np.arange(times.size))]]
 
 
 def _ble_gaps(config, duration: float, rng) -> List[Tuple[float, float]]:
