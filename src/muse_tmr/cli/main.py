@@ -2160,7 +2160,8 @@ def _demo(args: argparse.Namespace) -> int:
             return 2
     output_dir = _resolve_output_dir(args.output) if args.output is not None else _default_demo_dir()
     recording_dir = output_dir / f"{config.scenario}_seed{config.seed}"
-    refusal = _not_synthetic_refusal(recording_dir)
+    # Neither the night nor the reports next to it go into a real recording's folder.
+    refusal = _not_synthetic_refusal(output_dir) or _not_synthetic_refusal(recording_dir)
     if refusal is not None:
         print(f"demo: {refusal}", file=sys.stderr)
         return 2
@@ -2291,7 +2292,7 @@ def _demo(args: argparse.Namespace) -> int:
         "pilot1_passed": pilot1.passed,
         "pilot3_passed": report.passed,
         "no_uncued_plays": metrics["uncued_puzzle_play_count"] == 0,
-        "audio_backend_mock": True,
+        "audio_backend_mock": report.audio_backend == "mock" and not report.audio_playback_executed,
         "report_written": report_path.is_file() and report_path.stat().st_size > 0,
     }
     if baseline is not None:

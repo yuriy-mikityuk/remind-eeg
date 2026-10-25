@@ -610,6 +610,17 @@ class DemoCommandTest(unittest.TestCase):
         self.assertIn("the baseline is for clean_night, seed 0, 2.0 h", err)
         self.assertFalse(target.exists())
 
+    def test_refuses_the_folder_of_a_real_recording(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            recording = Path(tmp) / "night"
+            recording.mkdir()
+            (recording / "raw_amused.bin").write_bytes(b"recorded")
+            (recording / "metadata.json").write_text(json.dumps({"source": {"source_name": "amused"}}), encoding="utf-8")
+            code, _, err = _run_cli("demo", "--hours", "0.25", "--no-open", "--output", str(recording))
+            self.assertEqual(code, 2)
+            self.assertIn("not synthetic", err)
+            self.assertEqual(sorted(path.name for path in recording.iterdir()), ["metadata.json", "raw_amused.bin"])
+
 
 class AgreementBaselineFixtureTest(unittest.TestCase):
     """The baseline the CI end_to_end job compares `muse-tmr demo --hours 2` with."""
