@@ -128,10 +128,12 @@ the widths and the levels are set by hand to land inside those figures. On 10 mi
 maximum 142 ms after the onset, its steepest fall at 243 ms, 0.49 s below half height and
 5.3 % of the beat within 10 % of the maximum, with 0.15 % of the DC level in 0.7 to 3 Hz
 and 0.011 % in 8 to 30 Hz, 15 times less; `OpticsPulseTest` in
-`tests/test_synthetic_night.py` holds them to the ranges above. The wander default is an
-assumption. On those recordings the guard's heart-rate rule fires more often as the 0.1
-to 0.5 Hz wander grows against the pulse; here, on the 120 epochs of `no_rem_nap`, it
-fires on none at `optics_wander_ratio` 0.5, on 20 at 1.0 and on 116 at 2.0.
+`tests/test_synthetic_night.py` holds them to the ranges above. The wander default, 0.5,
+is an assumption, not taken from the recordings, and the `p1034` guard figures on this
+page hold only at it. On those recordings the guard's heart-rate rule fires more often
+as the 0.1 to 0.5 Hz wander grows against the pulse; here, on the 120 epochs of
+`no_rem_nap`, it fires on none at `optics_wander_ratio` 0.5, on 20 at 1.0 and on 116
+at 2.0.
 
 The stage signals are textbook shapes, set by hand: an assumption, not a measurement.
 The eye-movement deflections share their shape with the fixture of
@@ -196,9 +198,10 @@ renews the baseline in the same commit: run the command without `--baseline` and
 
 ## Current limitations
 
-- On the four `p1034` scenarios the arousal guard pauses for `sudden_heart_rate_change`
-  only on epochs a movement reaches: 0 of 120 on `no_rem_nap`, 4 of 298 on
-  `battery_death_2h29`, 6 of 240 on `optics_line` and 0 of 20 on `short_allow_short`.
+- On the four `p1034` scenarios, at the default wander, the arousal guard pauses for
+  `sudden_heart_rate_change` only on epochs a movement reaches: 0 of 120 on `no_rem_nap`,
+  4 of 298 on `battery_death_2h29`, 6 of 240 on `optics_line` and 0 of 20 on
+  `short_allow_short`.
   Until #248 the pulse had a flat top with narrow dips, the decoder's beat detection
   wandered on it, and every epoch of all four paused. What is left is the rule itself
   ([#247](https://github.com/yuriy-mikityuk/remind-eeg/issues/247)): it compares heart
