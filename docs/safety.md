@@ -32,17 +32,24 @@ one value a second from 10 s windows of the most periodic channel, band-passed t
 which are 36 to 77 ms apart and share almost all their samples, so a beat entering or
 leaving the decoder's 5 s window paused the epoch while a true step barely showed. A
 value is used only when its autocorrelation and peak-interval estimates agree within
-5 bpm and its autocorrelation peak reaches 0.5; skipped values are logged in the PPG row
-and counted in every guard decision that is not `allow` (`hr_series_skipped_count`). The
-rule pauses when used
-values 10 to 20 s apart differ by `sudden_hr_change_pause_bpm` (10) or more, inside the
-epoch or from the previous epoch into this one, so a step at an epoch boundary pauses
-the epoch after it. Raising `sudden_hr_change_pause_bpm` now raises the bar; before,
-any logged change paused through the count. A stretch too noisy for the series no longer
-pauses for heart rate and is left to the motion and artifact rules. On synthetic nights
-a held step of 15 or 40 bpm pauses wherever it falls in an epoch, one of 10 bpm, the
-threshold itself, not everywhere (`docs/numbers.md`). There is no paired optics and ECG
-recording of sleep yet to say how the series behaves asleep.
+5 bpm and its autocorrelation peak reaches 0.5. A window that holds two rates, where a
+short surge or a step falls inside it, peaks at neither; it is then read from its
+longest run of regular beats, when that run spans 4 s and passes the same checks.
+Skipped values are logged in the PPG row and counted in the guard decision,
+`allow` included (`hr_series_skipped_count`). The rule pauses when used values 10 to
+20 s apart differ by 9 bpm or more, `sudden_hr_change_pause_bpm` (10) less
+`sudden_hr_change_margin_bpm` (1) for the error of a value, inside the epoch or from the
+previous epoch into this one, so a step at an epoch boundary pauses the epoch after it.
+Raising `sudden_hr_change_pause_bpm` now raises the bar; before, any logged change paused
+through the count. On synthetic nights a held step of 15 to 40 bpm pauses wherever it
+falls in an epoch, and every held step of 10 bpm the rule missed had a scripted change
+under 10 bpm between the compared windows. A surge of 15 to 40 bpm held 5 s pauses in 19
+or 20 of 21 places inside an epoch but rarely when it straddles an epoch boundary with
+under 4 s on either side; held 10 s it pauses everywhere (`docs/numbers.md`). A still
+stretch too noisy for the series has no HR rule: no artifact flag covers noisy optics, so
+only the motion, EEG and coverage rules act there, and its `allow` decisions carry the
+skipped count. There is no paired optics and ECG recording of sleep yet to say how the
+series behaves asleep.
 
 On a preset without optics (`p21`) the guard is built with `optics_capable=False`,
 like the REM gate. Missing PPG and heart rate is then not an artifact, so it does not

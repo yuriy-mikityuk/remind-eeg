@@ -359,16 +359,30 @@ on a tie. Each window of `hr_series_window_seconds` (10 s), stepped by
 | `peak_bpm` | 60 over the median interval between the window's light maxima (the pulse foot, prominence at least `hr_series_peak_prominence` 0.5 of the window's SD), the check on `bpm`. |
 | `quality` | 0 to 1: the autocorrelation peak when `bpm` and `peak_bpm` agree within `hr_series_max_disagreement_bpm` (5 bpm), else 0; also 0 when more than `hr_series_max_missing_fraction` (0.2) of the window is missing. |
 | `used` | `quality` reaches `hr_series_min_quality` (0.5). Skipped values stay in the series. |
+| `run_seconds` | 0, or the length of the run of regular beats that gave `bpm`, `peak_bpm` and `quality` (below). |
+
+A window that holds two rates, where a step or a short surge falls inside it, peaks at
+neither beat period: its autocorrelation often settles near two fast beats while
+`peak_bpm` reads the fast rate. When a window's quality stays under `hr_series_min_quality`
+and it is not missing data, its longest run of at least 5 beat intervals, each within
+15 % of the window's median interval, stands in for it if the run spans
+`hr_series_min_run_seconds` (4 s) or more and the autocorrelation of that stretch alone
+agrees with the median of its intervals. A short surge then reads its own rate, while
+noise rarely holds such a run.
 
 The rule compares used values `hr_series_compare_seconds` to
 `hr_series_max_compare_seconds` (10 to 20 s) apart. Windows that far apart share no
 samples, so a step held between them shows in full, while a missed or extra beat moves
-neither estimate. Each change of `sudden_hr_change_bpm` (10) or more is logged once per
-direction by its largest pair, in `sudden_hr_changes`, `sudden_hr_change_count` and
-`max_sudden_hr_change_bpm` as before. A window stays inside its epoch, so a step in the
-first or last 10 s of an epoch shows only when the arousal guard compares the previous
-epoch's values with this one's (below). An epoch with heart-rate samples but no optics
-compares consecutive samples, as every epoch did before.
+neither estimate. Each change of `sudden_hr_change_bpm` (10) less `hr_series_margin_bpm`
+(1), so 9 bpm or more, is logged once per direction by its largest pair, in
+`sudden_hr_changes`, `sudden_hr_change_count` and `max_sudden_hr_change_bpm` as before.
+The margin covers the error of a value against the heart rate of its window, so a change
+of 10 bpm is not lost to it. A window stays inside its epoch, so a step in the first or
+last 10 s of an epoch shows only when the arousal guard compares the previous epoch's
+values with this one's (below), and a surge shorter than about 8 s that straddles an
+epoch boundary, with under 4 s of it in either epoch, often shows in neither. An epoch
+with heart-rate samples but no optics compares consecutive samples, as every epoch did
+before.
 
 The rows add `sudden_hr_change_source` (`optics`, `heart_rate` or `missing`: what fed the
 rule), `hr_series_channel`, `hr_series_used_count`, `hr_series_skipped_count`,
@@ -659,21 +673,26 @@ flags `ppg_missing`, `missing_ppg`, `heart_rate_missing`, `missing_heart_rate`,
 `low_heart_rate_coverage` and `low_ppg_coverage` are dropped before the PPG checks,
 `sudden_heart_rate_change` and `heart_rate_out_of_range` are not raised, and every
 decision, `allow` included, carries `metadata.ppg_absent_by_design`. On optics presets
-`allow` decisions keep an empty `metadata` as before.
+an `allow` decision keeps an empty `metadata` unless the epoch's heart-rate series
+skipped values; then it carries `hr_series_used_count` and `hr_series_skipped_count`,
+since the pilots keep the decisions but not the PPG rows.
 
 On optics presets the HR rule pauses when it finds at least
 `sudden_hr_change_pause_count` (1) heart-rate changes of `sudden_hr_change_pause_bpm`
-(10) or more: the row's `sudden_hr_changes` at or above that bpm, and the largest change
-from the previous row's used series values into this row's, for values at most
-`sudden_hr_change_link_seconds` (20 s) apart (0 leaves that comparison out). The guard
-keeps the previous row's series for it and `reset()` clears it. Before #247 any logged
-change paused through the count, so raising the bpm alone changed nothing. The row
-logs changes from `PPGFeatureConfig.sudden_hr_change_bpm` up, so a pause bpm below that
-only affects the comparison across epochs. A row built with the counts but without the
-changes counts all of them when the largest reaches the bpm. Non-`allow` decisions on
-optics presets add `sudden_hr_change_source`, `hr_series_used_count`,
-`hr_series_skipped_count`, `sudden_hr_change_pause_steps` (the changes counted) and, when
-there was a previous series to compare with, `sudden_hr_change_across_epochs_bpm`.
+(10) less `sudden_hr_change_margin_bpm` (1) or more: the row's `sudden_hr_changes` at or
+above that, and the largest change from the previous row's used series values into this
+row's, for values at most `sudden_hr_change_link_seconds` (20 s) apart (0 leaves that
+comparison out). That change across the boundary is not counted again when a counted row
+change in the same direction overlaps it in time: it is the same step, seen from both
+sides. The guard keeps the previous row's series for it and `reset()` clears it. Before
+#247 any logged change paused through the count, so raising the bpm alone changed
+nothing. The row logs changes from `PPGFeatureConfig.sudden_hr_change_bpm` less its
+`hr_series_margin_bpm` up, so a lower pause bpm only affects the comparison across
+epochs. A row built with the counts but without the changes counts all of them when the
+largest reaches the bpm. Non-`allow` decisions on optics presets add
+`sudden_hr_change_source`, `hr_series_used_count`, `hr_series_skipped_count`,
+`sudden_hr_change_pause_steps` (the changes counted) and, when there was a previous series
+to compare with, `sudden_hr_change_across_epochs_bpm`.
 
 Decisions can be appended to JSONL with `append_arousal_guard_decisions()` and read
 with `load_arousal_guard_decisions()`. The scheduler can consume a decision directly;

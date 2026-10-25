@@ -58,7 +58,8 @@ each epoch's optics give (one value a second from 10 s windows), not the decoder
 changed (#247). A pause for it records in the guard metadata how many of the epoch's
 values were used and skipped (`hr_series_used_count`, `hr_series_skipped_count`) and the
 largest change from the previous epoch's values into this one's
-(`sudden_hr_change_across_epochs_bpm`); `docs/data_model.md` has the details.
+(`sudden_hr_change_across_epochs_bpm`); an `allow` decision records the two counts when
+a value was skipped. `docs/data_model.md` has the details.
 
 Optional replay and gate tuning flags:
 
