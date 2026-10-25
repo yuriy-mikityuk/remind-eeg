@@ -51,6 +51,36 @@ jobs:
           python -m venv /tmp/wheel-env
           /tmp/wheel-env/bin/pip install dist/*.whl
           cd /tmp && /tmp/wheel-env/bin/muse-tmr --version
+      - name: Run the demo from the installed wheel
+        run: cd /tmp && /tmp/wheel-env/bin/muse-tmr demo --hours 0.25 --no-open --output /tmp/wheel-demo
+
+  # A plumbing regression check on a synthetic night (synthetic input, not sleep). It
+  # says nothing about REM detection: the cued plays come at sleep onset, not in REM.
+  end_to_end:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install the package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: Run the demo on a 2 h synthetic night
+        run: |
+          muse-tmr demo --hours 2 --no-open --output "$RUNNER_TEMP/demo" \
+            --baseline tests/fixtures/synthetic/agreement_baseline.json
+      - name: Check what the demo wrote
+        run: |
+          summary="$RUNNER_TEMP/demo/demo_summary.json"
+          jq -e '.synthetic and .pilot1.passed and .pilot3.passed' "$summary"
+          jq -e '.pilot3.uncued_puzzle_play_count == 0 and .pilot3.cue_plan_count >= 1' "$summary"
+          jq -e '.pilot3.audio_backend == "mock" and (.pilot3.audio_playback_executed | not)' "$summary"
+          jq -e '.baseline.mismatches == [] and ([.checks[]] | all)' "$summary"
+          test -s "$RUNNER_TEMP/demo/report.html"
+          grep -q "synthetic input, not sleep" "$RUNNER_TEMP/demo/report.html"
+          jq -r '"raw_amused.bin sha256 \(.raw_sha256)"' "$summary"
 
   page:
     runs-on: ubuntu-latest

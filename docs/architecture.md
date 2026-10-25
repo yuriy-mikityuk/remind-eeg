@@ -45,7 +45,7 @@ With `--with-polar` the recorder starts `record-polar` as a child process. `muse
 
 ## Reports
 
-- `scripts/generate_nightly_report.py`: the REM report of a night or session as `data/reports/<kind>/<name>.html`, with a heart and breathing section from `muse_tmr.reports.night_cardio` when the recording has `polar/`.
+- `muse_tmr.reports.nightly_report`, run by `scripts/generate_nightly_report.py` and `muse-tmr demo`: the REM report of a night or session as `data/reports/<kind>/<name>.html`, with a heart and breathing section from `muse_tmr.reports.night_cardio` when the recording has `polar/` and a "Synthetic input, not sleep" callout when its `metadata.json` says `synthetic: true`.
 - `muse_tmr.reports.meditation_analysis` and `muse_tmr.reports.meditation_report`: cut a recording into the blocks of its `blocks.json`, compute the metrics of `muse_tmr.features.complexity_features` per epoch, compare conditions and write `data/reports/meditation/<recording>/`; `aggregate-meditation` pools the sessions of one series.
 - `muse_tmr.protocol.calibration` speaks the calibration run and logs when each cue was spoken; `muse_tmr.reports.calibration_report` cuts its blocks at those logged times, and `muse_tmr.reports.line_check` measures the 64 Hz line for `--line-check`.
 - `muse_tmr.reports.dream_report`, `muse_tmr.reports.morning_retest` and `muse_tmr.reports.analysis`: the morning side of the TMR protocol.

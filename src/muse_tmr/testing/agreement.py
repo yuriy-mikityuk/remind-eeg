@@ -137,6 +137,11 @@ def synthetic_agreement(
     }
 
 
+def stage_at(hypnogram: Sequence[HypnogramEpoch], seconds: float) -> Optional[str]:
+    """The generated stage at ``seconds`` from the start; None past the hypnogram's end."""
+    return _stage_at(hypnogram, [row.start_seconds for row in hypnogram], seconds)
+
+
 def _stage_at(hypnogram: Sequence[HypnogramEpoch], starts: Sequence[float], seconds: float) -> Optional[str]:
     index = bisect.bisect_right(starts, seconds) - 1
     if index >= 0 and seconds < hypnogram[index].end_seconds:

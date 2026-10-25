@@ -49,6 +49,7 @@ FORBIDDEN_PATTERNS = (
     "data/recordings/*",
     "data/reports/*",
     "data/sleep/*",
+    "data/synthetic/*",
     "dream_reports/*",
     "sdk/*",
     "vendor/MuseSDK/*",

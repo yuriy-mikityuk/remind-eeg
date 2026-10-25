@@ -41,11 +41,11 @@ The pictures show the app on example data.
 - **Pluggable acquisition:** amused-py BLE (default), OpenMuse LSL, and BrainFlow backends, all mapped to one `MuseFrame` contract; a Polar H10 chest strap can record ECG, RR and chest motion alongside, in its own process
 - **Local app, REMind:** live contact check per sensor, session, night, guided-meditation and calibration recordings that start once the contact holds and run as their own process, a recordings page with the reports and EEG numbers, and auto-update from `main`
 - **Reproducible validation:** five staged pilots, each with a runbook and an automated validator
-- **Engineering hygiene:** 41 CLI commands, pytest suite with CI on GitHub Actions, and a privacy-aware gitignore — volume calibration, puzzle content, and dream reports never leave the machine
+- **Engineering hygiene:** 43 CLI commands, pytest suite with CI on GitHub Actions, and a privacy-aware gitignore — volume calibration, puzzle content, and dream reports never leave the machine
 
 ## Quick start
 
-You need a Muse S Athena and Python 3.8 or newer. The app launcher is for macOS.
+You need Python 3.8 or newer, and a Muse S Athena to record. The app launcher is for macOS.
 
 ```bash
 git clone https://github.com/yuriy-mikityuk/remind-eeg.git
@@ -53,7 +53,10 @@ cd remind-eeg
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
+muse-tmr demo
 ```
+
+`muse-tmr demo` needs no headband. It writes a 2 h synthetic night under `data/synthetic/`, checks it with the Pilot 1 validator, replays it through the detector, the REM gate, the arousal guard and the scheduler with mock audio (Pilot 3), and opens the REM report. The night is synthetic input, not sleep: the demo shows that the chain runs, not that it finds REM, and on this night both cues come at sleep onset. What is modelled and what is not: [`docs/synthetic_data.md`](docs/synthetic_data.md).
 
 ### First recording from the app (macOS)
 
@@ -155,7 +158,7 @@ The same headband also runs guided A/B meditation sessions from the local app: a
 
 ## CLI overview
 
-41 commands under one `muse-tmr` entry point. Full invocations with all flags: [`docs/USAGE.md`](docs/USAGE.md).
+43 commands under one `muse-tmr` entry point. Full invocations with all flags: [`docs/USAGE.md`](docs/USAGE.md).
 
 | Group | Commands |
 | ----- | -------- |
@@ -168,6 +171,7 @@ The same headband also runs guided A/B meditation sessions from the local app: a
 | Morning & analysis | `record-dream-report` · `record-puzzle-retest` · `analyze-cued-uncued` |
 | Meditation (side track) | `meditation-plan` · `analyze-meditation` · `aggregate-meditation` · `calibration-run` · `calibration-guide` · `calibration-report` |
 | Pilots & validation | `validate-pilot1-recording` · `validate-pilot2-calibration` · `simulate-replay-cues` · `run-pilot4-cueing` · `log-pilot4-awakening` · `run-pilot5-full-night` |
+| Synthetic nights | `demo` · `synthesize-night` |
 
 ## Testing
 
@@ -175,7 +179,7 @@ The same headband also runs guided A/B meditation sessions from the local app: a
 python -m pytest tests/
 ```
 
-`python run_tests.py` runs a faster subset, and `node scripts/check_page.mjs <app URL>` opens the app's page in headless Chrome against a mock app and fails on any page error. Pytest suite under `tests/`, current coverage notes in [`TEST_STATUS.md`](TEST_STATUS.md), CI via GitHub Actions (`.github/workflows/`). Pilot 3 doubles as an end-to-end regression: the whole detection → gating → scheduling chain runs against a recorded night with mocked audio.
+`python run_tests.py` runs a faster subset, and `node scripts/check_page.mjs <app URL>` opens the app's page in headless Chrome against a mock app and fails on any page error. Pytest suite under `tests/`, current coverage notes in [`TEST_STATUS.md`](TEST_STATUS.md), CI via GitHub Actions (`.github/workflows/`). The `end_to_end` job runs `muse-tmr demo --hours 2` and compares it with `tests/fixtures/synthetic/agreement_baseline.json`: the replay → detection → gating → scheduling chain on a synthetic night with mocked audio. It checks the plumbing on synthetic input, not sleep, and is no evidence about REM detection.
 
 ## Data source layer & attribution
 

@@ -17,6 +17,12 @@ scheduler event stream from replayed Muse frames.
 This pilot is not sleep-time cueing. It does not call an audio backend and does not
 test whether cues are audible or effective.
 
+To try it without a recording, `muse-tmr demo` generates a synthetic night, writes the
+protocol files below for four synthetic puzzles with generated tones and runs this
+command on them with the night's preset (`p21` for the default `clean_night`).
+Synthetic input, not sleep: on that night the gate opens on the N1 epochs at sleep
+onset, so both cued puzzles play there and not in REM (`docs/synthetic_data.md`).
+
 ## Run
 
 Use a previous no-audio recording, a puzzle catalog, a generated night puzzle

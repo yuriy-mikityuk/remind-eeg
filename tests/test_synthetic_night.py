@@ -10,6 +10,7 @@ import time
 import unittest
 from dataclasses import fields, replace
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -17,10 +18,19 @@ import muse_athena_protocol as proto
 from muse_raw_stream import MuseRawStream
 from muse_realtime_decoder import MuseRealtimeDecoder
 
+from muse_tmr.audio import load_cue_library
+from muse_tmr.cli import main as cli_module
+from muse_tmr.cli.main import (
+    _demo_baseline_identity,
+    _demo_baseline_mismatches,
+    _load_demo_baseline,
+    _write_demo_protocol,
+)
 from muse_tmr.cli.main import main as cli_main
 from muse_tmr.data.recorder import RecordingSummary
 from muse_tmr.data.replay import ReplayConfig, ReplaySession
 from muse_tmr.features import EpochBuilder, EpochConfig, extract_eeg_features
+from muse_tmr.protocol import load_puzzle_catalog, load_puzzle_cue_assignment
 from muse_tmr.testing import (
     SYNTHETIC_NOTE,
     SyntheticNightConfig,
@@ -30,8 +40,16 @@ from muse_tmr.testing import (
     script_night,
 )
 from muse_tmr.testing import tag_encoder as enc
-from muse_tmr.testing.agreement import GateEpoch, HypnogramEpoch, reference_rem_runs, synthetic_agreement
+from muse_tmr.testing.agreement import (
+    GateEpoch,
+    HypnogramEpoch,
+    reference_rem_runs,
+    stage_at,
+    synthetic_agreement,
+)
 from muse_tmr.testing.scenarios import BATTERY_DEATH_SECONDS
+
+BASELINE_PATH = Path(__file__).resolve().parent / "fixtures" / "synthetic" / "agreement_baseline.json"
 
 SCENARIOS = (
     "clean_night",
@@ -422,6 +440,376 @@ class AgreementTest(unittest.TestCase):
         self.assertEqual(result["precision"], 0.75)
         # 15 of 36 REM/non-REM pairs ranked right, 18 tied.
         self.assertAlmostEqual(result["p_rem_roc_auc"], (15 + 18 / 2) / 36)
+
+    def test_stage_at(self):
+        self.assertEqual(stage_at(self.hypnogram, 0.0), "N2")
+        self.assertEqual(stage_at(self.hypnogram, 135.0), "R")
+        self.assertEqual(stage_at(self.hypnogram, 240.0), "N2")
+        self.assertIsNone(stage_at(self.hypnogram, 360.0))
+
+
+def _run_cli(*argv):
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = cli_main(list(argv))
+    return code, out.getvalue(), err.getvalue()
+
+
+class SynthesizeNightCommandTest(unittest.TestCase):
+    def test_list_names_every_scenario(self):
+        code, out, _ = _run_cli("synthesize-night", "--list")
+        self.assertEqual(code, 0)
+        self.assertIn(SYNTHETIC_NOTE, out)
+        for name in SCENARIOS:
+            self.assertIn(name, out)
+
+    def test_writes_what_generate_night_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "cli"
+            args = ("synthesize-night", "--scenario", "short_allow_short", "--seed", "3", "--hours", "0.02")
+            code, out, _ = _run_cli(*args, "--output", str(target))
+            direct = generate_night(output_dir=Path(tmp) / "direct", scenario="short_allow_short", seed=3, hours=0.02)
+            self.assertEqual(code, 0)
+            self.assertIn(SYNTHETIC_NOTE, out)
+            self.assertIn(f"sha256={direct.sha256}", out)
+            self.assertEqual((target / "raw_amused.bin").read_bytes(), direct.raw_path.read_bytes())
+            # A synthetic night may be written again over itself.
+            self.assertEqual(_run_cli(*args, "--output", str(target))[0], 0)
+
+    def test_refuses_a_directory_holding_a_real_recording(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            recording = Path(tmp) / "night"
+            recording.mkdir()
+            (recording / "raw_amused.bin").write_bytes(b"recorded")
+            (recording / "metadata.json").write_text(json.dumps({"source": {"source_name": "amused"}}), encoding="utf-8")
+            code, _, err = _run_cli("synthesize-night", "--scenario", "short_allow_short", "--output", str(recording))
+            self.assertEqual(code, 2)
+            self.assertIn("choose a new or empty directory", err)
+            self.assertEqual((recording / "raw_amused.bin").read_bytes(), b"recorded")
+
+    def test_usage_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "never"
+            self.assertEqual(_run_cli("synthesize-night", "--output", str(target))[0], 2)
+            self.assertEqual(_run_cli("synthesize-night", "--scenario", "clean_night")[0], 2)
+            code, _, err = _run_cli("synthesize-night", "--scenario", "full_moon", "--output", str(target))
+            self.assertEqual(code, 2)
+            self.assertIn("unknown scenario", err)
+            self.assertFalse(target.exists())
+
+
+class ValidatorsOnASyntheticNightTest(unittest.TestCase):
+    """validate-pilot1-recording and simulate-replay-cues run by hand on a synthetic night."""
+
+    def _validate(self, recording_dir, protocol, output_dir):
+        pilot1_path, pilot3_path = output_dir / "pilot1.json", output_dir / "pilot3.json"
+        pilot1 = _run_cli(
+            "validate-pilot1-recording", str(recording_dir), "--min-duration-hours", "0.05",
+            "--required-modality", "eeg", "--required-modality", "imu", "--output", str(pilot1_path),
+        )
+        pilot3 = _run_cli(
+            "simulate-replay-cues", str(recording_dir),
+            "--catalog", str(protocol["catalog"]), "--session", str(protocol["session"]),
+            "--assignment", str(protocol["assignment"]), "--cue-library", str(protocol["cue_library"]),
+            "--preset", "p21", "--output", str(pilot3_path),
+        )
+        self.assertEqual((pilot1[0], pilot3[0]), (0, 0), pilot1[2] + pilot3[2])
+        reports = [json.loads(path.read_text(encoding="utf-8")) for path in (pilot1_path, pilot3_path)]
+        return json.loads(pilot1[1]), pilot3[1], reports
+
+    def test_their_reports_say_synthetic_only_when_the_night_does(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            night = generate_night(output_dir=Path(tmp) / "night", scenario="clean_night", hours=0.05)
+            protocol = _write_demo_protocol(Path(tmp) / "protocol", seed=0)
+            pilot1_stdout, pilot3_stdout, reports = self._validate(night.recording_dir, protocol, Path(tmp) / "a")
+            for payload in (pilot1_stdout, *reports):
+                self.assertIs(payload["synthetic"], True)
+                self.assertEqual(payload["note"], SYNTHETIC_NOTE)
+            self.assertTrue(pilot3_stdout.rstrip().endswith(f"({SYNTHETIC_NOTE})"), pilot3_stdout)
+
+            # The same night with a metadata.json that does not say synthetic, as a recording's.
+            metadata_path = night.recording_dir / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            for key in ("synthetic", "note", "scenario", "seed"):
+                metadata.pop(key)
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+            pilot1_stdout, pilot3_stdout, reports = self._validate(night.recording_dir, protocol, Path(tmp) / "b")
+            for payload in (pilot1_stdout, *reports):
+                self.assertNotIn("synthetic", payload)
+                self.assertNotIn("note", payload)
+            self.assertNotIn(SYNTHETIC_NOTE, pilot3_stdout)
+
+
+class DemoCommandTest(unittest.TestCase):
+    """The demo on a quarter hour of clean_night: wake, then sleep onset, no REM yet."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.output = Path(cls._tmp.name) / "demo"
+        with mock.patch("webbrowser.open") as browser:
+            cls.code, cls.stdout, cls.stderr = _run_cli("demo", "--hours", "0.25", "--output", str(cls.output))
+        cls.browser = browser
+        cls.summary = json.loads((cls.output / "demo_summary.json").read_text(encoding="utf-8"))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_passes_every_check(self):
+        self.assertEqual(self.code, 0, self.stderr)
+        self.assertEqual(set(self.summary["checks"].values()), {True})
+        self.assertTrue(self.summary["pilot1"]["passed"])
+        pilot3 = self.summary["pilot3"]
+        self.assertTrue(pilot3["passed"])
+        self.assertEqual(pilot3["uncued_puzzle_play_count"], 0)
+        self.assertEqual(pilot3["audio_backend"], "mock")
+        self.assertFalse(pilot3["audio_playback_executed"])
+        self.assertEqual((self.summary["scenario"], self.summary["seed"], self.summary["preset"]), ("clean_night", 0, "p21"))
+
+    def test_writes_the_recording_next_to_its_reports(self):
+        self.assertEqual(sorted(path.name for path in self.output.iterdir()), [
+            "agreement.json", "clean_night_seed0", "demo_summary.json", "pilot1.json",
+            "pilot3_report.json", "protocol", "report.html",
+        ])
+        self.assertEqual(sorted(path.name for path in (self.output / "protocol").iterdir()), [
+            "assignment.json", "cue_library.json", "night_puzzles.json", "puzzle_catalog.json",
+        ])
+        generation = json.loads((self.output / "clean_night_seed0" / "generation.json").read_text(encoding="utf-8"))
+        self.assertEqual(self.summary["raw_sha256"], generation["files"]["raw_amused.bin"]["sha256"])
+
+    def test_every_artefact_says_synthetic(self):
+        self.assertIn(SYNTHETIC_NOTE, self.stdout)
+        for path in sorted(self.output.glob("*.json")) + sorted((self.output / "protocol").glob("*.json")):
+            payload = path.read_text(encoding="utf-8")
+            self.assertIn(SYNTHETIC_NOTE, payload, path.name)
+            self.assertNotIn("NaN", payload, path.name)
+        page = (self.output / "report.html").read_text(encoding="utf-8")
+        self.assertIn(SYNTHETIC_NOTE, page)
+        self.assertIn("<strong>Synthetic input, not sleep.</strong>", page)
+
+    def test_cued_plays_come_at_sleep_onset_not_in_rem(self):
+        # The p21 gate opens on the N1 epochs at sleep onset, so the cued plays of
+        # clean_night are not evidence about REM gating.
+        assignment = load_puzzle_cue_assignment(self.output / "protocol" / "assignment.json")
+        plays = self.summary["cued_plays"]
+        self.assertGreaterEqual(len(plays), 1)
+        self.assertEqual(self.summary["pilot3"]["cue_plan_count"], len(plays))
+        self.assertEqual(self.summary["cued_plays_in_generated_rem"], 0)
+        for play in plays:
+            self.assertIn(play["puzzle_id"], assignment.cued_puzzle_ids)
+            self.assertEqual(play["generated_stage"], "N1")
+        self.assertIn("in generated REM", self.stdout)
+
+    def test_uncued_puzzles_keep_their_tones_but_never_play(self):
+        assignment = load_puzzle_cue_assignment(self.output / "protocol" / "assignment.json")
+        catalog = load_puzzle_catalog(self.output / "protocol" / "puzzle_catalog.json")
+        library = load_cue_library(self.output / "protocol" / "cue_library.json")
+        self.assertEqual(len(assignment.cued_puzzle_ids), 2)
+        self.assertEqual(len(assignment.uncued_puzzle_ids), 2)
+        for puzzle_id in assignment.uncued_puzzle_ids:
+            self.assertEqual(library.by_id(catalog.get_puzzle(puzzle_id).cue_id).cue_type, "generated_tone")
+        pilot3 = json.loads((self.output / "pilot3_report.json").read_text(encoding="utf-8"))
+        self.assertEqual(pilot3["audio_backend"], "mock")
+        played = {event["puzzle_id"] for event in pilot3["scheduler_events"] if event["event_type"] == "play"}
+        self.assertTrue(played)
+        self.assertTrue(played <= set(assignment.cued_puzzle_ids))
+
+    def test_opens_the_report(self):
+        self.browser.assert_called_once_with((self.output / "report.html").resolve().as_uri())
+
+    def test_baseline_comparison(self):
+        baseline = {
+            "scenario": "clean_night",
+            "seed": 0,
+            "hours": 0.25,
+            "raw_sha256": self.summary["raw_sha256"],
+            "tolerance": 0.01,
+            "agreement": dict(self.summary["agreement"]),
+            "pilot3": {key: self.summary["pilot3"][key] for key in ("cue_plan_count", "uncued_puzzle_play_count")},
+        }
+        self.assertEqual(_demo_baseline_mismatches(baseline, self.summary), [])
+
+        changed = json.loads(json.dumps(baseline))
+        changed["agreement"]["gate_open_fraction"] += 0.005
+        self.assertEqual(_demo_baseline_mismatches(changed, self.summary), [])
+        changed["agreement"]["gate_open_fraction"] += 0.01
+        changed["agreement"]["first_gate_open_latency_s"] = [60.0]
+        changed["raw_sha256"] = "0" * 64
+        changed["pilot3"]["cue_plan_count"] += 1
+        mismatches = _demo_baseline_mismatches(changed, self.summary)
+        self.assertEqual(len(mismatches), 4, mismatches)
+
+    def test_a_baseline_for_another_night_stops_before_anything_is_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline_path = Path(tmp) / "baseline.json"
+            baseline_path.write_text(json.dumps({
+                "scenario": "clean_night", "seed": 0, "hours": 2.0, "agreement": {},
+            }), encoding="utf-8")
+            target = Path(tmp) / "demo"
+            code, _, err = _run_cli(
+                "demo", "--hours", "0.25", "--no-open", "--output", str(target), "--baseline", str(baseline_path),
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("the baseline is for clean_night, seed 0, 2.0 h", err)
+        self.assertFalse(target.exists())
+
+    def test_refuses_the_folder_of_a_real_recording(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            recording = Path(tmp) / "night"
+            recording.mkdir()
+            (recording / "raw_amused.bin").write_bytes(b"recorded")
+            (recording / "metadata.json").write_text(json.dumps({"source": {"source_name": "amused"}}), encoding="utf-8")
+            code, _, err = _run_cli("demo", "--hours", "0.25", "--no-open", "--output", str(recording))
+            self.assertEqual(code, 2)
+            self.assertIn("choose a new or empty directory", err)
+            self.assertEqual(sorted(path.name for path in recording.iterdir()), ["metadata.json", "raw_amused.bin"])
+
+
+class DemoBranchTest(unittest.TestCase):
+    """The demo's other ways out, each on three minutes of a night."""
+
+    def _demo(self, output, *argv):
+        code, out, err = _run_cli("demo", "--hours", "0.05", "--no-open", "--output", str(output), *argv)
+        summary_path = output / "demo_summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else None
+        return code, out, err, summary
+
+    def test_a_failed_check_exits_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline_path = Path(tmp) / "baseline.json"
+            baseline_path.write_text(json.dumps({
+                "scenario": "clean_night", "seed": 0, "hours": 0.05, "agreement": {},
+                "pilot3": {"cue_plan_count": 99},
+            }), encoding="utf-8")
+            code, out, _, summary = self._demo(Path(tmp) / "demo", "--baseline", str(baseline_path))
+        self.assertEqual(code, 1)
+        self.assertIs(summary["checks"]["agreement_within_baseline"], False)
+        self.assertEqual(summary["baseline"]["mismatches"], ["pilot3.cue_plan_count 0 != 99"])
+        self.assertIn("demo failed: agreement_within_baseline", out)
+
+    def test_stops_when_pilot3_did_not_run_on_mock_audio(self):
+        # simulate_cue_plan_from_epochs always reports mock audio, so only a patched
+        # report reaches this stop.
+        real_report = cli_module._replay_cue_report
+
+        async def sounddevice_report(args):
+            return replace(await real_report(args), audio_backend="sounddevice")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "demo"
+            with mock.patch("muse_tmr.cli.main._replay_cue_report", sounddevice_report):
+                code, _, err, summary = self._demo(output)
+            self.assertFalse((output / "pilot3_report.json").exists())
+        self.assertEqual(code, 1)
+        self.assertIn("'sounddevice'; the demo runs on mock audio only", err)
+        self.assertIsNone(summary)
+
+    def test_no_open_and_the_default_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("muse_tmr.cli.main._default_path_base", return_value=Path(tmp)), \
+                    mock.patch("webbrowser.open") as browser:
+                code, _, err = _run_cli("demo", "--hours", "0.05", "--no-open")
+            demos = list((Path(tmp) / "data" / "synthetic").iterdir())
+            self.assertEqual(code, 0, err)
+            browser.assert_not_called()
+            self.assertEqual(len(demos), 1)
+            self.assertRegex(demos[0].name, r"^demo_\d{8}_\d{6}$")
+            self.assertTrue((demos[0] / "clean_night_seed0" / "raw_amused.bin").is_file())
+            self.assertTrue((demos[0] / "demo_summary.json").is_file())
+
+    def test_an_optics_preset_needs_ppg_in_pilot1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _, err, summary = self._demo(Path(tmp) / "demo", "--scenario", "optics_line")
+            pilot1 = json.loads((Path(tmp) / "demo" / "pilot1.json").read_text(encoding="utf-8"))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(summary["preset"], "p1034")
+        self.assertEqual(sorted(pilot1["coverage_targets"]), ["eeg", "imu", "ppg"])
+        self.assertTrue(pilot1["coverage_targets"]["ppg"]["passed"])
+
+
+class OutputFolderTest(unittest.TestCase):
+    """synthesize-night and demo write into a new or empty folder or over an earlier run of their own."""
+
+    SYNTHESIZE = ("synthesize-night", "--scenario", "short_allow_short", "--hours", "0.02")
+    DEMO = ("demo", "--hours", "0.05", "--no-open")
+
+    def test_refuse_a_polar_folder(self):
+        # record-polar's <session>/polar/ has no raw_amused.bin, but a metadata.json,
+        # summary.json and events.jsonl that a night would overwrite.
+        with tempfile.TemporaryDirectory() as tmp:
+            polar = Path(tmp) / "session" / "polar"
+            polar.mkdir(parents=True)
+            files = {
+                "metadata.json": json.dumps({"source": "polar_h10"}),
+                "summary.json": json.dumps({"duration_seconds": 28800.0}),
+                "events.jsonl": json.dumps({"event": "recording_started"}) + "\n",
+                "raw_notifications.jsonl": json.dumps({"kind": "ecg"}) + "\n",
+            }
+            for name, text in files.items():
+                (polar / name).write_text(text, encoding="utf-8")
+            for argv in (self.SYNTHESIZE, self.DEMO):
+                code, _, err = _run_cli(*argv, "--output", str(polar))
+                self.assertEqual(code, 2, argv[0])
+                self.assertIn("choose a new or empty directory", err)
+            self.assertEqual({path.name: path.read_text(encoding="utf-8") for path in polar.iterdir()}, files)
+
+    def test_refuse_other_files_and_take_hidden_ones(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # demo --output data would otherwise replace data/protocol/puzzle_catalog.json.
+            data = Path(tmp) / "data"
+            (data / "protocol").mkdir(parents=True)
+            catalog = data / "protocol" / "puzzle_catalog.json"
+            catalog.write_text(json.dumps({"puzzles": []}), encoding="utf-8")
+            for argv in (self.SYNTHESIZE, self.DEMO):
+                self.assertEqual(_run_cli(*argv, "--output", str(data))[0], 2, argv[0])
+            self.assertEqual(catalog.read_text(encoding="utf-8"), json.dumps({"puzzles": []}))
+            self.assertEqual([path.name for path in data.iterdir()], ["protocol"])
+
+            for argv in (self.SYNTHESIZE, self.DEMO):
+                opened = Path(tmp) / argv[0]
+                opened.mkdir()
+                (opened / ".DS_Store").write_bytes(b"\0")
+                code, _, err = _run_cli(*argv, "--output", str(opened))
+                self.assertEqual(code, 0, err)
+
+    def test_demo_runs_again_over_an_earlier_demo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "demo"
+            for _ in range(2):
+                code, _, err = _run_cli(*self.DEMO, "--output", str(output))
+                self.assertEqual(code, 0, err)
+
+    def test_demo_refuses_a_recording_where_its_night_goes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "demo"
+            recording = output / "clean_night_seed0"
+            recording.mkdir(parents=True)
+            (output / "demo_summary.json").write_text(json.dumps({"synthetic": True}), encoding="utf-8")
+            (recording / "raw_amused.bin").write_bytes(b"recorded")
+            (recording / "metadata.json").write_text(json.dumps({"source": {"source_name": "amused"}}), encoding="utf-8")
+            code, _, err = _run_cli(*self.DEMO, "--output", str(output))
+            self.assertEqual(code, 2)
+            self.assertIn(f"{recording} is not empty", err)
+            self.assertEqual(sorted(path.name for path in output.iterdir()), ["clean_night_seed0", "demo_summary.json"])
+            self.assertEqual(sorted(path.name for path in recording.iterdir()), ["metadata.json", "raw_amused.bin"])
+
+
+class AgreementBaselineFixtureTest(unittest.TestCase):
+    """The baseline the CI end_to_end job compares `muse-tmr demo --hours 2` with."""
+
+    def test_fits_the_ci_run(self):
+        baseline = _load_demo_baseline(BASELINE_PATH)
+        self.assertIs(baseline["synthetic"], True)
+        self.assertEqual(baseline["note"], SYNTHETIC_NOTE)
+        self.assertIsNone(_demo_baseline_identity(baseline, scenario_config("clean_night", hours=2.0)))
+        self.assertEqual(len(baseline["raw_sha256"]), 64)
+        self.assertEqual(
+            set(baseline["agreement"]),
+            {"kappa", "recall", "precision", "gate_open_fraction", "first_gate_open_latency_s"},
+        )
+        self.assertEqual(baseline["pilot3"]["uncued_puzzle_play_count"], 0)
+        self.assertGreaterEqual(baseline["pilot3"]["cue_plan_count"], 1)
 
 
 if __name__ == "__main__":

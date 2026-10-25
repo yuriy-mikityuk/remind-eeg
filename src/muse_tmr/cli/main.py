@@ -179,6 +179,33 @@ def build_parser() -> argparse.ArgumentParser:
     replay_parser.add_argument("--start-seconds", type=float, help="Relative replay start offset.")
     replay_parser.add_argument("--end-seconds", type=float, help="Relative replay end offset.")
 
+    synthesize_parser = subparsers.add_parser(
+        "synthesize-night",
+        help="Write a labelled synthetic night in the Athena TAG format (synthetic input, not sleep).",
+    )
+    synthesize_parser.add_argument("--scenario", help="Scenario name; --list shows them.")
+    synthesize_parser.add_argument("--list", action="store_true", help="List the scenarios and exit.")
+    synthesize_parser.add_argument("--seed", type=int, default=0)
+    synthesize_parser.add_argument("--hours", type=float, help="Length in hours. Defaults to the scenario's.")
+    synthesize_parser.add_argument("--output", type=Path, help="Recording directory to write.")
+
+    demo_parser = subparsers.add_parser(
+        "demo",
+        help="Run Pilot 1, Pilot 3 with mock audio and the REM report on a synthetic night; no headband.",
+    )
+    demo_parser.add_argument("--scenario", default="clean_night")
+    demo_parser.add_argument("--hours", type=float, default=2.0)
+    demo_parser.add_argument("--seed", type=int, default=0)
+    demo_parser.add_argument(
+        "--output", type=Path, help="Output directory. Defaults to data/synthetic/demo_<timestamp>/."
+    )
+    demo_parser.add_argument("--no-open", action="store_true", help="Do not open the report in a browser.")
+    demo_parser.add_argument(
+        "--baseline",
+        type=Path,
+        help="Agreement baseline .json; exit 1 when this run differs from it (the CI end_to_end job).",
+    )
+
     annotate_parser = subparsers.add_parser(
         "annotate-template",
         help="Generate an editable REM annotation template from replayed epochs.",
@@ -845,6 +872,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _inspect_blink_channels(args)
     if args.command == "replay":
         return asyncio.run(_replay(args))
+    if args.command == "synthesize-night":
+        return _synthesize_night(args)
+    if args.command == "demo":
+        return _demo(args)
     if args.command == "annotate-template":
         return asyncio.run(_annotate_template(args))
     if args.command == "train-rem-classifier":
@@ -1942,9 +1973,16 @@ def _validate_pilot1_recording(args: argparse.Namespace) -> int:
         required_modalities=required_modalities,
         max_downtime_fraction=args.max_downtime_fraction,
     )
-    if args.output is not None:
-        report.save(_resolve_output_path(args.output))
-    print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    # A pass on a synthetic night must not read as a recorded night's.
+    if _says_synthetic(Path(report.summary_path).parent / "metadata.json"):
+        payload = _synthetic_payload(report.to_dict())
+        if args.output is not None:
+            _write_synthetic_json(_resolve_output_path(args.output), payload)
+    else:
+        payload = report.to_dict()
+        if args.output is not None:
+            report.save(_resolve_output_path(args.output))
+    print(json.dumps(payload, indent=2, sort_keys=True))
     return 0 if report.passed else 1
 
 
@@ -1994,6 +2032,41 @@ def _resolve_gate_thresholds(args: argparse.Namespace) -> Tuple[float, float]:
 
 
 async def _simulate_replay_cues(args: argparse.Namespace) -> int:
+    report = await _replay_cue_report(args)
+    # A cue plan from a synthetic night must not read as a recorded night's.
+    note = ""
+    if _says_synthetic(Path(report.recording_input) / "metadata.json"):
+        from muse_tmr.testing import SYNTHETIC_NOTE
+
+        note = f" ({SYNTHETIC_NOTE})"
+        output_path = _write_synthetic_json(_resolve_output_path(args.output), report.to_dict())
+    else:
+        output_path = report.save(_resolve_output_path(args.output))
+    scheduler_events_output = None
+    if args.scheduler_events_output is not None:
+        scheduler_events_output = report.save_scheduler_events(
+            _resolve_output_path(args.scheduler_events_output)
+        )
+
+    print(
+        "pilot3 replay cue simulation complete "
+        f"passed={report.passed} "
+        f"epochs={report.metrics.get('epoch_count', 0)} "
+        f"stride_seconds={report.metrics.get('stride_seconds')} "
+        f"gate_open={report.metrics.get('gate_open_count', 0)} "
+        f"first_gate_open_seconds={report.metrics.get('first_gate_open_seconds')} "
+        f"cue_plan={report.metrics.get('cue_plan_count', 0)} "
+        f"first_play_seconds={report.metrics.get('first_play_seconds')} "
+        f"audio_playback_executed={report.audio_playback_executed} "
+        f"output={output_path}{note}"
+    )
+    if scheduler_events_output is not None:
+        print(f"scheduler_events={scheduler_events_output}")
+    return 0 if report.passed else 1
+
+
+async def _replay_cue_report(args: argparse.Namespace):
+    """The Pilot 3 report for the inputs and flags of ``simulate-replay-cues``."""
     from muse_tmr.audio import load_cue_library
     from muse_tmr.features import EpochConfig
     from muse_tmr.models import RemGateConfig
@@ -2009,7 +2082,7 @@ async def _simulate_replay_cues(args: argparse.Namespace) -> int:
 
     enter_threshold, exit_threshold = _resolve_gate_thresholds(args)
     optics_capable = preset_provides_optics(getattr(args, "preset", None))
-    report = await simulate_replay_cue_plan(
+    return await simulate_replay_cue_plan(
         _resolve_output_path(args.input),
         catalog=load_puzzle_catalog(_resolve_output_path(args.catalog)),
         session=load_night_puzzle_session(_resolve_output_path(args.session)),
@@ -2040,28 +2113,426 @@ async def _simulate_replay_cues(args: argparse.Namespace) -> int:
             optics_capable=optics_capable,
         ),
     )
-    output_path = report.save(_resolve_output_path(args.output))
-    scheduler_events_output = None
-    if args.scheduler_events_output is not None:
-        scheduler_events_output = report.save_scheduler_events(
-            _resolve_output_path(args.scheduler_events_output)
-        )
 
-    print(
-        "pilot3 replay cue simulation complete "
-        f"passed={report.passed} "
-        f"epochs={report.metrics.get('epoch_count', 0)} "
-        f"stride_seconds={report.metrics.get('stride_seconds')} "
-        f"gate_open={report.metrics.get('gate_open_count', 0)} "
-        f"first_gate_open_seconds={report.metrics.get('first_gate_open_seconds')} "
-        f"cue_plan={report.metrics.get('cue_plan_count', 0)} "
-        f"first_play_seconds={report.metrics.get('first_play_seconds')} "
-        f"audio_playback_executed={report.audio_playback_executed} "
-        f"output={output_path}"
+
+def _synthesize_night(args: argparse.Namespace) -> int:
+    from muse_tmr.testing import SCENARIOS, SYNTHETIC_NOTE, generate_night, scenario_config
+
+    if args.list:
+        print(f"synthetic scenarios ({SYNTHETIC_NOTE}):")
+        for scenario in SCENARIOS.values():
+            print(f"  {scenario.name:<19} {scenario.description}")
+        return 0
+    if args.scenario is None or args.output is None:
+        print("synthesize-night: give --scenario and --output, or --list", file=sys.stderr)
+        return 2
+    try:
+        config = scenario_config(args.scenario, seed=args.seed, hours=args.hours)
+        config.validate()
+    except ValueError as exc:
+        print(f"synthesize-night: {exc}", file=sys.stderr)
+        return 2
+    output_dir = _resolve_output_dir(args.output)
+    refusal = _synthetic_output_refusal(output_dir, "metadata.json")
+    if refusal is not None:
+        print(f"synthesize-night: {refusal}", file=sys.stderr)
+        return 2
+    try:
+        night = generate_night(config, output_dir)
+    except ValueError as exc:
+        print(f"synthesize-night: {exc}", file=sys.stderr)
+        return 2
+    print(f"synthetic night written {_synthetic_night_fields(night)}")
+    return 0
+
+
+def _demo(args: argparse.Namespace) -> int:
+    """Generate a synthetic night and run Pilot 1, Pilot 3, the report and the agreement on it."""
+    import webbrowser
+
+    from muse_tmr.reports.nightly_report import build_report
+    from muse_tmr.testing import SYNTHETIC_NOTE, generate_night, scenario_config
+    from muse_tmr.testing.agreement import (
+        gate_epochs_from_pilot3,
+        load_hypnogram,
+        stage_at,
+        synthetic_agreement,
     )
-    if scheduler_events_output is not None:
-        print(f"scheduler_events={scheduler_events_output}")
-    return 0 if report.passed else 1
+    from muse_tmr.validation import validate_pilot1_recording
+
+    started = time.perf_counter()
+    try:
+        config = scenario_config(args.scenario, seed=args.seed, hours=args.hours)
+        config.validate()
+        baseline = _load_demo_baseline(_resolve_output_path(args.baseline)) if args.baseline else None
+    except (OSError, ValueError) as exc:
+        print(f"demo: {exc}", file=sys.stderr)
+        return 2
+    if baseline is not None:
+        mismatch = _demo_baseline_identity(baseline, config)
+        if mismatch is not None:
+            print(f"demo: {mismatch}", file=sys.stderr)
+            return 2
+    output_dir = _resolve_output_dir(args.output) if args.output is not None else _default_demo_dir()
+    recording_dir = output_dir / f"{config.scenario}_seed{config.seed}"
+    # Neither the night nor the reports next to it overwrite or join anything but an earlier demo.
+    refusal = _synthetic_output_refusal(output_dir, "demo_summary.json") or _synthetic_output_refusal(
+        recording_dir, "metadata.json"
+    )
+    if refusal is not None:
+        print(f"demo: {refusal}", file=sys.stderr)
+        return 2
+
+    print(f"demo: {config.scenario}, seed {config.seed}, {config.hours:g} h on {config.preset}; {SYNTHETIC_NOTE}")
+    try:
+        night = generate_night(config, recording_dir)
+    except ValueError as exc:
+        print(f"demo: {exc}", file=sys.stderr)
+        return 2
+    print(f"generated {_synthetic_night_fields(night)}")
+
+    required = ("eeg", "imu", "ppg") if config.has_optics else ("eeg", "imu")
+    pilot1 = validate_pilot1_recording(
+        recording_dir,
+        min_duration_seconds=night.night.duration_seconds,
+        required_modalities=required,
+    )
+    pilot1_path = _write_synthetic_json(output_dir / "pilot1.json", pilot1.to_dict())
+    print(f"pilot1 passed={pilot1.passed} failed={','.join(pilot1.failed_criteria) or 'none'}")
+
+    protocol = _write_demo_protocol(output_dir / "protocol", seed=config.seed)
+    pilot3_path = output_dir / "pilot3_report.json"
+    pilot3_args = build_parser().parse_args([
+        "simulate-replay-cues", str(recording_dir),
+        "--catalog", str(protocol["catalog"]),
+        "--session", str(protocol["session"]),
+        "--assignment", str(protocol["assignment"]),
+        "--cue-library", str(protocol["cue_library"]),
+        "--output", str(pilot3_path),
+        "--preset", config.preset,
+    ])
+    pilot3_started = time.perf_counter()
+    report = asyncio.run(_replay_cue_report(pilot3_args))
+    pilot3_seconds = time.perf_counter() - pilot3_started
+    if report.audio_backend != "mock" or report.audio_playback_executed:
+        print(
+            f"demo: Pilot 3 ran with audio backend {report.audio_backend!r}; the demo runs on mock audio only",
+            file=sys.stderr,
+        )
+        return 1
+    _write_synthetic_json(pilot3_path, report.to_dict())
+    metrics = report.metrics
+    print(
+        f"pilot3 passed={report.passed} epochs={metrics['epoch_count']} gate_open={metrics['gate_open_count']} "
+        f"cue_plan={metrics['cue_plan_count']} uncued_puzzle_play_count={metrics['uncued_puzzle_play_count']} "
+        f"first_gate_open_seconds={metrics['first_gate_open_seconds']} "
+        f"first_play_seconds={metrics['first_play_seconds']} audio_backend={report.audio_backend}"
+    )
+
+    report_started = time.perf_counter()
+    report_path = output_dir / "report.html"
+    build_report(recording_dir, report_path)
+    report_seconds = time.perf_counter() - report_started
+
+    hypnogram = load_hypnogram(recording_dir)
+    agreement = synthetic_agreement(hypnogram, gate_epochs_from_pilot3(report))
+    agreement_path = _write_synthetic_json(output_dir / "agreement.json", agreement)
+    # Each play with the generated stage of the epoch that planned it, the same epoch
+    # labelling as the agreement.
+    plays = [
+        {
+            "puzzle_id": event.puzzle_id,
+            "cue_id": event.cue_id,
+            "decided_at_seconds": result.timestamp_seconds + result.duration_seconds,
+            "generated_stage": stage_at(hypnogram, result.timestamp_seconds + result.duration_seconds / 2),
+        }
+        for result in report.epoch_results
+        for event in result.scheduler_events
+        if event.event_type == "play"
+    ]
+    in_rem = sum(1 for play in plays if play["generated_stage"] == "R")
+    described = "; ".join(
+        f"{play['puzzle_id']} decided at {play['decided_at_seconds']:g} s, generated stage {play['generated_stage']}"
+        for play in plays
+    )
+    print(f"cued plays: {described} ({in_rem} of {len(plays)} in generated REM)" if plays else "cued plays: none")
+    latencies = [period["first_gate_open_latency_s"] for period in agreement["rem_periods"]]
+    print(
+        f"agreement with the generated hypnogram ({SYNTHETIC_NOTE}): "
+        f"kappa={_format_float(agreement['kappa'], 3)} recall={_format_float(agreement['recall'], 3)} "
+        f"precision={_format_float(agreement['precision'], 3)} "
+        f"gate_open_fraction={_format_float(agreement['gate_open_fraction'], 3)} "
+        f"first_gate_open_latency_s={latencies}"
+    )
+
+    summary: Dict[str, object] = {
+        "scenario": config.scenario,
+        "seed": config.seed,
+        "hours": config.hours,
+        "preset": config.preset,
+        "raw_sha256": night.sha256,
+        "raw_bytes": night.raw_path.stat().st_size,
+        "duration_seconds": night.generation["duration_seconds"],
+        "stop_reason": night.generation["stop_reason"],
+        "pilot1": {"passed": pilot1.passed, "failed_criteria": list(pilot1.failed_criteria)},
+        "pilot3": {
+            "passed": report.passed,
+            "failed_criteria": list(report.failed_criteria),
+            "audio_backend": report.audio_backend,
+            "audio_playback_executed": report.audio_playback_executed,
+            "epoch_count": metrics["epoch_count"],
+            "gate_open_count": metrics["gate_open_count"],
+            "cue_plan_count": metrics["cue_plan_count"],
+            "uncued_puzzle_play_count": metrics["uncued_puzzle_play_count"],
+            "first_gate_open_seconds": metrics["first_gate_open_seconds"],
+            "first_play_seconds": metrics["first_play_seconds"],
+        },
+        "cued_plays": plays,
+        "cued_plays_in_generated_rem": in_rem,
+        "agreement": {
+            "kappa": agreement["kappa"],
+            "recall": agreement["recall"],
+            "precision": agreement["precision"],
+            "gate_open_fraction": agreement["gate_open_fraction"],
+            "first_gate_open_latency_s": latencies,
+        },
+        "files": {
+            "recording": str(recording_dir),
+            "protocol": str(output_dir / "protocol"),
+            "pilot1": str(pilot1_path),
+            "pilot3": str(pilot3_path),
+            "report": str(report_path),
+            "agreement": str(agreement_path),
+        },
+    }
+    checks = {
+        "pilot1_passed": pilot1.passed,
+        "pilot3_passed": report.passed,
+        "no_uncued_plays": metrics["uncued_puzzle_play_count"] == 0,
+        "audio_backend_mock": report.audio_backend == "mock" and not report.audio_playback_executed,
+        "report_written": report_path.is_file() and report_path.stat().st_size > 0,
+    }
+    if baseline is not None:
+        mismatches = _demo_baseline_mismatches(baseline, _json_safe(summary))
+        summary["baseline"] = {"path": str(args.baseline), "mismatches": mismatches}
+        checks["agreement_within_baseline"] = not mismatches
+        print(
+            f"baseline {args.baseline}: "
+            + ("matches" if not mismatches else f"{len(mismatches)} differences: " + "; ".join(mismatches))
+        )
+    summary["checks"] = checks
+    summary["seconds"] = {
+        "generation": round(night.generation_seconds, 2),
+        "pilot3": round(pilot3_seconds, 2),
+        "report": round(report_seconds, 2),
+        "total": round(time.perf_counter() - started, 2),
+    }
+    summary_path = _write_synthetic_json(output_dir / "demo_summary.json", summary)
+    print(f"report={report_path}")
+    print(f"summary={summary_path}")
+    failed = [name for name, passed in checks.items() if not passed]
+    print(f"demo {'passed' if not failed else 'failed: ' + ', '.join(failed)} in {summary['seconds']['total']:.0f} s")
+    if not args.no_open:
+        webbrowser.open(report_path.resolve().as_uri())
+    return 0 if not failed else 1
+
+
+_DEMO_TONES_HZ = (440.0, 550.0, 660.0, 770.0)
+
+
+def _write_demo_protocol(protocol_dir: Path, *, seed: int) -> Dict[str, Path]:
+    """Pilot 3 inputs for the demo: four synthetic puzzles with a generated tone each,
+    half of them cued, written where the loaders of simulate-replay-cues read them."""
+    from dataclasses import replace
+
+    from muse_tmr.audio import CueLibrary, CueMetadata
+    from muse_tmr.protocol import PuzzleCatalog, PuzzleTask, assign_cued_uncued_puzzles
+    from muse_tmr.testing import SYNTHETIC_NOTE
+
+    note = {"synthetic": True, "note": SYNTHETIC_NOTE}
+    numbers = range(1, len(_DEMO_TONES_HZ) + 1)
+    catalog = PuzzleCatalog(
+        puzzles=tuple(
+            PuzzleTask(
+                puzzle_id=f"synthetic-{number}",
+                prompt=f"Synthetic puzzle {number}",
+                solution=f"answer {number}",
+                cue_id=f"synthetic-tone-{number}",
+                source="synthetic",
+                tags=("synthetic",),
+                metadata=note,
+            )
+            for number in numbers
+        )
+    )
+    session = catalog.generate_night_session(
+        session_id=f"synthetic-demo-seed{seed}",
+        puzzle_count=len(_DEMO_TONES_HZ),
+        selection_seed=seed,
+    )
+    session = replace(session, metadata={**session.metadata, **note})
+    assignment = assign_cued_uncued_puzzles(session, seed=seed)
+    assignment = replace(assignment, metadata={**assignment.metadata, **note})
+    # Uncued puzzles keep their tones in the library, so only the assignment keeps
+    # them from being scheduled.
+    cue_library = CueLibrary(
+        library_id="synthetic-demo",
+        cues=tuple(
+            CueMetadata(
+                cue_id=f"synthetic-tone-{number}",
+                cue_type="generated_tone",
+                duration_seconds=1.0,
+                protocol="puzzle",
+                frequency_hz=frequency,
+                volume_hint=0.05,
+                tags=("puzzle", "generated", "synthetic"),
+                description=f"Generated tone for the demo night, {SYNTHETIC_NOTE}.",
+                metadata=note,
+            )
+            for number, frequency in zip(numbers, _DEMO_TONES_HZ)
+        ),
+    )
+    return {
+        "catalog": catalog.save(protocol_dir / "puzzle_catalog.json"),
+        "session": session.save(protocol_dir / "night_puzzles.json"),
+        "assignment": assignment.save(protocol_dir / "assignment.json"),
+        "cue_library": cue_library.save(protocol_dir / "cue_library.json"),
+    }
+
+
+def _synthetic_night_fields(night) -> str:
+    from muse_tmr.testing import SYNTHETIC_NOTE
+
+    return (
+        f"scenario={night.config.scenario} preset={night.config.preset} seed={night.config.seed} "
+        f"hours={night.config.hours:g} duration_seconds={night.generation['duration_seconds']:g} "
+        f"stop_reason={night.generation['stop_reason']} "
+        f"size_mb={night.raw_path.stat().st_size / 1e6:.1f} "
+        f"generation_seconds={night.generation_seconds:.1f} sha256={night.sha256} "
+        f"output={night.recording_dir} ({SYNTHETIC_NOTE})"
+    )
+
+
+def _synthetic_output_refusal(directory: Path, earlier_run: str) -> Optional[str]:
+    """Why a synthetic night or demo may not be written into ``directory``, or None.
+
+    It may be new, empty but for hidden files such as .DS_Store, or hold an earlier run
+    of the same command, whose ``earlier_run`` file (metadata.json of a night,
+    demo_summary.json of a demo) says ``synthetic: true``. Anything else can be a
+    recording, a Polar folder or protocol files, which synthetic output must neither
+    overwrite nor sit next to.
+    """
+    if not directory.exists():
+        return None
+    if not directory.is_dir():
+        return f"{directory} is not a directory"
+    if all(path.name.startswith(".") for path in directory.iterdir()):
+        return None
+    if _says_synthetic(directory / earlier_run):
+        return None
+    return (
+        f"{directory} is not empty and has no {earlier_run} that says synthetic: true; "
+        "choose a new or empty directory"
+    )
+
+
+def _says_synthetic(path: Path) -> bool:
+    """Whether the JSON file at ``path`` (a recording's metadata.json, say) holds
+    ``synthetic: true`` at its top level, as everything a synthetic night writes does."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get("synthetic") is True
+
+
+def _default_demo_dir() -> Path:
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return _default_path_base() / "data" / "synthetic" / f"demo_{timestamp}"
+
+
+def _load_demo_baseline(path: Path) -> Mapping[str, object]:
+    baseline = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(baseline, dict) or not {"scenario", "seed", "hours", "agreement"} <= set(baseline):
+        raise ValueError(f"{path} is not a demo baseline: it needs scenario, seed, hours and agreement")
+    return baseline
+
+
+def _demo_baseline_identity(baseline: Mapping[str, object], config) -> Optional[str]:
+    """Why ``baseline`` cannot be compared with a run of ``config``, or None."""
+    if (
+        baseline["scenario"] == config.scenario
+        and int(baseline["seed"]) == config.seed
+        and math.isclose(float(baseline["hours"]), config.hours)
+    ):
+        return None
+    return (
+        f"the baseline is for {baseline['scenario']}, seed {baseline['seed']}, {baseline['hours']} h; "
+        f"this run is {config.scenario}, seed {config.seed}, {config.hours:g} h"
+    )
+
+
+def _demo_baseline_mismatches(baseline: Mapping[str, object], summary: Mapping[str, object]) -> List[str]:
+    """How a demo summary differs from a baseline: the raw file's sha256 exactly, the
+    agreement within the baseline's ``tolerance``, its ``pilot3`` values exactly."""
+    mismatches = []
+    expected_sha256 = baseline.get("raw_sha256")
+    if expected_sha256 and expected_sha256 != summary.get("raw_sha256"):
+        mismatches.append(f"raw_sha256 {summary.get('raw_sha256')} != {expected_sha256}")
+    tolerance = float(baseline.get("tolerance", 0.0))
+    for name, expected in dict(baseline["agreement"]).items():
+        observed = dict(summary.get("agreement", {})).get(name)
+        if not _within_tolerance(observed, expected, tolerance):
+            mismatches.append(f"agreement.{name} {observed} != {expected} (tolerance {tolerance:g})")
+    for name, expected in dict(baseline.get("pilot3", {})).items():
+        observed = dict(summary.get("pilot3", {})).get(name)
+        if observed != expected:
+            mismatches.append(f"pilot3.{name} {observed} != {expected}")
+    return mismatches
+
+
+def _within_tolerance(observed: object, expected: object, tolerance: float) -> bool:
+    if isinstance(expected, list):
+        return (
+            isinstance(observed, list)
+            and len(observed) == len(expected)
+            and all(_within_tolerance(o, e, tolerance) for o, e in zip(observed, expected))
+        )
+    if expected is None or observed is None:
+        return expected is None and observed is None
+    try:
+        return abs(float(observed) - float(expected)) <= tolerance
+    except (TypeError, ValueError):
+        return False
+
+
+def _synthetic_payload(payload: Mapping[str, object]) -> Dict[str, object]:
+    """``payload`` with top-level ``synthetic`` and ``note``, NaN as None."""
+    from muse_tmr.testing import SYNTHETIC_NOTE
+
+    data: Dict[str, object] = {"synthetic": True, "note": SYNTHETIC_NOTE}
+    data.update(payload)
+    return _json_safe(data)
+
+
+def _write_synthetic_json(path: Path, payload: Mapping[str, object]) -> Path:
+    """``payload`` as strict JSON (NaN as null), marked synthetic input, not sleep."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(_synthetic_payload(payload), indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _json_safe(value):
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 async def _run_pilot4_cueing(args: argparse.Namespace) -> int:
