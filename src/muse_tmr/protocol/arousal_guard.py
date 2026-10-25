@@ -10,7 +10,11 @@ from typing import Dict, Iterable, Mapping, Optional, Tuple
 
 from muse_tmr.features.eeg_features import EEGFeatureRow
 from muse_tmr.features.imu_features import IMUFeatureRow
-from muse_tmr.features.ppg_features import PPGFeatureRow
+from muse_tmr.features.ppg_features import (
+    HeartRatePoint,
+    PPGFeatureRow,
+    heart_rate_change_across_epochs,
+)
 
 AROUSAL_GUARD_ACTIONS = ("allow", "lower_volume", "pause", "stop")
 REPEATED_ARTIFACT_ACTIONS = ("pause", "stop")
@@ -48,8 +52,14 @@ class ArousalGuardConfig:
     min_stillness_score_for_cue: float = 0.90
     alpha_lower_volume_relative_power: float = 0.25
     alpha_pause_relative_power: float = 0.40
+    # The HR rule pauses when at least sudden_hr_change_pause_count heart-rate changes of
+    # sudden_hr_change_pause_bpm or more are found: the row's own (sudden_hr_changes,
+    # logged from PPGFeatureConfig.sudden_hr_change_bpm up) and the largest change between
+    # the previous row's heart-rate series and this one's, for values at most
+    # sudden_hr_change_link_seconds apart (0 leaves that comparison out).
     sudden_hr_change_pause_count: int = 1
     sudden_hr_change_pause_bpm: float = 10.0
+    sudden_hr_change_link_seconds: float = 20.0
     # Whether the session preset streams optics/PPG at all, as in RemGateConfig.
     # When False (an EEG-only preset such as p21) the PPG-absence flags are not
     # artifacts, the HR rules are skipped and decisions carry
@@ -86,6 +96,8 @@ class ArousalGuardConfig:
             raise ValueError("sudden_hr_change_pause_count must be positive")
         if self.sudden_hr_change_pause_bpm <= 0:
             raise ValueError("sudden_hr_change_pause_bpm must be positive")
+        if self.sudden_hr_change_link_seconds < 0:
+            raise ValueError("sudden_hr_change_link_seconds must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -157,6 +169,7 @@ class ArousalGuard:
         self._consecutive_pause_epochs = 0
         self._consecutive_artifact_epochs = 0
         self._consecutive_critical_artifact_epochs = 0
+        self._previous_hr_points: Tuple[HeartRatePoint, ...] = ()
 
     @property
     def consecutive_pause_epochs(self) -> int:
@@ -174,6 +187,7 @@ class ArousalGuard:
         self._consecutive_pause_epochs = 0
         self._consecutive_artifact_epochs = 0
         self._consecutive_critical_artifact_epochs = 0
+        self._previous_hr_points = ()
 
     def evaluate(
         self,
@@ -379,6 +393,7 @@ class ArousalGuard:
         if not self.config.optics_capable:
             metadata["ppg_absent_by_design"] = True
         if ppg is None:
+            self._previous_hr_points = ()
             return
         metadata["sudden_hr_change_count"] = ppg.sudden_hr_change_count
         metadata["max_sudden_hr_change_bpm"] = ppg.max_sudden_hr_change_bpm
@@ -391,13 +406,12 @@ class ArousalGuard:
                 flag for flag in artifact_flags if flag not in PPG_ABSENCE_FLAGS
             )
         else:
-            if (
-                ppg.sudden_hr_change_count >= self.config.sudden_hr_change_pause_count
-                or (
-                    math.isfinite(ppg.max_sudden_hr_change_bpm)
-                    and ppg.max_sudden_hr_change_bpm >= self.config.sudden_hr_change_pause_bpm
-                )
-            ):
+            metadata["sudden_hr_change_source"] = ppg.sudden_hr_change_source
+            metadata["hr_series_used_count"] = len(ppg.hr_series_used)
+            metadata["hr_series_skipped_count"] = ppg.hr_series_skipped_count
+            steps = self._sudden_hr_steps(ppg, metadata)
+            metadata["sudden_hr_change_pause_steps"] = steps
+            if steps >= self.config.sudden_hr_change_pause_count:
                 pause_reasons.append("sudden_heart_rate_change")
             if "heart_rate_out_of_range" in artifact_flags:
                 pause_reasons.append("heart_rate_out_of_range")
@@ -406,6 +420,31 @@ class ArousalGuard:
             metadata["ppg_artifact_flags"] = list(artifact_flags)
         if "low_ppg_coverage" in artifact_flags or "low_heart_rate_coverage" in artifact_flags:
             lower_reasons.append("low_ppg_hr_coverage")
+
+    def _sudden_hr_steps(self, ppg: PPGFeatureRow, metadata: Dict[str, object]) -> int:
+        """Heart-rate changes of sudden_hr_change_pause_bpm or more: the row's own, and
+        the largest one from the previous row's series into this one's."""
+        bpm = self.config.sudden_hr_change_pause_bpm
+        if ppg.sudden_hr_changes:
+            steps = sum(1 for change in ppg.sudden_hr_changes if abs(change.delta_bpm) >= bpm)
+        elif math.isfinite(ppg.max_sudden_hr_change_bpm):
+            # A row with the counts but not the changes: all of them reach bpm when the
+            # largest does, none otherwise.
+            steps = max(1, ppg.sudden_hr_change_count) if ppg.max_sudden_hr_change_bpm >= bpm else 0
+        else:
+            steps = ppg.sudden_hr_change_count
+
+        previous, current = self._previous_hr_points, ppg.hr_series_used
+        self._previous_hr_points = current
+        if self.config.sudden_hr_change_link_seconds > 0 and previous and current:
+            change = heart_rate_change_across_epochs(
+                previous, current, self.config.sudden_hr_change_link_seconds
+            )
+            if change is not None:
+                metadata["sudden_hr_change_across_epochs_bpm"] = change.delta_bpm
+                if abs(change.delta_bpm) >= bpm:
+                    steps += 1
+        return steps
 
     def _record(self, decision: ArousalGuardDecision) -> ArousalGuardDecision:
         if self.event_log_path is not None:
