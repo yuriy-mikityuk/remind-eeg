@@ -1,0 +1,28 @@
+{
+  "about": "What the CI end_to_end job expects from muse-tmr demo --hours 2 (clean_night, seed 0). Synthetic input, not sleep: a regression check of the replay, detector, gate, guard and scheduler path, never evidence about REM detection; the two cued plays come on N1 epochs at sleep onset. When the generator, the detector, the gate, the guard or the scheduler changes on purpose, run the command and copy raw_sha256, agreement and pilot3 from its demo_summary.json in the same commit.",
+  "agreement": {
+    "first_gate_open_latency_s": [
+      390.0
+    ],
+    "gate_open_fraction": 0.05,
+    "kappa": 0.3081761006289305,
+    "precision": 0.5,
+    "recall": 0.2727272727272727
+  },
+  "command": "muse-tmr demo --hours 2 --no-open --baseline tests/fixtures/synthetic/agreement_baseline.json",
+  "hours": 2.0,
+  "note": "synthetic input, not sleep",
+  "pilot3": {
+    "cue_plan_count": 2,
+    "epoch_count": 240,
+    "first_gate_open_seconds": 630.0,
+    "first_play_seconds": 690.0,
+    "gate_open_count": 12,
+    "uncued_puzzle_play_count": 0
+  },
+  "raw_sha256": "2e940cc9b7ac2279f53856935b1f464ca8158027839c305e29f86fc1118a6e55",
+  "scenario": "clean_night",
+  "seed": 0,
+  "synthetic": true,
+  "tolerance": 0.01
+}

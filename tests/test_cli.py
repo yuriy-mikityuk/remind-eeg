@@ -399,6 +399,37 @@ class TestCli(unittest.TestCase):
         self.assertEqual(args.min_stable_seconds, 30.0)
         self.assertTrue(args.disable_arousal_guard)
 
+    def test_synthetic_night_commands_parse_their_defaults(self):
+        args = build_parser().parse_args(["demo"])
+        self.assertEqual(args.command, "demo")
+        self.assertEqual(
+            (args.scenario, args.hours, args.seed, args.output, args.no_open, args.baseline),
+            ("clean_night", 2.0, 0, None, False, None),
+        )
+
+        args = build_parser().parse_args([
+            "demo", "--scenario", "fragmented_rem", "--hours", "8", "--seed", "3",
+            "--output", "data/synthetic/demo", "--no-open",
+            "--baseline", "tests/fixtures/synthetic/agreement_baseline.json",
+        ])
+        self.assertEqual((args.scenario, args.hours, args.seed), ("fragmented_rem", 8.0, 3))
+        self.assertEqual(args.output, Path("data/synthetic/demo"))
+        self.assertTrue(args.no_open)
+        self.assertEqual(args.baseline, Path("tests/fixtures/synthetic/agreement_baseline.json"))
+
+        args = build_parser().parse_args(["synthesize-night", "--list"])
+        self.assertEqual(args.command, "synthesize-night")
+        self.assertTrue(args.list)
+        self.assertEqual((args.scenario, args.seed, args.hours, args.output), (None, 0, None, None))
+
+        args = build_parser().parse_args([
+            "synthesize-night", "--scenario", "no_rem_nap", "--seed", "4", "--hours", "0.5",
+            "--output", "data/synthetic/nap",
+        ])
+        self.assertEqual((args.scenario, args.seed, args.hours), ("no_rem_nap", 4, 0.5))
+        self.assertEqual(args.output, Path("data/synthetic/nap"))
+        self.assertFalse(args.list)
+
     def test_pilot4_cueing_command_parses_safety_inputs(self):
         args = build_parser().parse_args([
             "run-pilot4-cueing",
