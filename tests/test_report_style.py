@@ -3,6 +3,8 @@ import datetime as dt
 import importlib.util
 import io
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,10 +13,11 @@ from muse_tmr.reports import nightly_report
 from muse_tmr.reports.report_style import TOKENS_CSS, brand_line, local_minute_of_day, readable_time
 from muse_tmr.testing import SYNTHETIC_NOTE, generate_night
 
+SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "generate_nightly_report.py"
+
 
 def _load_nightly_report_script():
-    script_path = Path(__file__).resolve().parents[1] / "scripts" / "generate_nightly_report.py"
-    spec = importlib.util.spec_from_file_location("generate_nightly_report", script_path)
+    spec = importlib.util.spec_from_file_location("generate_nightly_report", SCRIPT_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -89,6 +92,20 @@ class TestNightlyReport(unittest.TestCase):
         script = _load_nightly_report_script()
         self.assertIs(script.build_report, nightly_report.build_report)
         self.assertIs(script.main, nightly_report.main)
+
+    def test_the_script_writes_the_report_when_run(self):
+        # The app's Build report runs the file as a script, from the checkout.
+        with tempfile.TemporaryDirectory() as tmp:
+            night = generate_night(output_dir=Path(tmp) / "night", scenario="short_allow_short", hours=0.05)
+            output = Path(tmp) / "report.html"
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), str(night.recording_dir), "--output", str(output)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"report written: {output}", result.stdout)
+            self.assertIn("<strong>Synthetic input, not sleep.</strong>", output.read_text(encoding="utf-8"))
 
     def test_a_synthetic_night_says_so_and_a_recorded_one_does_not(self):
         with tempfile.TemporaryDirectory() as tmp:
