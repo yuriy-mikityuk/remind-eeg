@@ -73,8 +73,8 @@ They move with the generator's assumptions, not with anyone's sleep.
 
 ## What is modelled
 
-Every default is in `SyntheticNightConfig` and `script_night()` in
-`src/muse_tmr/testing/synthetic.py`, with a row in [`numbers.md`](numbers.md#synthetic-nights).
+Every default is in `SyntheticNightConfig`, `script_night()` and the constants above them
+in `src/muse_tmr/testing/synthetic.py`, with a row in [`numbers.md`](numbers.md#synthetic-nights).
 
 - Hypnogram: 30 s epochs of W, N1, N2, N3 and R in sleep cycles of 90 to 110 min, N3
   shrinking and REM growing across the night, a brief awakening after each REM period but
@@ -86,6 +86,13 @@ Every default is in `SyntheticNightConfig` and `script_night()` in
   20 to 40 µV on AF7.
 - IMU: gravity for three head positions, sensor noise, a burst at every movement.
 - Optics, `p1034` only: a pulse at a heart rate set per stage, faster after arousals.
+  Each beat is blood volume as a log-normal systolic and a Gaussian diastolic wave with
+  a narrow dip at the pulse foot, and the light falls as the volume rises, so LO_NIR has
+  a sharp maximum at the foot and a broad trough. Under the pulse the baseline wanders
+  between 0.1 and 0.5 Hz, by default with half the RMS of the pulse's 0.7 to 3 Hz band
+  (`optics_wander_ratio`); white sensor noise sits on top, and a movement adds a burst
+  many times the pulse. `heartbeat_onsets()` gives the scripted beat times, which the
+  recording does not hold.
 - Battery: falling at the preset's measured drain until it is empty; the stream ends there.
 - BLE: notifications of at most 244 bytes, each carrying the subpackets made since the one
   before, one, two or three ACCGYRO subpackets read out together, subpackets lost and
@@ -103,6 +110,26 @@ carries one, two or three ACCGYRO subpackets comes from the committed capture
 `tests/test_data/muse_20250824_172756.bin`, 49, 32 and 2 of its 83 notifications with
 any. That capture is 7 s on an optics preset; no committed capture shows how `p21`
 bundles them, and the same shares are used there.
+
+The optics pulse is shaped to aggregate figures from the maintainer's own awake `p1034`
+recordings with a Polar H10 ([#248](https://github.com/yuriy-mikityuk/remind-eeg/issues/248)).
+Averaged on the H10's R-peaks, LO_NIR, the channel the decoder takes its heart rate from,
+has a sharp maximum 110 to 200 ms after the R-peak, at the pulse foot, its steepest fall
+220 to 300 ms after it and a trough that stays below half height for 0.45 to 0.64 s,
+with only 4 to 6 % of the beat within 10 % of the maximum. Its 0.7 to 3 Hz band holds
+0.10 to 0.29 % of the DC level and 8 to 30 Hz 0.007 to 0.012 %, 10 to 33 times less. The
+recordings are not published and no sample of them is in the generator. The systolic and
+diastolic waves are how pulse waves are usually described and synthesised (Allen 2007,
+Elgendi 2012, Tang et al. 2020, in [`references.md`](references.md)); the dip at the foot,
+the widths and the levels are set by hand to land inside those figures. On 10 min of
+`short_allow_short` without movement the beat average of the decoded LO_NIR has its
+maximum 142 ms after the onset, its steepest fall at 243 ms, 0.49 s below half height and
+5.3 % of the beat within 10 % of the maximum, with 0.15 % of the DC level in 0.7 to 3 Hz
+and 0.011 % in 8 to 30 Hz, 15 times less; `OpticsPulseTest` in
+`tests/test_synthetic_night.py` holds them to the ranges above. The wander default is an
+assumption. On those recordings the guard's heart-rate rule fires more often as the 0.1
+to 0.5 Hz wander grows against the pulse; here, on the 120 epochs of `no_rem_nap`, it
+fires on none at `optics_wander_ratio` 0.5, on 20 at 1.0 and on 116 at 2.0.
 
 The stage signals are textbook shapes, set by hand: an assumption, not a measurement.
 The eye-movement deflections share their shape with the fixture of
@@ -167,12 +194,19 @@ renews the baseline in the same commit: run the command without `--baseline` and
 
 ## Current limitations
 
-- No cue plays on the four `p1034` scenarios. The arousal guard pauses every epoch for
-  `sudden_heart_rate_change`: the heart rate the decoder derives from the synthetic
-  pulse jumps by about 35 bpm within an epoch (the median of the per-epoch maximum),
-  where 10 bpm pauses. Whether the pulse model or the decoder's beat detection is at
-  fault is not known yet. On optics presets the corpus checks the guard's pauses and the
-  cued-only contract, not a play.
+- On the four `p1034` scenarios the arousal guard pauses for `sudden_heart_rate_change`
+  only on epochs a movement reaches: 0 of 120 on `no_rem_nap`, 4 of 298 on
+  `battery_death_2h29`, 6 of 240 on `optics_line` and 0 of 20 on `short_allow_short`.
+  Until #248 the pulse had a flat top with narrow dips, the decoder's beat detection
+  wandered on it, and every epoch of all four paused. What is left is the rule itself
+  ([#247](https://github.com/yuriy-mikityuk/remind-eeg/issues/247)): it compares heart
+  rates the decoder gives 36 to 77 ms apart, so one beat its 5 s window misses or adds,
+  under a movement or under stronger wander, pauses the epoch. Both cued puzzles of
+  `no_rem_nap` and of `optics_line` play on N1 epochs at sleep onset, as on
+  `clean_night`, and the gate never opens on the other two. The scripted heart rate
+  barely varies, so the detector's PPG heart-rate-variability score is low in every
+  stage; with the old pulse the decoder's jumps had scored as high variability and put
+  the median P_REM of every stage 0.07 to 0.12 higher.
 - Not modelled: DRL/REF telemetry, the device's own sample clock (#160 counted about
   257.2 EEG samples a second), sawtooth waves and K-complexes, dropouts long enough for a
   reconnect, fNIRS. No `decoded_frames.jsonl` is written, and `summary.json` leaves out
