@@ -26,6 +26,24 @@ change, and artifact-quality proxies before scheduler decisions. Its conservativ
 defaults can lower volume, pause cueing with cooldown, or stop the session plan, and
 each decision is JSONL-loggable for replay review.
 
+The sudden HR change rule reads a heart-rate series built from each epoch's own optics:
+one value a second from 10 s windows of the most periodic channel, band-passed to 0.5 to
+4 Hz (#247). It used to compare consecutive values of the decoder's `heart_rate` stream,
+which are 36 to 77 ms apart and share almost all their samples, so a beat entering or
+leaving the decoder's 5 s window paused the epoch while a true step barely showed. A
+value is used only when its autocorrelation and peak-interval estimates agree within
+5 bpm and its autocorrelation peak reaches 0.5; skipped values are logged in the PPG row
+and counted in every guard decision that is not `allow` (`hr_series_skipped_count`). The
+rule pauses when used
+values 10 to 20 s apart differ by `sudden_hr_change_pause_bpm` (10) or more, inside the
+epoch or from the previous epoch into this one, so a step at an epoch boundary pauses
+the epoch after it. Raising `sudden_hr_change_pause_bpm` now raises the bar; before,
+any logged change paused through the count. A stretch too noisy for the series no longer
+pauses for heart rate and is left to the motion and artifact rules. On synthetic nights
+a held step of 15 or 40 bpm pauses wherever it falls in an epoch, one of 10 bpm, the
+threshold itself, not everywhere (`docs/numbers.md`). There is no paired optics and ECG
+recording of sleep yet to say how the series behaves asleep.
+
 On a preset without optics (`p21`) the guard is built with `optics_capable=False`,
 like the REM gate. Missing PPG and heart rate is then not an artifact, so it does not
 lower volume and does not count towards the `repeated_artifact_quality` pause, and the

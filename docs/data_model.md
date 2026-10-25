@@ -325,12 +325,55 @@ Current PPG/HR features include:
 - PPG-derived heart-rate estimate from the strongest optics channel when raw PPG is present
 - mean, median, min, max, and trend for `HeartRateSample.bpm`
 - HRV proxy metrics: mean RR, SDNN, RMSSD, and pNN50
-- sudden HR-change logs from adjacent heart-rate samples
+- sudden HR-change logs from the epoch's own heart-rate series (below), or from adjacent
+  heart-rate samples when the epoch has no optics
 - source fields showing whether HR/HRV came from PPG peaks, heart-rate samples, or missing data
 - artifact flags for missing PPG, low coverage, flatline, non-finite values, and out-of-range HR
 
 Raw PPG and heart-rate samples are optional. Missing modalities must produce flags and
 `NaN` feature values where needed, not exceptions.
+
+### Heart-rate series for the sudden-change rule
+
+The arousal guard's sudden heart-rate change rule reads a series that
+`heart_rate_series(epoch)` builds from the optics the epoch holds, not the decoder's
+`heart_rate` stream ([#247](https://github.com/yuriy-mikityuk/remind-eeg/issues/247)).
+That stream is re-estimated from the last 5 s of `LO_NIR` on every optics notification, so
+consecutive values share almost all their samples and jump when one beat enters or
+leaves the window. `mean_hr_bpm` and the other summary fields still come from it.
+
+Every optics channel goes on one sample clock at `ppg_sample_rate_hz` (64 Hz) from the
+first optics frame's timestamp, one row after the other. Samples reported lost in
+`PPGSample.gaps`, and the time a frame arrives more than 1 s after the clock says it
+should, stay missing and are bridged linearly. Each channel is detrended and
+band-passed to `ppg_low_hz`..`ppg_high_hz` (0.5 to 4 Hz) without phase shift. The series
+comes from the channel whose band-passed epoch is the most periodic, the highest
+autocorrelation peak between `min_valid_hr_bpm` and `max_valid_hr_bpm`, the first by name
+on a tie. Each window of `hr_series_window_seconds` (10 s), stepped by
+`hr_series_step_seconds` (1 s), gives one `HeartRatePoint`:
+
+| Field | Meaning |
+|---|---|
+| `time` | Centre of the window, Unix seconds. |
+| `bpm` | The beat period the window correlates best with itself at (Pearson correlation over the overlap at each lag; the shortest lag whose peak reaches 0.9 of the highest, so one beat wins over two), as bpm. NaN when there is no positive peak. |
+| `peak_bpm` | 60 over the median interval between the window's light maxima (the pulse foot, prominence at least `hr_series_peak_prominence` 0.5 of the window's SD), the check on `bpm`. |
+| `quality` | 0 to 1: the autocorrelation peak when `bpm` and `peak_bpm` agree within `hr_series_max_disagreement_bpm` (5 bpm), else 0; also 0 when more than `hr_series_max_missing_fraction` (0.2) of the window is missing. |
+| `used` | `quality` reaches `hr_series_min_quality` (0.5). Skipped values stay in the series. |
+
+The rule compares used values `hr_series_compare_seconds` to
+`hr_series_max_compare_seconds` (10 to 20 s) apart. Windows that far apart share no
+samples, so a step held between them shows in full, while a missed or extra beat moves
+neither estimate. Each change of `sudden_hr_change_bpm` (10) or more is logged once per
+direction by its largest pair, in `sudden_hr_changes`, `sudden_hr_change_count` and
+`max_sudden_hr_change_bpm` as before. A window stays inside its epoch, so a step in the
+first or last 10 s of an epoch shows only when the arousal guard compares the previous
+epoch's values with this one's (below). An epoch with heart-rate samples but no optics
+compares consecutive samples, as every epoch did before.
+
+The rows add `sudden_hr_change_source` (`optics`, `heart_rate` or `missing`: what fed the
+rule), `hr_series_channel`, `hr_series_used_count`, `hr_series_skipped_count`,
+`hr_series_median_quality` and `hr_series_json` (every point, skipped ones included). The
+rule's own column names stay, so earlier CSVs and models load.
 
 ## REM Predictions
 
@@ -617,6 +660,20 @@ flags `ppg_missing`, `missing_ppg`, `heart_rate_missing`, `missing_heart_rate`,
 `sudden_heart_rate_change` and `heart_rate_out_of_range` are not raised, and every
 decision, `allow` included, carries `metadata.ppg_absent_by_design`. On optics presets
 `allow` decisions keep an empty `metadata` as before.
+
+On optics presets the HR rule pauses when it finds at least
+`sudden_hr_change_pause_count` (1) heart-rate changes of `sudden_hr_change_pause_bpm`
+(10) or more: the row's `sudden_hr_changes` at or above that bpm, and the largest change
+from the previous row's used series values into this row's, for values at most
+`sudden_hr_change_link_seconds` (20 s) apart (0 leaves that comparison out). The guard
+keeps the previous row's series for it and `reset()` clears it. Before #247 any logged
+change paused through the count, so raising the bpm alone changed nothing. The row
+logs changes from `PPGFeatureConfig.sudden_hr_change_bpm` up, so a pause bpm below that
+only affects the comparison across epochs. A row built with the counts but without the
+changes counts all of them when the largest reaches the bpm. Non-`allow` decisions on
+optics presets add `sudden_hr_change_source`, `hr_series_used_count`,
+`hr_series_skipped_count`, `sudden_hr_change_pause_steps` (the changes counted) and, when
+there was a previous series to compare with, `sudden_hr_change_across_epochs_bpm`.
 
 Decisions can be appended to JSONL with `append_arousal_guard_decisions()` and read
 with `load_arousal_guard_decisions()`. The scheduler can consume a decision directly;

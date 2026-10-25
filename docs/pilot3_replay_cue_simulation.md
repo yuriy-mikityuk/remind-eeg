@@ -52,6 +52,14 @@ PPG as an artifact and skips its HR rules, and each guard decision carries
 `repeated_artifact_quality` from the third epoch on and plans no cues. Without
 `--preset` the replay assumes an optics preset.
 
+On an optics preset the guard's `sudden_heart_rate_change` reads the heart-rate series
+each epoch's optics give (one value a second from 10 s windows), not the decoder's
+`heart_rate` stream, whose beat-in, beat-out jumps used to pause epochs where nothing
+changed (#247). A pause for it records in the guard metadata how many of the epoch's
+values were used and skipped (`hr_series_used_count`, `hr_series_skipped_count`) and the
+largest change from the previous epoch's values into this one's
+(`sudden_hr_change_across_epochs_bpm`); `docs/data_model.md` has the details.
+
 Optional replay and gate tuning flags:
 
 ```bash
