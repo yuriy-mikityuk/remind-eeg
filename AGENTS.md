@@ -64,15 +64,16 @@ Repeat the same preflight before every commit and before every push.
 
 - `src/muse_tmr/` is the engine and everything built on it: `sources`, `data`,
   `features`, `models`, `protocol`, `audio`, `reports`, `validation`, `annotations`,
-  the local app in `app` (page files in `app/static/`), and the `muse-tmr` CLI in
-  `cli/main.py`.
+  the synthetic nights in `testing`, the local app in `app` (page files in
+  `app/static/`), and the `muse-tmr` CLI in `cli/main.py`.
 - The top-level `amused.py` and `muse_*.py` modules are the forked amused-py BLE
   layer, wrapped by `muse_tmr.sources.amused_source`. Change them only for BLE or
   protocol fixes; see `docs/dependency_strategy.md`. `examples/` holds the amused-py
   examples.
-- `scripts/` holds the nightly REM report, the REM detector check against a reference
-  stager, the macOS launcher installer, the forbidden-files check, the wheel check and the
-  page check.
+- `scripts/` holds the wrapper that runs the nightly REM report (the report itself is
+  `muse_tmr.reports.nightly_report`, so `muse-tmr demo` can build it from the wheel), the
+  REM detector check against a reference stager, the macOS launcher installer, the
+  forbidden-files check, the wheel check and the page check.
 - `docs/` holds the runbooks and references; `docs/USAGE.md` covers every command.
 - Tests live in `tests/`. CI runs `python -m pytest tests/`; `run_tests.py` runs a
   fast unittest subset, and `run_tests.py --all` everything.
@@ -239,6 +240,18 @@ Put new engine code in the matching `muse_tmr` subpackage and new commands in
   process, keeps raw BLE payloads first, never puts chest ACC into `MuseFrame.imu`, and
   stays out of REM detection, the gate, the arousal guard, the scheduler and audio. Never
   commit device addresses, serials or Polar recordings.
+- Synthetic nights live in `muse_tmr.testing` (see `docs/synthetic_data.md`): `synthetic`
+  writes a night in the Athena TAG format with its ground truth, `scenarios` names eight
+  of them and `agreement` scores the gate against `hypnogram.csv` with
+  `muse_tmr.validation.rem_metrics`. `muse-tmr synthesize-night` writes one, and
+  `muse-tmr demo` runs Pilot 1, Pilot 3 with mock audio, the REM report and the agreement
+  on it. Every artefact says "synthetic input, not sleep". Never fit a detector weight or
+  threshold to them, never present their agreement as REM accuracy (on `clean_night` the
+  cues play at sleep onset), never mix in a fragment of a real night, and never commit
+  what they write (`data/synthetic/` is gitignored and forbidden). A generator change
+  moves the pinned sha256 in `tests/test_synthetic_night.py`; a change to the generator,
+  detector, gate, guard or scheduler can move `tests/fixtures/synthetic/agreement_baseline.json`,
+  which the CI `end_to_end` job compares `demo --hours 2` with. Renew them in the same commit.
 
 ## Testing Expectations
 

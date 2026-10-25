@@ -10,6 +10,7 @@ Complete command and code reference for `muse-tmr`, organized by workflow stage.
 - [macOS BLE troubleshooting](#macos-ble-troubleshooting)
 - [Blink and artifact diagnostics](#blink-and-artifact-diagnostics)
 - [Offline replay](#offline-replay)
+- [Synthetic nights and the demo](#synthetic-nights-and-the-demo)
 - [Epoch building](#epoch-building)
 - [Feature extraction: EEG](#feature-extraction-eeg)
 - [Feature extraction: IMU](#feature-extraction-imu)
@@ -150,6 +151,19 @@ muse-tmr replay data/recordings/<session> --speed 20 --start-seconds 1800 --end-
 ```
 
 Replay accepts either a recording directory or a `raw_amused.bin` path. `--speed 1.0` is real time; `--speed 0.0` replays as fast as possible for tests and batch feature extraction.
+
+## Synthetic nights and the demo
+
+```bash
+muse-tmr demo
+muse-tmr demo --scenario fragmented_rem --hours 8 --seed 1 --output data/synthetic/fragmented --no-open
+muse-tmr synthesize-night --list
+muse-tmr synthesize-night --scenario clean_night --hours 0.5 --output data/synthetic/clean_night
+```
+
+`synthesize-night` writes one labelled synthetic night from `muse_tmr.testing` into `--output`: `raw_amused.bin`, `metadata.json`, `events.jsonl` and `summary.json` as `record` writes them, next to the ground truth `hypnogram.csv`, `arousals.csv`, `rem_events.csv` and `generation.json`. `--hours` replaces the scenario's length, and the same `--seed` (default 0) gives the same bytes. It refuses a directory that holds a `raw_amused.bin` whose `metadata.json` does not say `synthetic: true`. The commands that read a recording take the result, `replay`, `annotate-template`, `validate-pilot1-recording` and `simulate-replay-cues` among them.
+
+`demo` (defaults `--scenario clean_night --hours 2 --seed 0`) generates a night into `data/synthetic/demo_<timestamp>/`, or `--output`, and runs `validate-pilot1-recording` on it. It writes Pilot 3 inputs under `protocol/` (four synthetic puzzles with a generated tone each, two of them cued), runs `simulate-replay-cues --preset <the night's preset>` with mock audio, builds the REM report, scores the gate against `hypnogram.csv`, writes `demo_summary.json` and opens the report unless `--no-open`. It exits 0 when Pilot 1 and Pilot 3 pass, no uncued puzzle got a `play`, the audio stayed mock and the report was written. `--baseline FILE` also compares the run with a saved one and exits 1 on a difference; the CI `end_to_end` job runs it with `tests/fixtures/synthetic/agreement_baseline.json`. Synthetic input, not sleep: the numbers check the plumbing and say nothing about REM detection. Scenarios, output files, sizes and limits: `docs/synthetic_data.md`.
 
 ## Epoch building
 
@@ -534,6 +548,8 @@ muse-tmr validate-pilot1-recording data/recordings/<pilot1-session> \
 
 See `docs/pilot1_no_audio.md` for the 6h+ no-audio recording runbook. The validator checks that `summary.json` exists, duration meets the target, EEG/IMU/PPG counts are nonzero, raw packet capture is present, downtime is within target, and no audio or scheduler sidecar logs were produced.
 
+A synthetic night from `synthesize-night` reads the same way. Half an hour of `clean_night` passes with `--min-duration-hours 0.5 --required-modality eeg --required-modality imu` (the `p21` scenarios have no PPG), and `battery_death_2h29` fails on its duration and stop reason, as a night that lost its battery should.
+
 ### Pilot 2: audio calibration validation
 
 ```bash
@@ -558,7 +574,7 @@ muse-tmr simulate-replay-cues data/recordings/<pilot-session> \
   --scheduler-events-output data/reports/pilot3_scheduler_events.jsonl
 ```
 
-See `docs/pilot3_replay_cue_simulation.md` for the replay-only runbook. The simulator runs epochs, REM detection, the stable gate, arousal guard, and scheduler on a recording with mocked audio. It writes an inspectable cue plan and fails if any uncued puzzle receives a scheduler `play` event. No real audio is played. Pass the preset the night was recorded with (`source.metadata.preset` in its `metadata.json`); without it the gate and the arousal guard assume an optics preset.
+See `docs/pilot3_replay_cue_simulation.md` for the replay-only runbook. The simulator runs epochs, REM detection, the stable gate, arousal guard, and scheduler on a recording with mocked audio. It writes an inspectable cue plan and fails if any uncued puzzle receives a scheduler `play` event. No real audio is played. Pass the preset the night was recorded with (`source.metadata.preset` in its `metadata.json`); without it the gate and the arousal guard assume an optics preset. Without a recording, `muse-tmr demo` runs this command on a synthetic night with protocol files it writes itself (see above).
 
 `--stride-seconds` (default 30) sets how far apart the 30 s epochs start; the gate counts the time between epoch starts, so its stable window and cooldown run in real time at any stride. The report's `metrics` carry `stride_seconds`, `first_gate_open_seconds` and `first_play_seconds`, counted from the first epoch's start to the end of the epoch whose decision first opened the gate or first planned a cue (`null` when it never happened). How they come out at strides of 30, 10 and 5 s on synthetic input: `docs/pilot3_replay_cue_simulation.md`.
 

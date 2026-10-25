@@ -37,6 +37,7 @@ with assumptions.
 | Replay determinism | Same raw path and time range produce the same frame counts, epoch indexes, and feature row counts | Replay and feature outputs | Re-running replay changes deterministic counts or row identities. |
 | Cued-only scheduler contract | Count puzzle `play` events whose `puzzle_id` is not in `PuzzleCueAssignment.scheduled_puzzle_ids` | Scheduler JSONL, assignment JSON | Any uncued puzzle receives a scheduler `play` event. |
 | Safety separation | Audio decisions are derived from stable gate plus scheduler/guard state, not raw `P_REM` alone | Gate decisions, scheduler events, guard decisions | A cue can be traced directly from REM probability without gate and guard checks. |
+| Synthetic end-to-end regression | `muse-tmr demo --hours 2` on `clean_night`, seed 0: Pilot 1 and Pilot 3 pass, zero uncued `play` events, mock audio, the report written, the raw sha256 and Pilot 3 counts equal to `tests/fixtures/synthetic/agreement_baseline.json` and the agreement within its 0.01 | CI `end_to_end` job, `demo_summary.json` | Anything differs from the baseline. It checks plumbing on synthetic input, not sleep, not validity: its cued plays come on N1 epochs at sleep onset, not in REM (`docs/synthetic_data.md`). |
 
 ## Technical Quality Metrics
 

@@ -159,6 +159,21 @@ carries `"synthetic": true` and the note. The numbers show whether the replay, d
 and gate path still behaves the same on the same input; no detector weight or threshold
 is fitted to them.
 
+`muse-tmr synthesize-night` writes this directory. `muse-tmr demo` writes it as
+`<output>/<scenario>_seed<seed>/` and puts next to it:
+
+| File | Content |
+| ---- | ------- |
+| `protocol/` | Pilot 3 inputs in their usual formats: `puzzle_catalog.json` (four synthetic puzzles), `night_puzzles.json`, `assignment.json` (two cued, two uncued) and `cue_library.json` (a generated tone per puzzle, the uncued ones included). |
+| `pilot1.json` | The `validate-pilot1-recording` report, with the night's planned length as the minimum duration. |
+| `pilot3_report.json` | The `simulate-replay-cues` report (epochs, gate and guard decisions, scheduler events, `cue_plan`). |
+| `report.html` | The REM report of `muse_tmr.reports.nightly_report`; a recording whose `metadata.json` says `synthetic: true` gets a "Synthetic input, not sleep" callout and the note in its subtitle. |
+| `agreement.json` | The output of `muse_tmr.testing.agreement`. |
+| `demo_summary.json` | `scenario`, `seed`, `hours`, `preset`, `raw_sha256`, Pilot 1 and Pilot 3 results, `cued_plays` with the generated stage of the epoch that planned each one, `agreement` (κ, recall, precision, gate-open fraction, latency per REM period), `checks`, `baseline` when `--baseline` was given, and `seconds`. |
+
+Every JSON file the demo writes carries the note: the reports as top-level `synthetic`
+and `note`, with NaN written as `null`, the protocol files in their `metadata`.
+
 ## Polar H10 Raw Notifications
 
 `muse-tmr record-polar` writes `<session_dir>/polar/raw_notifications.jsonl`, one JSON
