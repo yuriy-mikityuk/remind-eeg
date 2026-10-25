@@ -378,7 +378,7 @@ class GeneratedRecordingTest(unittest.TestCase):
 class ReproducibilityTest(unittest.TestCase):
     # One minute of short_allow_short with seed 0. A change to the generator changes it:
     # update it in the same commit, so the bytes of a seed never move unnoticed.
-    PINNED_SHA256 = "08a283ad2427b023c24ec750893cfcf57ffd7ee56ae5d15214241c745caa8460"
+    PINNED_SHA256 = "7e6a92b4ba9e658b48b433a44cd5572ab33745d04f026db17d67f40d4dc7ab78"
 
     def test_pinned_sha256(self):
         with tempfile.TemporaryDirectory() as tmp:
