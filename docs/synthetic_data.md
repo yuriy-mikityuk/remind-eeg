@@ -89,7 +89,7 @@ in `src/muse_tmr/testing/synthetic.py`, with a row in [`numbers.md`](numbers.md#
   Each beat is blood volume as a log-normal systolic and a Gaussian diastolic wave with
   a narrow dip at the pulse foot, and the light falls as the volume rises, so LO_NIR has
   a sharp maximum at the foot and a broad trough. Under the pulse the baseline wanders
-  between 0.1 and 0.5 Hz, by default with half the RMS of the pulse's 0.7 to 3 Hz band
+  between 0.1 and 0.5 Hz, by default with 0.85 of the RMS of the pulse's 0.7 to 3 Hz band
   (`optics_wander_ratio`); white sensor noise sits on top, and a movement adds a burst
   many times the pulse. `heartbeat_onsets()` gives the scripted beat times, which the
   recording does not hold.
@@ -128,11 +128,21 @@ the widths and the levels are set by hand to land inside those figures. On 10 mi
 maximum 142 ms after the onset, its steepest fall at 243 ms, 0.49 s below half height and
 5.3 % of the beat within 10 % of the maximum, with 0.15 % of the DC level in 0.7 to 3 Hz
 and 0.011 % in 8 to 30 Hz, 15 times less; `OpticsPulseTest` in
-`tests/test_synthetic_night.py` holds them to the ranges above. The wander default, 0.5,
-is an assumption, not taken from the recordings, and the `p1034` guard figures on this
-page hold only at it. On those recordings the guard's heart-rate rule fires more often
-as the 0.1 to 0.5 Hz wander grows against the pulse; here, on the 120 epochs of
-`no_rem_nap`, it fires on none at `optics_wander_ratio` 0.5, on 20 at 1.0 and on 116
+`tests/test_synthetic_night.py` holds them to the ranges above.
+
+The wander default, 0.85, comes from the two of those recordings with good contact. In
+the 30 s epochs their IMU motion features call still (no `motion_not_still` or
+`motion_arousal_proxy`), 36 and 33 of them, LO_NIR's RMS between 0.1 and 0.5 Hz is 0.71
+and 0.94 of its RMS between 0.7 and 3 Hz (medians; interquartile ranges 0.47 to 0.91 and
+0.63 to 1.09), 0.84 over all 69. Both bands are cut from the whole recording the way
+`_band_rms` cuts them, every other frequency set to zero, and the RMS is taken in each
+still epoch; on synthetic `no_rem_nap` nights the same measurement reads 0.49 at
+`optics_wander_ratio` 0.5, 0.83 at 0.85 and 0.98 at 1.0. The recordings hold most of
+that band's power between 0.10 and 0.133 Hz (81 and 91 % of it, medians), where the
+synthetic wander, flat from 0.1 to 0.5 Hz, holds 7 %, so at the same RMS a synthetic night
+has about six times the recordings' wander between 0.3 and 0.5 Hz. The guard's heart-rate
+rule fires more often as the wander grows against the pulse: on the 120 epochs of
+`no_rem_nap` on none at `optics_wander_ratio` 0.5, on 7 at 0.85, on 20 at 1.0 and on 116
 at 2.0.
 
 The stage signals are textbook shapes, set by hand: an assumption, not a measurement.
@@ -199,19 +209,21 @@ renews the baseline in the same commit: run the command without `--baseline` and
 ## Current limitations
 
 - On the four `p1034` scenarios, at the default wander, the arousal guard pauses for
-  `sudden_heart_rate_change` only on epochs a movement reaches: 0 of 120 on `no_rem_nap`,
-  4 of 298 on `battery_death_2h29`, 6 of 240 on `optics_line` and 0 of 20 on
-  `short_allow_short`.
+  `sudden_heart_rate_change` on 7 of 120 epochs of `no_rem_nap`, 27 of 298 of
+  `battery_death_2h29`, 22 of 240 of `optics_line` and 0 of 20 of `short_allow_short`;
+  14 of those 56 have a movement in them or in the 5 s before, the other 42 do not.
   Until #248 the pulse had a flat top with narrow dips, the decoder's beat detection
   wandered on it, and every epoch of all four paused. What is left is the rule itself
   ([#247](https://github.com/yuriy-mikityuk/remind-eeg/issues/247)): it compares heart
   rates the decoder gives 36 to 77 ms apart, so one beat its 5 s window misses or adds,
-  under a movement or under stronger wander, pauses the epoch. Both cued puzzles of
+  under a movement or under the wander, pauses the epoch. Both cued puzzles of
   `no_rem_nap` and of `optics_line` play on N1 epochs at sleep onset, as on
   `clean_night`, and the gate never opens on the other two. The scripted heart rate
   barely varies, so the detector's PPG heart-rate-variability score is low in every
   stage; with the old pulse the decoder's jumps had scored as high variability and put
   the median P_REM of every stage 0.07 to 0.12 higher.
+- The wander matches the RMS of the recordings' 0.1 to 0.5 Hz band, not its spectrum, and
+  the recordings are awake: nothing says the baseline moves the same way asleep.
 - Not modelled: DRL/REF telemetry, the device's own sample clock (#160 counted about
   257.2 EEG samples a second), sawtooth waves and K-complexes, dropouts long enough for a
   reconnect, fNIRS. No `decoded_frames.jsonl` is written, and `summary.json` leaves out
