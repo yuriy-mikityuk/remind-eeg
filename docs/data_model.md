@@ -97,14 +97,21 @@ and wraps at 256. BLE sometimes delivers a notification twice, so `MuseRealtimeD
 which both the live amused source and replay use, drops a subpacket whose counter and
 data bytes repeat one of the last 16 of its TAG. A counter that skips ahead means the
 device lost subpackets. Nothing is filled in for them: the rows stay joined, and
-`EEGSample.gaps` and `PPGSample.gaps` list `(index, missing)` pairs, meaning `missing`
-samples belong right before row `index` of that frame's series. `gaps` is written to
-`decoded_frames.jsonl` only when it is not empty. The decoder stats count both per
-sensor type as `repeated_subpackets` and `lost_subpackets`, which reach `progress.json`
-under `source_diagnostics.decoder`.
+`EEGSample.gaps`, `PPGSample.gaps` and `IMUSample.gaps` list `(index, missing)` pairs,
+meaning `missing` samples belong right before row `index` of that frame's series. `gaps`
+is written to `decoded_frames.jsonl` only when it is not empty. The decoder stats count
+both per sensor type as `repeated_subpackets` and `lost_subpackets`, which reach
+`progress.json` under `source_diagnostics.decoder`.
+
+A frame holds every kept subpacket of its notification in the order they came: the EEG
+and PPG rows of each, per channel, and three IMU rows for each ACCGYRO subpacket. Until
+[#244](https://github.com/yuriy-mikityuk/remind-eeg/issues/244) the IMU rows were only
+the last ACCGYRO subpacket's, while `imu_samples` counted them all: the frames of
+`tests/test_data/muse_20250824_172756.bin` got 249 of its 357 IMU rows. A
+`decoded_frames.jsonl` written before that fix lacks the others.
 
 `raw_amused.bin` keeps every notification as received, so replaying an older recording
-applies the same rule.
+applies the same rules and gets every IMU row.
 
 ## Synthetic Recordings
 
@@ -123,8 +130,11 @@ The directory holds what `muse-tmr record` writes, without `decoded_frames.jsonl
   header holds a fixed start, 2026-01-14 23:00 UTC. Byte 0 of each notification is its
   length and byte 1 a running count; a notification is at most 244 bytes. Notifications
   leave 29.03 times a second, each with the subpackets made since the one before, in the
-  order they were made. Some subpackets are lost, some notifications arrive twice and
-  short BLE gaps lose everything in them, as `SyntheticNightConfig` says.
+  order they were made. The IMU is read out one, two or three ACCGYRO subpackets at a
+  time, as often as notifications of the committed capture carry them, and a readout goes
+  into one notification unless that would pass 244 bytes; then the rest of it goes into
+  the next. Some subpackets are lost, some notifications arrive twice and short BLE gaps
+  lose everything in them, as `SyntheticNightConfig` says.
 - `metadata.json`: `source.source_name` is `synthetic` and `source.metadata.preset` the
   preset (`p21` or `p1034`); top level `synthetic: true`, `note`, `scenario` and `seed`.
 - `events.jsonl`: `recording_started` and `recording_stopped` with the stop reason;
@@ -295,6 +305,10 @@ Current IMU features include:
 - `arousal_guard_reason_codes` for downstream cue safety decisions
 - cue-window movement logs when cue timestamps are supplied per epoch
 - artifact flags for missing IMU, low coverage, missing axes, and non-finite values
+
+Row `i` of a frame is taken at the frame's timestamp plus `i / sample_rate_hz` (52 Hz by
+default), as the REM-event tracker does with EEG rows. Samples lost inside the frame, an
+`IMUSample.gaps` entry after row 0, move the rows after them by that many samples.
 
 IMU rows preserve noisy epochs and expose guard reasons instead of dropping data.
 Future cue schedulers can turn `arousal_guard_reason_codes` into a `CueDecision`

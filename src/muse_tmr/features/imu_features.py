@@ -279,8 +279,9 @@ def _collect_motion_series(epoch: SleepEpoch, config: IMUFeatureConfig) -> _Moti
         accel_rows = frame.imu.accelerometer_g or ()
         gyro_rows = frame.imu.gyroscope_dps or ()
         row_count = max(len(accel_rows), len(gyro_rows))
+        offsets = _row_offsets(row_count, frame.imu.gaps)
         for index in range(row_count):
-            timestamps.append(frame.imu.timestamp + index / config.sample_rate_hz)
+            timestamps.append(frame.imu.timestamp + offsets[index] / config.sample_rate_hz)
             accel_magnitude.append(
                 _axis_magnitude(accel_rows[index]) if index < len(accel_rows) else math.nan
             )
@@ -315,6 +316,16 @@ def _collect_motion_series(epoch: SleepEpoch, config: IMUFeatureConfig) -> _Moti
         finite_accel_count=int(np.sum(np.isfinite(accel_delta_g))),
         finite_gyro_count=int(np.sum(np.isfinite(gyro_dps))),
     )
+
+
+def _row_offsets(row_count: int, gaps: Sequence[Tuple[int, int]]) -> np.ndarray:
+    """Samples from the frame's first row to each row. Samples lost inside the frame
+    (a gap after row 0) move the rows after them; a gap at row 0 lies before the frame."""
+    offsets = np.arange(row_count)
+    for index, missing in gaps:
+        if 0 < index < row_count:
+            offsets[index:] += missing
+    return offsets
 
 
 def _axis_magnitude(row: Mapping[str, float]) -> float:

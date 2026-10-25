@@ -4,6 +4,10 @@ Versions follow `muse_tmr.__version__`; the app shows the running version and bu
 
 ## Unreleased
 
+### Recording
+
+- The decoder keeps every ACCGYRO subpacket of a notification. It kept only the last one's three rows while `imu_samples` counted them all, so the motion features and the arousal guard got fewer IMU rows than the headband sent: 249 of 357 on `tests/test_data/muse_20250824_172756.bin`, where 34 of the 120 notifications carry two or three. Lost ACCGYRO subpackets are marked in `IMUSample.gaps` as EEG and PPG losses are, and the IMU features place the rows after a loss inside a frame that many samples later. Replaying `raw_amused.bin` gets every row back; a `decoded_frames.jsonl` written before lacks them. Synthetic nights now read the IMU out one, two or three subpackets at a time, in that capture's shares, so they carry such notifications too (#244).
+
 ### Local app
 
 - The app, its reports and the macOS launcher are called REMind instead of Athena TMR. The launcher installer now puts `REMind.app` on the Desktop; an existing `Athena TMR.app` keeps working and can be deleted.

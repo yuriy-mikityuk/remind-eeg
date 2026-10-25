@@ -4,6 +4,7 @@ import datetime as dt
 from muse_realtime_decoder import DecodedData
 from muse_tmr.data.sample_types import (
     EEGSample,
+    IMUSample,
     MuseFrame,
     frame_from_decoded,
 )
@@ -55,7 +56,8 @@ class TestSampleTypes(unittest.TestCase):
             packet_type="MULTI",
             eeg={"TP9": [1.0] * 8},
             ppg={"LO_NIR": [10.0] * 2},
-            gaps={"eeg": [(4, 8)], "ppg": [(0, 2)]},
+            imu={"accel": [[0.0, 0.0, 1.0]] * 6, "gyro": [[0.0, 0.0, 0.0]] * 6},
+            gaps={"eeg": [(4, 8)], "ppg": [(0, 2)], "imu": [(3, 3)]},
         )
 
         frame = frame_from_decoded(decoded, source="amused")
@@ -63,14 +65,20 @@ class TestSampleTypes(unittest.TestCase):
 
         self.assertEqual(frame.eeg.gaps, ((4, 8),))
         self.assertEqual(frame.ppg.gaps, ((0, 2),))
+        self.assertEqual(frame.imu.gaps, ((3, 3),))
+        self.assertEqual(len(frame.imu.accelerometer_g), 6)
         self.assertEqual(restored.eeg.gaps, ((4, 8),))
         self.assertEqual(restored.ppg.gaps, ((0, 2),))
+        self.assertEqual(restored.imu.gaps, ((3, 3),))
 
     def test_no_gaps_key_without_gaps(self):
         eeg = EEGSample(timestamp=1.0, channels_uv={"TP9": [0.1]})
+        imu = IMUSample(timestamp=1.0, accelerometer_g=[[0.0, 0.0, 1.0]])
 
         self.assertNotIn("gaps", eeg.to_dict())
         self.assertEqual(EEGSample.from_dict(eeg.to_dict()).gaps, ())
+        self.assertNotIn("gaps", imu.to_dict())
+        self.assertEqual(IMUSample.from_dict(imu.to_dict()).gaps, ())
 
 
 if __name__ == "__main__":

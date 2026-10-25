@@ -20,7 +20,7 @@
     "gate_open_count": 12,
     "uncued_puzzle_play_count": 0
   },
-  "raw_sha256": "2e940cc9b7ac2279f53856935b1f464ca8158027839c305e29f86fc1118a6e55",
+  "raw_sha256": "035c40ac395244e3abafe802ced5cc0121f9c7cc468e99da2465f9db067d8d02",
   "scenario": "clean_night",
   "seed": 0,
   "synthetic": true,

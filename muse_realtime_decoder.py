@@ -37,7 +37,7 @@ class DecodedData:
     heart_rate: Optional[float] = None
     battery: Optional[float] = None
     raw_bytes: bytes = b''
-    # 'eeg'/'ppg' -> (index, missing): samples lost right before row `index`
+    # 'eeg'/'ppg'/'imu' -> (index, missing): samples lost right before row `index`
     gaps: Dict[str, List[Tuple[int, int]]] = field(default_factory=dict)
 
 
@@ -235,11 +235,12 @@ class MuseRealtimeDecoder:
 
         # ACCGYRO (IMU)
         if parsed["ACCGYRO"]:
-            decoded.imu = {}
+            decoded.imu = {'accel': [], 'gyro': []}
             for subpacket in parsed["ACCGYRO"]:
                 arr = subpacket["data"]  # shape (3, 6)
-                decoded.imu['accel'] = arr[:, 0:3].tolist()
-                decoded.imu['gyro'] = arr[:, 3:6].tolist()
+                self._mark_gap(decoded, 'imu', len(decoded.imu['accel']), subpacket)
+                decoded.imu['accel'].extend(arr[:, 0:3].tolist())
+                decoded.imu['gyro'].extend(arr[:, 3:6].tolist())
                 self.stats['imu_samples'] += arr.shape[0]
                 self._record_modality_time('imu', decoded.timestamp)
                 self._record_rate_event('imu_sample_rows', decoded.timestamp, arr.shape[0])
