@@ -112,7 +112,9 @@ any. That capture is 7 s on an optics preset; no committed capture shows how `p2
 bundles them, and the same shares are used there.
 
 The optics pulse is shaped to aggregate figures from the maintainer's own awake `p1034`
-recordings with a Polar H10 ([#248](https://github.com/yuriy-mikityuk/remind-eeg/issues/248)).
+recordings with a Polar H10, two of them in
+[#248](https://github.com/yuriy-mikityuk/remind-eeg/issues/248) and the rest in the
+description of [#249](https://github.com/yuriy-mikityuk/remind-eeg/pull/249).
 Averaged on the H10's R-peaks, LO_NIR, the channel the decoder takes its heart rate from,
 has a sharp maximum 110 to 200 ms after the R-peak, at the pulse foot, its steepest fall
 220 to 300 ms after it and a trough that stays below half height for 0.45 to 0.64 s,

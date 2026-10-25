@@ -446,8 +446,8 @@ class StageSignalTest(unittest.TestCase):
 
 class OpticsPulseTest(unittest.TestCase):
     """The optics pulse against what the maintainer's awake p1034 recordings show with
-    LO_NIR averaged on Polar H10 R-peaks (#248; local measurements, the recordings are not
-    published). Synthetic input, not sleep."""
+    LO_NIR averaged on Polar H10 R-peaks (local measurements, the recordings are not
+    published; the sources are in docs/numbers.md). Synthetic input, not sleep."""
 
     @classmethod
     def setUpClass(cls):
