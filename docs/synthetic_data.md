@@ -8,8 +8,9 @@ notifications to a cue plan can be run and checked without a headband
 
 Synthetic input, not sleep. Nothing measured on these nights is evidence about sleep, REM
 detection or cueing, no detector weight or threshold may be fitted to them, and no
-fragment of a real night goes into them. Every file and every line of output they lead
-to says so.
+fragment of a real night goes into them. Every JSON and HTML file and every line of
+output they lead to says so; the CSV ground truth sits next to a `generation.json` that
+does.
 
 ## Commands
 
@@ -25,8 +26,10 @@ generated tone each, two of them cued), runs `simulate-replay-cues` with mock au
 the gate of the night's preset, builds the REM report, scores the gate against the
 hypnogram and opens the report; `--no-open` leaves it closed. It exits 0 when Pilot 1
 and Pilot 3 pass, no uncued puzzle got a `play`, the audio stayed mock and the report
-was written. `--hours` sets the length of any scenario, so `battery_death_2h29` only runs
-out of battery with more than 2.48 h.
+was written, 1 when one of these fails and 2 on a usage error or a refused `--output`.
+`--hours` sets the length of any scenario, so `battery_death_2h29` only runs out of
+battery with more than 2.48 h, and then fails Pilot 1 as a night that lost its battery
+should.
 
 It writes to `data/synthetic/demo_<timestamp>/` unless `--output` says otherwise:
 
@@ -39,9 +42,10 @@ It writes to `data/synthetic/demo_<timestamp>/` unless `--output` says otherwise
 | `agreement.json` | Binary κ, REM recall and precision of the gate, gate-open fraction and the seconds from each REM onset to the first open gate, from `muse_tmr.validation.rem_metrics`. |
 | `demo_summary.json` | All of that in short, the generated stage of the epoch that planned each cued play, the checks and the timings. |
 
-`synthesize-night` writes the night alone. Like `demo`, it refuses a directory that holds
-a `raw_amused.bin` whose `metadata.json` does not say `synthetic: true`, so it cannot
-overwrite a recording.
+`synthesize-night` writes the night alone. It refuses a directory that holds a
+`raw_amused.bin` whose `metadata.json` does not say `synthetic: true`, so it cannot
+overwrite a recording. `demo` refuses such a directory as `--output` as well, so its
+reports never land next to a real night.
 
 ## What the demo shows, and what it does not
 
@@ -53,12 +57,12 @@ same bytes and the same decisions. They are no evidence about REM gating.
 On `clean_night` the cued plays come at sleep onset. With the `p21` gate at 0.90/0.85,
 84 % of the synthetic N1 epochs of the 8 h night reach P_REM 0.90, while its synthetic
 REM epochs have a median P_REM of 0.89. So the gate opens on N1 a few minutes into the
-night, both cued puzzles play there (decided at 690 and 720 s in the default 2 h demo,
-both on N1 epochs), and the scheduler, which cues each puzzle once a night, has none
-left for REM. The acceptance check that `clean_night` gives at least one cued `play`
-passes for that reason, not because REM was found. The agreement figures say what the
-current detector makes of signals written to look like stages. They move with the
-generator's assumptions, not with anyone's sleep.
+night, both cued puzzles play there (decided at 690 and 720 s, on N1 epochs, in the
+default 2 h demo and in the 8 h night alike), and the scheduler, which cues each puzzle
+once a night, has none left for REM. The `end_to_end` check that `clean_night` gives at
+least one cued `play` passes for that reason, not because REM was found. The agreement
+figures say what the current detector makes of signals written to look like stages.
+They move with the generator's assumptions, not with anyone's sleep.
 
 ## What is modelled
 
@@ -92,18 +96,34 @@ The stage signals are textbook shapes, set by hand: an assumption, not a measure
 The eye-movement deflections share their shape with the fixture of
 [#225](https://github.com/yuriy-mikityuk/remind-eeg/issues/225). On a forehead montage they
 are an assumption twice over. On ZMax, whose F7 and F8 are referenced to Fpz much as the
-Muse's AF7 and AF8 are, REM eye-movement counts correlated r = 0.66 with PSG EOG and came
-out about 1.8 times as many, which the authors put down to the close reference
-(Jafarzadeh Esfahani et al. 2023, a preprint, in [`references.md`](references.md)). A real
-Athena night may look nothing like these deflections.
+Muse's AF7 and AF8 are, an automatic detector's REM eye-movement counts correlated
+r = 0.66 with its counts on PSG EOG, and it found about 1.8 times as many on the
+headband, on average and with a wide spread (Jafarzadeh Esfahani et al. 2023, a preprint,
+in [`references.md`](references.md)). A real Athena night may look nothing like these
+deflections.
 
 ## Formats and sizes
 
 The files are described in [`data_model.md`](data_model.md#synthetic-recordings). Seed 0,
-each scenario at its own length, on one machine (an M4 Pro with other work running, so
-the seconds are rough):
+each scenario at its own length, one run each on an M4 Pro with other work running (load
+average 5 to 10 on 14 cores), so the seconds are rough. Generation is `generate_night()`,
+replay a `ReplaySession` at speed 0 over every frame, and `demo` the whole command, which
+replays the night twice, for Pilot 3 and for the report:
 
-SCENARIO_TABLE
+| Scenario | Preset | Length | `raw_amused.bin`, MB | Generation, s | Replay, s | `demo`, s |
+|---|---|---|---|---|---|---|
+| `clean_night` | `p21` | 8 h | 96.5 | 3.9 | 50 | 171 |
+| `fragmented_rem` | `p21` | 8 h | 96.5 | 3.6 | 47 | 152 |
+| `no_rem_nap` | `p1034` | 1 h | 17.2 | 0.5 | 14 | 35 |
+| `battery_death_2h29` | `p1034` | 8 h, empty after 2 h 29 min | 42.8 | 1.6 | 36 | 88 |
+| `optics_line` | `p1034` | 2 h | 34.5 | 1.0 | 29 | 71 |
+| `bad_contact_af7` | `p21` | 2 h | 24.1 | 0.9 | 12 | 32 |
+| `movement_heavy` | `p21` | 2 h | 24.1 | 0.8 | 12 | 33 |
+| `short_allow_short` | `p1034` | 10 min | 2.9 | 0.1 | 2 | 6 |
+
+On all eight the decoder's lost and repeated subpackets per sensor type equal what
+`generation.json` scripted, and no uncued puzzle gets a `play`. The default `demo`, 2 h
+of `clean_night`, took 39 s.
 
 The corpus is generated on demand and never committed: `data/synthetic/` is gitignored
 and `scripts/check_forbidden_files.py` refuses anything under it. There is no pre-rendered
@@ -135,11 +155,17 @@ renews the baseline in the same commit: run the command without `--baseline` and
 ## Current limitations
 
 - The decoder keeps only the last ACCGYRO subpacket of a notification
-  ([#244](https://github.com/yuriy-mikityuk/remind-eeg/issues/244)). The device does put two
-  in one notification (34 of the 120 notifications of the committed capture
+  ([#244](https://github.com/yuriy-mikityuk/remind-eeg/issues/244)). The device does put
+  more than one in a notification (34 of the 120 notifications of the committed capture
   `tests/test_data/muse_20250824_172756.bin`), but the generator never does, and
   `SyntheticNightConfig.validate()` refuses a notification rate that would need it, so the
   synthetic nights cannot catch that loss until #244 is fixed.
+- No cue plays on the four `p1034` scenarios. The arousal guard pauses every epoch for
+  `sudden_heart_rate_change`: the heart rate the decoder derives from the synthetic
+  pulse jumps by about 35 bpm within an epoch (the median of the per-epoch maximum),
+  where 10 bpm pauses. Whether the pulse model or the decoder's beat detection is at
+  fault is not known yet. On optics presets the corpus checks the guard's pauses and the
+  cued-only contract, not a play.
 - Not modelled: DRL/REF telemetry, the device's own sample clock (#160 counted about
   257.2 EEG samples a second), sawtooth waves and K-complexes, dropouts long enough for a
   reconnect, fNIRS. No `decoded_frames.jsonl` is written, and `summary.json` leaves out
