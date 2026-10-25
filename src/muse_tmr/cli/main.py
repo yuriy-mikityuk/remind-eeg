@@ -1973,9 +1973,16 @@ def _validate_pilot1_recording(args: argparse.Namespace) -> int:
         required_modalities=required_modalities,
         max_downtime_fraction=args.max_downtime_fraction,
     )
-    if args.output is not None:
-        report.save(_resolve_output_path(args.output))
-    print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    # A pass on a synthetic night must not read as a recorded night's.
+    if _says_synthetic(Path(report.summary_path).parent / "metadata.json"):
+        payload = _synthetic_payload(report.to_dict())
+        if args.output is not None:
+            _write_synthetic_json(_resolve_output_path(args.output), payload)
+    else:
+        payload = report.to_dict()
+        if args.output is not None:
+            report.save(_resolve_output_path(args.output))
+    print(json.dumps(payload, indent=2, sort_keys=True))
     return 0 if report.passed else 1
 
 
@@ -2026,7 +2033,15 @@ def _resolve_gate_thresholds(args: argparse.Namespace) -> Tuple[float, float]:
 
 async def _simulate_replay_cues(args: argparse.Namespace) -> int:
     report = await _replay_cue_report(args)
-    output_path = report.save(_resolve_output_path(args.output))
+    # A cue plan from a synthetic night must not read as a recorded night's.
+    note = ""
+    if _says_synthetic(Path(report.recording_input) / "metadata.json"):
+        from muse_tmr.testing import SYNTHETIC_NOTE
+
+        note = f" ({SYNTHETIC_NOTE})"
+        output_path = _write_synthetic_json(_resolve_output_path(args.output), report.to_dict())
+    else:
+        output_path = report.save(_resolve_output_path(args.output))
     scheduler_events_output = None
     if args.scheduler_events_output is not None:
         scheduler_events_output = report.save_scheduler_events(
@@ -2043,7 +2058,7 @@ async def _simulate_replay_cues(args: argparse.Namespace) -> int:
         f"cue_plan={report.metrics.get('cue_plan_count', 0)} "
         f"first_play_seconds={report.metrics.get('first_play_seconds')} "
         f"audio_playback_executed={report.audio_playback_executed} "
-        f"output={output_path}"
+        f"output={output_path}{note}"
     )
     if scheduler_events_output is not None:
         print(f"scheduler_events={scheduler_events_output}")
@@ -2401,13 +2416,19 @@ def _not_synthetic_refusal(directory: Path) -> Optional[str]:
     whose metadata.json does not say ``synthetic: true``. None when it may."""
     if not (directory / "raw_amused.bin").exists():
         return None
-    try:
-        metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        metadata = None
-    if isinstance(metadata, dict) and metadata.get("synthetic") is True:
+    if _says_synthetic(directory / "metadata.json"):
         return None
     return f"{directory} holds a recording that is not synthetic; choose another directory"
+
+
+def _says_synthetic(path: Path) -> bool:
+    """Whether the JSON file at ``path`` (a recording's metadata.json, say) holds
+    ``synthetic: true`` at its top level, as everything a synthetic night writes does."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get("synthetic") is True
 
 
 def _default_demo_dir() -> Path:
@@ -2470,15 +2491,20 @@ def _within_tolerance(observed: object, expected: object, tolerance: float) -> b
         return False
 
 
-def _write_synthetic_json(path: Path, payload: Mapping[str, object]) -> Path:
-    """``payload`` as strict JSON (NaN as null), marked synthetic input, not sleep."""
+def _synthetic_payload(payload: Mapping[str, object]) -> Dict[str, object]:
+    """``payload`` with top-level ``synthetic`` and ``note``, NaN as None."""
     from muse_tmr.testing import SYNTHETIC_NOTE
 
     data: Dict[str, object] = {"synthetic": True, "note": SYNTHETIC_NOTE}
     data.update(payload)
+    return _json_safe(data)
+
+
+def _write_synthetic_json(path: Path, payload: Mapping[str, object]) -> Path:
+    """``payload`` as strict JSON (NaN as null), marked synthetic input, not sleep."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(_json_safe(data), indent=2, sort_keys=True, allow_nan=False) + "\n",
+        json.dumps(_synthetic_payload(payload), indent=2, sort_keys=True, allow_nan=False) + "\n",
         encoding="utf-8",
     )
     return path

@@ -19,7 +19,7 @@ Versions follow `muse_tmr.__version__`; the app shows the running version and bu
 
 ### Reports
 
-- The REM report is built by `muse_tmr.reports.nightly_report`. `scripts/generate_nightly_report.py` and the app's Build report run it as before, and `muse-tmr demo` builds it from an installed wheel. A recording whose `metadata.json` says `synthetic: true` gets a "Synthetic input, not sleep" callout at the top and the note in its subtitle (#233).
+- The REM report is built by `muse_tmr.reports.nightly_report`. `scripts/generate_nightly_report.py` and the app's Build report run it as before, and `muse-tmr demo` builds it from an installed wheel. A recording whose `metadata.json` says `synthetic: true` gets a "Synthetic input, not sleep" callout at the top and the note in its subtitle, and `validate-pilot1-recording` and `simulate-replay-cues` add `"synthetic": true` and the note to the report they save and the output they print (#233).
 
 ### Development and docs
 

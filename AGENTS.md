@@ -245,7 +245,9 @@ Put new engine code in the matching `muse_tmr` subpackage and new commands in
   of them and `agreement` scores the gate against `hypnogram.csv` with
   `muse_tmr.validation.rem_metrics`. `muse-tmr synthesize-night` writes one, and
   `muse-tmr demo` runs Pilot 1, Pilot 3 with mock audio, the REM report and the agreement
-  on it. Every artefact says "synthetic input, not sleep". Never fit a detector weight or
+  on it. Every JSON and HTML file they write says "synthetic input, not sleep", and so do
+  the REM report and the Pilot 1 and Pilot 3 reports of a synthetic night (they read
+  `synthetic: true` in its `metadata.json`). Never fit a detector weight or
   threshold to them, never present their agreement as REM accuracy (on `clean_night` the
   cues play at sleep onset), never mix in a fragment of a real night, and never commit
   what they write (`data/synthetic/` is gitignored and forbidden). A generator change

@@ -173,6 +173,8 @@ is fitted to them.
 
 Every JSON file the demo writes carries the note: the reports as top-level `synthetic`
 and `note`, with NaN written as `null`, the protocol files in their `metadata`.
+`validate-pilot1-recording` and `simulate-replay-cues` mark their reports the same way
+when the recording's `metadata.json` says `synthetic: true`.
 
 ## Polar H10 Raw Notifications
 

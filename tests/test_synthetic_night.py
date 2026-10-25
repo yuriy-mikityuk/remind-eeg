@@ -23,6 +23,7 @@ from muse_tmr.cli.main import (
     _demo_baseline_identity,
     _demo_baseline_mismatches,
     _load_demo_baseline,
+    _write_demo_protocol,
 )
 from muse_tmr.cli.main import main as cli_main
 from muse_tmr.data.recorder import RecordingSummary
@@ -494,6 +495,48 @@ class SynthesizeNightCommandTest(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIn("unknown scenario", err)
             self.assertFalse(target.exists())
+
+
+class ValidatorsOnASyntheticNightTest(unittest.TestCase):
+    """validate-pilot1-recording and simulate-replay-cues run by hand on a synthetic night."""
+
+    def _validate(self, recording_dir, protocol, output_dir):
+        pilot1_path, pilot3_path = output_dir / "pilot1.json", output_dir / "pilot3.json"
+        pilot1 = _run_cli(
+            "validate-pilot1-recording", str(recording_dir), "--min-duration-hours", "0.05",
+            "--required-modality", "eeg", "--required-modality", "imu", "--output", str(pilot1_path),
+        )
+        pilot3 = _run_cli(
+            "simulate-replay-cues", str(recording_dir),
+            "--catalog", str(protocol["catalog"]), "--session", str(protocol["session"]),
+            "--assignment", str(protocol["assignment"]), "--cue-library", str(protocol["cue_library"]),
+            "--preset", "p21", "--output", str(pilot3_path),
+        )
+        self.assertEqual((pilot1[0], pilot3[0]), (0, 0), pilot1[2] + pilot3[2])
+        reports = [json.loads(path.read_text(encoding="utf-8")) for path in (pilot1_path, pilot3_path)]
+        return json.loads(pilot1[1]), pilot3[1], reports
+
+    def test_their_reports_say_synthetic_only_when_the_night_does(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            night = generate_night(output_dir=Path(tmp) / "night", scenario="clean_night", hours=0.05)
+            protocol = _write_demo_protocol(Path(tmp) / "protocol", seed=0)
+            pilot1_stdout, pilot3_stdout, reports = self._validate(night.recording_dir, protocol, Path(tmp) / "a")
+            for payload in (pilot1_stdout, *reports):
+                self.assertIs(payload["synthetic"], True)
+                self.assertEqual(payload["note"], SYNTHETIC_NOTE)
+            self.assertTrue(pilot3_stdout.rstrip().endswith(f"({SYNTHETIC_NOTE})"), pilot3_stdout)
+
+            # The same night with a metadata.json that does not say synthetic, as a recording's.
+            metadata_path = night.recording_dir / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            for key in ("synthetic", "note", "scenario", "seed"):
+                metadata.pop(key)
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+            pilot1_stdout, pilot3_stdout, reports = self._validate(night.recording_dir, protocol, Path(tmp) / "b")
+            for payload in (pilot1_stdout, *reports):
+                self.assertNotIn("synthetic", payload)
+                self.assertNotIn("note", payload)
+            self.assertNotIn(SYNTHETIC_NOTE, pilot3_stdout)
 
 
 class DemoCommandTest(unittest.TestCase):

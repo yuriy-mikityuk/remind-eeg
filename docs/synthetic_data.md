@@ -8,9 +8,14 @@ notifications to a cue plan can be run and checked without a headband
 
 Synthetic input, not sleep. Nothing measured on these nights is evidence about sleep, REM
 detection or cueing, no detector weight or threshold may be fitted to them, and no
-fragment of a real night goes into them. Every JSON and HTML file and every line of
-output they lead to says so; the CSV ground truth sits next to a `generation.json` that
-does.
+fragment of a real night goes into them. Every JSON and HTML file `synthesize-night` and
+`demo` write says so, and so does the first line each of them prints; the CSV ground
+truth sits next to a `generation.json` that does. On a synthetic night the REM report,
+`validate-pilot1-recording` and `simulate-replay-cues` say so too, whoever runs them,
+since they read `synthetic: true` in its `metadata.json`. Other commands, `replay`,
+`annotate-template` and the `--scheduler-events-output` file of `simulate-replay-cues`
+among them, do not mark what they write from a synthetic night; its `metadata.json` and
+`generation.json` do.
 
 ## Commands
 

@@ -548,7 +548,7 @@ muse-tmr validate-pilot1-recording data/recordings/<pilot1-session> \
 
 See `docs/pilot1_no_audio.md` for the 6h+ no-audio recording runbook. The validator checks that `summary.json` exists, duration meets the target, EEG/IMU/PPG counts are nonzero, raw packet capture is present, downtime is within target, and no audio or scheduler sidecar logs were produced.
 
-A synthetic night from `synthesize-night` reads the same way. Half an hour of `clean_night` passes with `--min-duration-hours 0.5 --required-modality eeg --required-modality imu` (the `p21` scenarios have no PPG), and `battery_death_2h29` fails on its duration and stop reason, as a night that lost its battery should.
+A synthetic night from `synthesize-night` reads the same way. Half an hour of `clean_night` passes with `--min-duration-hours 0.5 --required-modality eeg --required-modality imu` (the `p21` scenarios have no PPG), and `battery_death_2h29` fails on its duration and stop reason, as a night that lost its battery should. Because its `metadata.json` says `synthetic: true`, the report, saved and printed, carries `"synthetic": true` and the note "synthetic input, not sleep", so a synthetic pass does not read as a recorded one.
 
 ### Pilot 2: audio calibration validation
 
@@ -574,7 +574,7 @@ muse-tmr simulate-replay-cues data/recordings/<pilot-session> \
   --scheduler-events-output data/reports/pilot3_scheduler_events.jsonl
 ```
 
-See `docs/pilot3_replay_cue_simulation.md` for the replay-only runbook. The simulator runs epochs, REM detection, the stable gate, arousal guard, and scheduler on a recording with mocked audio. It writes an inspectable cue plan and fails if any uncued puzzle receives a scheduler `play` event. No real audio is played. Pass the preset the night was recorded with (`source.metadata.preset` in its `metadata.json`); without it the gate and the arousal guard assume an optics preset. Without a recording, `muse-tmr demo` runs this command on a synthetic night with protocol files it writes itself (see above).
+See `docs/pilot3_replay_cue_simulation.md` for the replay-only runbook. The simulator runs epochs, REM detection, the stable gate, arousal guard, and scheduler on a recording with mocked audio. It writes an inspectable cue plan and fails if any uncued puzzle receives a scheduler `play` event. No real audio is played. Pass the preset the night was recorded with (`source.metadata.preset` in its `metadata.json`); without it the gate and the arousal guard assume an optics preset. Without a recording, `muse-tmr demo` runs this command on a synthetic night with protocol files it writes itself (see above). On a night whose `metadata.json` says `synthetic: true` the report carries `"synthetic": true` and the note, and the line the command prints ends with it; the `--scheduler-events-output` lines are written as for any night.
 
 `--stride-seconds` (default 30) sets how far apart the 30 s epochs start; the gate counts the time between epoch starts, so its stable window and cooldown run in real time at any stride. The report's `metrics` carry `stride_seconds`, `first_gate_open_seconds` and `first_play_seconds`, counted from the first epoch's start to the end of the epoch whose decision first opened the gate or first planned a cue (`null` when it never happened). How they come out at strides of 30, 10 and 5 s on synthetic input: `docs/pilot3_replay_cue_simulation.md`.
 
