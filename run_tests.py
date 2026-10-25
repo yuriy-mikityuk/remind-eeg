@@ -40,6 +40,7 @@ def run_fast_tests():
         'tests.test_eeg_features',
         'tests.test_imu_features',
         'tests.test_ppg_features',
+        'tests.test_sudden_hr_rule',
         'tests.test_contact',
         'tests.test_contact_monitor',
         'tests.test_contact_gate',

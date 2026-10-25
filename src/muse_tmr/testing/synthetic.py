@@ -400,7 +400,9 @@ class SyntheticNightConfig:
     (``p1034`` only): a pulse of the shape ``beat_volume()`` at the stage heart rate in
     ``heart_rate_bpm``, faster for a while after arousals, on a baseline that wanders
     between 0.1 and 0.5 Hz with ``optics_wander_ratio`` times the RMS of the pulse's
-    0.7 to 3 Hz band, and sensor noise. Battery: ``battery_start_percent`` falling by
+    0.7 to 3 Hz band, and sensor noise. ``heart_rate_steps`` adds sharp steps for tests:
+    each (onset s, seconds, bpm) raises the heart rate by bpm from onset for that long,
+    with no ramp and no movement. Battery: ``battery_start_percent`` falling by
     ``battery_drain_percent_per_hour`` (None: 10.60 for ``p21``, 23.34 for ``p1034``);
     at 0 % the stream ends.
 
@@ -442,6 +444,8 @@ class SyntheticNightConfig:
     bad_contact_span: Tuple[float, float] = (0.0, 0.0)
     movement_scale: float = 1.0
     heart_rate_bpm: Mapping[str, float] = field(default_factory=lambda: dict(DEFAULT_HEART_RATE_BPM))
+    # (onset_seconds, duration_seconds, delta_bpm) steps on top of the scripted heart rate.
+    heart_rate_steps: Tuple[Tuple[float, float, float], ...] = ()
     # LO_NIR's 0.1 to 0.5 Hz RMS over its 0.7 to 3 Hz RMS on the still epochs of two awake
     # p1034 recordings with good contact: medians 0.71 and 0.94 (docs/numbers.md).
     optics_wander_ratio: float = 0.85
@@ -472,6 +476,9 @@ class SyntheticNightConfig:
                 raise ValueError(f"{name} must be in [0, 0.5)")
         if self.optics_wander_ratio < 0:
             raise ValueError("optics_wander_ratio must not be negative")
+        for onset, seconds, _delta in self.heart_rate_steps:
+            if onset < 0 or seconds <= 0:
+                raise ValueError("heart_rate_steps need a non-negative onset and a positive length")
         if self.notifications_per_second <= 0:
             raise ValueError("notifications_per_second must be positive")
         if not self.imu_bundle_shares or min(self.imu_bundle_shares) < 0 or sum(self.imu_bundle_shares) <= 0:
@@ -923,6 +930,8 @@ def _beat_cycles(config: SyntheticNightConfig, night: ScriptedNight, arousals, n
         ])
         stop = min(n, first + shape.size)
         hr[first:stop] += boost * shape[: stop - first]
+    for onset, seconds, delta in config.heart_rate_steps:
+        hr[int(round(onset * fs)):int(round((onset + seconds) * fs))] += float(delta)
     return np.cumsum(hr / 60.0 / fs)
 
 

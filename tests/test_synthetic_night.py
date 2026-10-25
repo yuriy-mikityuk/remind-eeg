@@ -523,6 +523,27 @@ class OpticsPulseTest(unittest.TestCase):
             night = generate_night(output_dir=Path(tmp) / "p21", scenario="clean_night", hours=1 / 60)
         self.assertEqual(heartbeat_onsets(night).size, 0)
 
+    def test_heart_rate_steps_raise_the_scripted_rate(self):
+        base = replace(
+            scenario_config("short_allow_short", hours=2 / 60),
+            stages=("N2",) * 4,
+            arousals_per_hour=0.0,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            stepped = generate_night(
+                replace(base, heart_rate_steps=((60.0, 30.0, 20.0),)), Path(tmp) / "stepped"
+            )
+            written = json.loads((stepped.recording_dir / "generation.json").read_text(encoding="utf-8"))
+        onsets = heartbeat_onsets(stepped)
+        rate = 60.0 / np.diff(onsets)
+        beat_times = onsets[1:]
+        inside = rate[(beat_times > 62.0) & (beat_times < 88.0)]
+        outside = rate[(beat_times > 32.0) & (beat_times < 58.0)]
+        self.assertAlmostEqual(float(np.median(inside) - np.median(outside)), 20.0, delta=2.0)
+        self.assertEqual(written["config"]["heart_rate_steps"], [[60.0, 30.0, 20.0]])
+        with self.assertRaises(ValueError):
+            replace(base, heart_rate_steps=((10.0, 0.0, 5.0),)).validate()
+
 
 class Pilot1Test(unittest.TestCase):
     def _validate(self, recording_dir, *args):
