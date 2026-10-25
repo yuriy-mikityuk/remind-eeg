@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import math
 import tempfile
 import unittest
@@ -14,7 +15,9 @@ from muse_tmr.features.ppg_features import (
     export_ppg_feature_rows,
     extract_ppg_feature_rows,
     extract_ppg_features,
+    heart_rate_series,
 )
+from muse_tmr.testing.synthetic import band_limited_noise, beat_volume
 
 
 SAMPLE_RATE_HZ = 64
@@ -69,6 +72,221 @@ def ppg_hr_epoch(
         1000.0,
         tuple(frames),
     )
+
+
+def pulse_light(
+    heart_rate_bpm,
+    *,
+    seconds: float = 30.0,
+    seed: int = 0,
+    missed_beats=(),
+    noise=None,
+    dc: float = 9.0,
+    pulse_share: float = 0.006,
+):
+    """Optics light like LO_NIR on a synthetic night: a pulse of the generator's beat
+    shape at ``heart_rate_bpm`` (bpm, or a function of seconds), 1.5 bpm of sinus
+    arrhythmia, wander between 0.1 and 0.5 Hz at 0.85 of the pulse and sensor noise.
+    ``missed_beats`` leaves those beats out; ``noise=(start, stop, scale)`` adds white
+    noise of ``scale`` pulse heights. Synthetic input, not sleep."""
+    rng = np.random.default_rng(seed)
+    times = np.arange(int(seconds * SAMPLE_RATE_HZ)) / SAMPLE_RATE_HZ
+    rate = heart_rate_bpm(times) if callable(heart_rate_bpm) else np.full(times.size, float(heart_rate_bpm))
+    rate = rate + 1.5 * np.sin(2 * np.pi * 0.25 * times + rng.uniform(0, 2 * np.pi))
+    cycles = np.cumsum(rate / 60.0 / SAMPLE_RATE_HZ)
+    pulse = beat_volume(cycles)
+    for beat in missed_beats:
+        pulse[np.floor(cycles) == beat] = 0.0
+    spectrum = np.fft.rfft(pulse - np.mean(pulse))
+    freqs = np.fft.rfftfreq(pulse.size, 1.0 / SAMPLE_RATE_HZ)
+    cardiac_rms = np.sqrt(2.0 * np.sum(np.abs(spectrum[(freqs >= 0.7) & (freqs <= 3.0)]) ** 2)) / pulse.size
+    wander = 0.85 * cardiac_rms * band_limited_noise(times.size, 0.1, 0.5, rng, fs=SAMPLE_RATE_HZ)
+    light = dc * (1.0 + pulse_share * (wander - pulse))
+    light += 0.00006 * dc * rng.standard_normal(times.size)
+    if noise is not None:
+        start, stop, scale = noise
+        span = slice(int(start * SAMPLE_RATE_HZ), int(stop * SAMPLE_RATE_HZ))
+        light[span] += scale * pulse_share * dc * rng.standard_normal(span.stop - span.start)
+    return light
+
+
+def optics_epoch(channels, *, rows_per_frame=None, lost_frames=(), start=1000.0):
+    """An epoch of optics frames; ``rows_per_frame`` splits the channels into frames as
+    notifications do, and ``lost_frames`` drops those frames and reports their samples
+    lost in the next one's ``gaps``, as the decoder does."""
+    length = len(next(iter(channels.values())))
+    rows = rows_per_frame or length
+    frames = []
+    lost = 0
+    for number, first in enumerate(range(0, length, rows)):
+        span = slice(first, min(length, first + rows))
+        if number in lost_frames:
+            lost += span.stop - span.start
+            continue
+        timestamp = start + first / SAMPLE_RATE_HZ
+        sample = PPGSample(
+            timestamp,
+            {name: list(values[span]) for name, values in channels.items()},
+            source="test",
+            gaps=((0, lost),) if lost else (),
+        )
+        frames.append(MuseFrame(timestamp=timestamp, ppg=sample, source="test"))
+        lost = 0
+    return EpochBuilder(EpochConfig(epoch_seconds=30, stride_seconds=30))._build_epoch(
+        0, start, tuple(frames)
+    )
+
+
+def held_step(onset_seconds, before_bpm, after_bpm):
+    return lambda times: np.where(times >= onset_seconds, after_bpm, before_bpm)
+
+
+class TestHeartRateSeries(unittest.TestCase):
+    """The series the sudden heart-rate change rule reads (#247). Synthetic input, not sleep."""
+
+    def test_steady_pulse_gives_a_used_value_every_second(self):
+        row = extract_ppg_features(optics_epoch({"LO_NIR": pulse_light(60.0)}))
+
+        self.assertEqual(row.sudden_hr_change_source, "optics")
+        self.assertEqual(row.hr_series_channel, "LO_NIR")
+        self.assertEqual(len(row.hr_series), 21)
+        self.assertEqual(len(row.hr_series_used), 21)
+        times = [point.time for point in row.hr_series]
+        self.assertAlmostEqual(times[0], 1005.0)
+        np.testing.assert_allclose(np.diff(times), 1.0)
+        for point in row.hr_series:
+            self.assertAlmostEqual(point.bpm, 60.0, delta=1.0)
+            self.assertAlmostEqual(point.peak_bpm, 60.0, delta=2.0)
+            self.assertGreater(point.quality, 0.8)
+        self.assertEqual(row.sudden_hr_change_count, 0)
+        self.assertTrue(math.isnan(row.max_sudden_hr_change_bpm))
+
+    def test_missed_beats_do_not_fire(self):
+        for seed in range(3):
+            for missed in ((12,), (9, 21)):
+                with self.subTest(seed=seed, missed=missed):
+                    light = pulse_light(60.0, seed=seed, missed_beats=missed)
+                    row = extract_ppg_features(optics_epoch({"LO_NIR": light}))
+
+                    self.assertEqual(row.sudden_hr_change_count, 0)
+                    self.assertEqual(row.sudden_hr_changes, ())
+                    for point in row.hr_series_used:
+                        self.assertAlmostEqual(point.bpm, 60.0, delta=2.0)
+
+    def test_held_steps_of_15_and_40_bpm_fire(self):
+        for before, after in ((60.0, 75.0), (60.0, 100.0), (75.0, 60.0)):
+            with self.subTest(before=before, after=after):
+                light = pulse_light(held_step(15.0, before, after), seed=2)
+                row = extract_ppg_features(optics_epoch({"LO_NIR": light}))
+
+                self.assertEqual(row.sudden_hr_change_count, 1)
+                change = row.sudden_hr_changes[0]
+                self.assertAlmostEqual(change.delta_bpm, after - before, delta=1.5)
+                self.assertAlmostEqual(row.max_sudden_hr_change_bpm, abs(after - before), delta=1.5)
+                self.assertLess(change.start_time, 1015.0)
+                self.assertGreater(change.end_time, 1015.0)
+
+    def test_low_quality_values_are_skipped_and_logged(self):
+        burst = pulse_light(60.0, noise=(10.0, 18.0, 5.0))
+        row = extract_ppg_features(optics_epoch({"LO_NIR": burst}))
+
+        skipped = [point for point in row.hr_series if not point.used]
+        self.assertGreaterEqual(row.hr_series_skipped_count, 10)
+        self.assertEqual(len(skipped), row.hr_series_skipped_count)
+        for point in skipped:
+            # Windows that reach the burst, or come within the 2 s the zero-phase
+            # band-pass spreads it by.
+            self.assertLess(point.quality, 0.5)
+            self.assertLess(point.time - 5.0, 1018.0 + 2.0)
+            self.assertGreater(point.time + 5.0, 1010.0 - 2.0)
+        self.assertEqual(row.sudden_hr_change_count, 0)
+        logged = json.loads(row.to_dict()["hr_series_json"])
+        self.assertEqual(sum(1 for point in logged if not point["used"]), row.hr_series_skipped_count)
+        self.assertEqual(row.to_dict()["hr_series_skipped_count"], row.hr_series_skipped_count)
+
+        noise_only = extract_ppg_features(
+            optics_epoch({"LO_NIR": pulse_light(60.0, noise=(0.0, 30.0, 20.0))})
+        )
+        self.assertEqual(noise_only.hr_series_used, ())
+        self.assertEqual(noise_only.hr_series_skipped_count, len(noise_only.hr_series))
+        self.assertEqual(noise_only.sudden_hr_change_count, 0)
+
+    def test_the_most_periodic_channel_feeds_the_series(self):
+        rng = np.random.default_rng(5)
+        channels = {
+            "A_noise": 9.0 + 0.05 * rng.standard_normal(1920),
+            "B_pulse": pulse_light(72.0, seed=5),
+        }
+
+        series = heart_rate_series(optics_epoch(channels))
+
+        self.assertEqual(series.channel, "B_pulse")
+        self.assertEqual(len(series.used_points), 21)
+        self.assertAlmostEqual(float(np.median([p.bpm for p in series.used_points])), 72.0, delta=1.0)
+
+    def test_lost_samples_keep_the_series_on_the_clock(self):
+        light = pulse_light(60.0, seed=1)
+        # Notifications of two rows; 32 of them (1 s) lost in a row, reported in the next one.
+        row = extract_ppg_features(
+            optics_epoch({"LO_NIR": light}, rows_per_frame=2, lost_frames=range(400, 432))
+        )
+
+        self.assertEqual(len(row.hr_series), 21)
+        self.assertAlmostEqual(row.hr_series[-1].time, 1025.0)
+        self.assertEqual(row.sudden_hr_change_count, 0)
+        for point in row.hr_series_used:
+            self.assertAlmostEqual(point.bpm, 60.0, delta=2.0)
+
+    def test_a_late_frame_without_reported_loss_keeps_the_clock(self):
+        light = pulse_light(60.0, seed=1)
+        first = optics_epoch({"LO_NIR": light[:960]})
+        later = optics_epoch({"LO_NIR": light[1088:]}, start=1017.0)
+        epoch = EpochBuilder(EpochConfig())._build_epoch(0, 1000.0, first.frames + later.frames)
+
+        series = heart_rate_series(epoch)
+
+        self.assertEqual(len(series.points), 21)
+        self.assertAlmostEqual(series.points[-1].time, 1025.0)
+
+    def test_heart_rate_samples_without_optics_keep_the_consecutive_comparison(self):
+        row = extract_ppg_features(ppg_hr_epoch(hr_values=[60.0, 61.0, 80.0, 79.0, 55.0]))
+
+        self.assertEqual(row.sudden_hr_change_source, "heart_rate")
+        self.assertEqual(row.hr_series, ())
+        self.assertEqual(row.sudden_hr_change_count, 2)
+
+    def test_optics_feed_the_rule_even_with_a_jumping_heart_rate_stream(self):
+        # The decoder's stream jumps by 19 and 24 bpm; the optics hold a steady pulse.
+        epoch = ppg_hr_epoch(
+            ppg_channels={"LO_NIR": pulse_light(60.0, seed=3).tolist()},
+            hr_values=[60.0, 61.0, 80.0, 79.0, 55.0],
+        )
+
+        row = extract_ppg_features(epoch)
+
+        self.assertEqual(row.sudden_hr_change_source, "optics")
+        self.assertEqual(row.sudden_hr_change_count, 0)
+        self.assertEqual(row.hr_source, "heart_rate")
+
+    def test_no_optics_and_no_heart_rate(self):
+        row = extract_ppg_features(ppg_hr_epoch())
+
+        self.assertEqual(row.sudden_hr_change_source, "missing")
+        self.assertEqual(row.sudden_hr_change_count, 0)
+
+    def test_config_rejects_bad_series_settings(self):
+        for bad in (
+            {"hr_series_window_seconds": 3.0},
+            {"hr_series_step_seconds": 0.0},
+            {"hr_series_compare_seconds": 0.5},
+            {"hr_series_max_compare_seconds": 5.0},
+            {"hr_series_min_quality": 1.5},
+            {"hr_series_max_disagreement_bpm": 0.0},
+            {"hr_series_max_missing_fraction": 1.0},
+            {"hr_series_peak_prominence": 0.0},
+        ):
+            with self.subTest(**bad), self.assertRaises(ValueError):
+                PPGFeatureConfig(**bad).validate()
 
 
 class TestPPGFeatures(unittest.TestCase):
@@ -184,6 +402,19 @@ class TestPPGFeatures(unittest.TestCase):
         self.assertIn("mean_hr_bpm", frame.columns)
         self.assertIn("rmssd_ms", frame.columns)
         self.assertIn("sudden_hr_changes_json", frame.columns)
+        # The rule's columns keep their names (#247), next to what fed it.
+        for column in (
+            "sudden_hr_change_count",
+            "max_sudden_hr_change_bpm",
+            "sudden_hr_change_source",
+            "hr_series_channel",
+            "hr_series_used_count",
+            "hr_series_skipped_count",
+            "hr_series_median_quality",
+            "hr_series_json",
+        ):
+            self.assertIn(column, frame.columns)
+        self.assertEqual(frame.loc[0, "sudden_hr_change_source"], "optics")
 
     @unittest.skipIf(
         importlib.util.find_spec("pyarrow") is None and importlib.util.find_spec("fastparquet") is None,

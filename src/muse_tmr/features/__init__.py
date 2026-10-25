@@ -26,12 +26,16 @@ from muse_tmr.features.imu_features import (
     extract_imu_features,
 )
 from muse_tmr.features.ppg_features import (
+    HeartRatePoint,
+    HeartRateSeries,
     PPGFeatureConfig,
     PPGFeatureRow,
     SuddenHeartRateChange,
     export_ppg_feature_rows,
     extract_ppg_feature_rows,
     extract_ppg_features,
+    heart_rate_change_across_epochs,
+    heart_rate_series,
 )
 from muse_tmr.features.rem_event_features import (
     RemEvent,
@@ -50,6 +54,8 @@ __all__ = [
     "EEGFeatureRow",
     "EpochBuilder",
     "EpochConfig",
+    "HeartRatePoint",
+    "HeartRateSeries",
     "IMUFeatureConfig",
     "IMUFeatureRow",
     "MovementEvent",
@@ -74,5 +80,7 @@ __all__ = [
     "extract_imu_features",
     "extract_ppg_feature_rows",
     "extract_ppg_features",
+    "heart_rate_change_across_epochs",
+    "heart_rate_series",
     "new_rem_event_tracker",
 ]

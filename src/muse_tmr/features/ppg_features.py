@@ -6,13 +6,27 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-from scipy.signal import butter, detrend, filtfilt, find_peaks
+from scipy.signal import butter, detrend, filtfilt, find_peaks, sosfiltfilt
 
 from muse_tmr.features.epochs import SleepEpoch
+
+# What fed the sudden heart-rate change rule of a row: the epoch's own heart-rate series
+# from the optics, the heart-rate samples when the epoch has no optics, or neither.
+SUDDEN_HR_CHANGE_SOURCES = ("optics", "heart_rate", "missing")
+
+# A frame that arrives this much later than the optics sample clock says it should lost
+# samples the decoder did not report (a loss long enough to wrap the subpacket counter);
+# the clock moves on to it and the samples in between are missing.
+_OPTICS_CLOCK_SLACK_SECONDS = 1.0
+# The autocorrelation estimate takes the shortest lag whose peak reaches this share of the
+# highest peak in the heart-rate range, so one beat wins over two or three (sub-harmonics).
+_AUTOCORRELATION_PEAK_SHARE = 0.9
+# Series times are Unix seconds; their differences carry float rounding.
+_TIME_TOLERANCE_SECONDS = 1e-6
 
 
 @dataclass(frozen=True)
@@ -28,6 +42,20 @@ class PPGFeatureConfig:
     min_valid_hr_bpm: float = 30.0
     max_valid_hr_bpm: float = 240.0
     flat_ppg_std_threshold: float = 1e-9
+    # The heart-rate series the sudden-change rule reads (#247; see heart_rate_series()):
+    # windows of hr_series_window_seconds stepped by hr_series_step_seconds over one optics
+    # channel band-passed to ppg_low_hz..ppg_high_hz. A value is used when its two
+    # estimates agree within hr_series_max_disagreement_bpm and its quality reaches
+    # hr_series_min_quality; used values hr_series_compare_seconds to
+    # hr_series_max_compare_seconds apart are compared.
+    hr_series_window_seconds: float = 10.0
+    hr_series_step_seconds: float = 1.0
+    hr_series_compare_seconds: float = 10.0
+    hr_series_max_compare_seconds: float = 20.0
+    hr_series_min_quality: float = 0.5
+    hr_series_max_disagreement_bpm: float = 5.0
+    hr_series_max_missing_fraction: float = 0.2
+    hr_series_peak_prominence: float = 0.5
 
     def validate(self) -> None:
         if self.ppg_sample_rate_hz <= 0:
@@ -50,6 +78,60 @@ class PPGFeatureConfig:
             raise ValueError("invalid heart-rate bounds")
         if self.flat_ppg_std_threshold < 0:
             raise ValueError("flat_ppg_std_threshold must be non-negative")
+        if self.hr_series_window_seconds < 2 * 60.0 / self.min_valid_hr_bpm:
+            raise ValueError("hr_series_window_seconds must hold two beats at min_valid_hr_bpm")
+        if self.hr_series_step_seconds <= 0:
+            raise ValueError("hr_series_step_seconds must be positive")
+        if self.hr_series_compare_seconds < self.hr_series_step_seconds:
+            raise ValueError("hr_series_compare_seconds must be at least one step")
+        if self.hr_series_max_compare_seconds < self.hr_series_compare_seconds:
+            raise ValueError("hr_series_max_compare_seconds must not be below hr_series_compare_seconds")
+        if not 0 <= self.hr_series_min_quality <= 1:
+            raise ValueError("hr_series_min_quality must be between 0 and 1")
+        if self.hr_series_max_disagreement_bpm <= 0:
+            raise ValueError("hr_series_max_disagreement_bpm must be positive")
+        if not 0 <= self.hr_series_max_missing_fraction < 1:
+            raise ValueError("hr_series_max_missing_fraction must be in [0, 1)")
+        if self.hr_series_peak_prominence <= 0:
+            raise ValueError("hr_series_peak_prominence must be positive")
+
+
+@dataclass(frozen=True)
+class HeartRatePoint:
+    """One value of the heart-rate series: a window of band-passed optics.
+
+    ``time`` is the window's centre in Unix seconds. ``bpm`` is the autocorrelation
+    estimate and ``peak_bpm`` the peak-interval estimate it is checked against, NaN when
+    the window gave none. ``quality`` (0 to 1) is the autocorrelation peak when the two
+    agree, else 0; ``used`` says whether the sudden-change rule reads the value.
+    """
+
+    time: float
+    bpm: float
+    peak_bpm: float
+    quality: float
+    used: bool
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "time": self.time,
+            "bpm": _finite_or_none(self.bpm),
+            "peak_bpm": _finite_or_none(self.peak_bpm),
+            "quality": self.quality,
+            "used": self.used,
+        }
+
+
+@dataclass(frozen=True)
+class HeartRateSeries:
+    """The heart-rate series of one epoch and the optics channel it came from."""
+
+    channel: str
+    points: Tuple[HeartRatePoint, ...]
+
+    @property
+    def used_points(self) -> Tuple[HeartRatePoint, ...]:
+        return tuple(point for point in self.points if point.used)
 
 
 @dataclass(frozen=True)
@@ -102,10 +184,23 @@ class PPGFeatureRow:
     sudden_hr_changes: Tuple[SuddenHeartRateChange, ...]
     artifact_flags: Tuple[str, ...]
     quality_flags: Tuple[str, ...]
+    # What fed the sudden-change rule (SUDDEN_HR_CHANGE_SOURCES). A row built without it
+    # gets "heart_rate", the only source before #247.
+    sudden_hr_change_source: str = "heart_rate"
+    hr_series_channel: str = ""
+    hr_series: Tuple[HeartRatePoint, ...] = ()
 
     @property
     def is_noisy(self) -> bool:
         return bool(self.artifact_flags)
+
+    @property
+    def hr_series_used(self) -> Tuple[HeartRatePoint, ...]:
+        return tuple(point for point in self.hr_series if point.used)
+
+    @property
+    def hr_series_skipped_count(self) -> int:
+        return sum(1 for point in self.hr_series if not point.used)
 
     def to_dict(self) -> Dict[str, object]:
         payload: Dict[str, object] = {
@@ -135,11 +230,20 @@ class PPGFeatureRow:
             "hrv_source": self.hrv_source,
             "sudden_hr_change_count": self.sudden_hr_change_count,
             "max_sudden_hr_change_bpm": self.max_sudden_hr_change_bpm,
+            "sudden_hr_change_source": self.sudden_hr_change_source,
+            "hr_series_channel": self.hr_series_channel,
+            "hr_series_used_count": len(self.hr_series_used),
+            "hr_series_skipped_count": self.hr_series_skipped_count,
+            "hr_series_median_quality": _safe_median(point.quality for point in self.hr_series),
             "is_noisy": self.is_noisy,
             "artifact_flags": ";".join(self.artifact_flags),
             "quality_flags": ";".join(self.quality_flags),
             "sudden_hr_changes_json": json.dumps(
                 [change.to_dict() for change in self.sudden_hr_changes],
+                sort_keys=True,
+            ),
+            "hr_series_json": json.dumps(
+                [point.to_dict() for point in self.hr_series],
                 sort_keys=True,
             ),
         }
@@ -183,7 +287,21 @@ def extract_ppg_features(
     )
     hr_summary = _heart_rate_summary(hr_times, hr_values, ppg_peak_result)
     hrv = _hrv_metrics(ppg_peak_result.peak_times, hr_values)
-    sudden_changes = _sudden_hr_changes(hr_times, hr_values, config)
+    # The rule reads the epoch's own heart-rate series from the optics, never the
+    # decoder's heart_rate stream, which is re-estimated from the last 5 s on every optics
+    # notification and jumps when a beat enters or leaves that window (#247). Only an
+    # epoch without optics falls back to its heart-rate samples, compared as before.
+    series = HeartRateSeries("", ())
+    if ppg_channels:
+        series = heart_rate_series(epoch, config)
+        sudden_changes = _series_hr_changes(series.points, config)
+        sudden_source = "optics"
+    elif hr_values.size:
+        sudden_changes = _sudden_hr_changes(hr_times, hr_values, config)
+        sudden_source = "heart_rate"
+    else:
+        sudden_changes = ()
+        sudden_source = "missing"
 
     return PPGFeatureRow(
         epoch_index=epoch.index,
@@ -220,7 +338,81 @@ def extract_ppg_features(
         sudden_hr_changes=sudden_changes,
         artifact_flags=artifact_flags,
         quality_flags=quality_flags,
+        sudden_hr_change_source=sudden_source,
+        hr_series_channel=series.channel,
+        hr_series=series.points,
     )
+
+
+def heart_rate_series(
+    epoch: SleepEpoch,
+    config: Optional[PPGFeatureConfig] = None,
+) -> HeartRateSeries:
+    """The heart-rate series of an epoch, from the optics it holds (#247).
+
+    Every optics channel goes on one sample clock at ``ppg_sample_rate_hz`` (lost samples
+    the decoder reports, and longer losses it cannot report, stay missing and are
+    bridged linearly) and is band-passed to ``ppg_low_hz``..``ppg_high_hz``. The series
+    comes from the channel whose band-passed epoch is the most periodic: the highest
+    autocorrelation peak between ``min_valid_hr_bpm`` and ``max_valid_hr_bpm``, the first
+    channel by name on a tie. Each window of ``hr_series_window_seconds``, stepped by
+    ``hr_series_step_seconds``, gives two estimates: the beat period from the
+    autocorrelation (the value) and the median interval between pulse maxima (the check).
+    Its quality is the autocorrelation peak when the two agree within
+    ``hr_series_max_disagreement_bpm``, else 0, and 0 when more than
+    ``hr_series_max_missing_fraction`` of the window is missing. Values below
+    ``hr_series_min_quality`` stay in the series with ``used`` false.
+    """
+    config = config or PPGFeatureConfig()
+    config.validate()
+    fs = config.ppg_sample_rate_hz
+    window = int(round(config.hr_series_window_seconds * fs))
+    start_time, channels, lost = _optics_samples(epoch, fs)
+    if lost.size < window:
+        return HeartRateSeries("", ())
+
+    filtered: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+    for name, values in sorted(channels.items()):
+        missing = lost | ~np.isfinite(values)
+        signal = _band_passed(values, missing, config)
+        if signal is not None:
+            filtered[name] = (signal, missing)
+    if not filtered:
+        return HeartRateSeries("", ())
+
+    channel = _most_periodic_channel(filtered, config)
+    signal, missing = filtered[channel]
+    return HeartRateSeries(channel, _series_points(signal, missing, start_time, config))
+
+
+def heart_rate_change_across_epochs(
+    previous: Sequence[HeartRatePoint],
+    current: Sequence[HeartRatePoint],
+    max_seconds: float,
+) -> Optional[SuddenHeartRateChange]:
+    """The largest change between a used value of one epoch's series and a used value
+    of the next epoch's at most ``max_seconds`` later; None when no pair qualifies.
+
+    An epoch's windows stay inside it, so a step in its last or first 10 s shows only
+    when values on both sides of the boundary are compared.
+    """
+    largest: Optional[SuddenHeartRateChange] = None
+    for after in current:
+        if not after.used:
+            continue
+        for before in previous:
+            if not before.used or not 0 < after.time - before.time <= max_seconds:
+                continue
+            delta = float(after.bpm - before.bpm)
+            if largest is None or abs(delta) > abs(largest.delta_bpm):
+                largest = SuddenHeartRateChange(
+                    start_time=before.time,
+                    end_time=after.time,
+                    before_bpm=before.bpm,
+                    after_bpm=after.bpm,
+                    delta_bpm=delta,
+                )
+    return largest
 
 
 def extract_ppg_feature_rows(
@@ -434,11 +626,255 @@ def _rr_metrics(rr_ms: np.ndarray) -> Mapping[str, float]:
     }
 
 
+def _optics_samples(
+    epoch: SleepEpoch,
+    fs: float,
+) -> Tuple[float, Dict[str, np.ndarray], np.ndarray]:
+    """Every optics channel of the epoch on one sample clock, and which samples it lost.
+
+    The clock starts at the first optics frame's timestamp and moves ``1 / fs`` a row;
+    each frame's rows follow the ones before, in the order the decoder delivers them.
+    Samples the decoder reports lost (``PPGSample.gaps``, also those before a frame's
+    first row, but not before the epoch's first optics frame) and the time a frame
+    arrives more than ``_OPTICS_CLOCK_SLACK_SECONDS`` after the clock says it should are
+    NaN in every channel and True in the returned mask.
+    """
+    values_by_channel: Dict[str, List[float]] = {}
+    positions: List[int] = []
+    length = 0
+    start_time: Optional[float] = None
+    for frame in epoch.frames:
+        ppg = frame.ppg
+        if ppg is None or not ppg.channels:
+            continue
+        rows = max(len(values) for values in ppg.channels.values())
+        if rows == 0:
+            continue
+        lead, offsets = _frame_row_offsets(rows, ppg.gaps)
+        if start_time is None:
+            start_time = float(ppg.timestamp)
+            lead = 0
+        else:
+            late = float(ppg.timestamp) - (start_time + (length + lead) / fs)
+            if late > _OPTICS_CLOCK_SLACK_SECONDS:
+                lead += int(round(late * fs))
+        before = len(positions)
+        positions.extend((length + lead + offsets).tolist())
+        for channel, values in ppg.channels.items():
+            column = values_by_channel.setdefault(channel, [math.nan] * before)
+            column.extend(values[:rows])
+        for column in values_by_channel.values():
+            if len(column) < len(positions):
+                column.extend([math.nan] * (len(positions) - len(column)))
+        length += lead + int(offsets[-1]) + 1
+
+    if start_time is None:
+        return math.nan, {}, np.zeros(0, dtype=bool)
+    index = np.asarray(positions, dtype=int)
+    lost = np.ones(length, dtype=bool)
+    lost[index] = False
+    channels = {}
+    for channel, column in values_by_channel.items():
+        values = np.full(length, np.nan)
+        values[index] = column
+        channels[channel] = values
+    return start_time, channels, lost
+
+
+def _frame_row_offsets(rows: int, gaps: Sequence[Tuple[int, int]]) -> Tuple[int, np.ndarray]:
+    """Samples lost before a frame's first row, and the clock offset of each row from it."""
+    offsets = np.arange(rows)
+    lead = 0
+    for index, missing in gaps:
+        if missing <= 0:
+            continue
+        if index <= 0:
+            lead += int(missing)
+        elif index < rows:
+            offsets[index:] += int(missing)
+    return lead, offsets
+
+
+def _band_passed(
+    values: np.ndarray,
+    missing: np.ndarray,
+    config: PPGFeatureConfig,
+) -> Optional[np.ndarray]:
+    """``values`` with missing samples bridged linearly, detrended and band-passed to
+    ``ppg_low_hz``..``ppg_high_hz`` without phase shift; None when fewer samples than one
+    window are left or the channel is flat."""
+    fs = config.ppg_sample_rate_hz
+    present = ~missing
+    if int(np.sum(present)) < int(round(config.hr_series_window_seconds * fs)):
+        return None
+    known = values[present]
+    if float(np.std(known)) <= config.flat_ppg_std_threshold:
+        return None
+    filled = np.array(values, dtype=float)
+    if not np.all(present):
+        index = np.arange(values.size)
+        filled[missing] = np.interp(index[missing], index[present], known)
+    nyquist = fs / 2.0
+    sections = butter(
+        4,
+        [config.ppg_low_hz / nyquist, config.ppg_high_hz / nyquist],
+        btype="band",
+        output="sos",
+    )
+    signal = detrend(filled)
+    return sosfiltfilt(sections, signal, padlen=min(signal.size - 1, int(3 * fs)))
+
+
+def _most_periodic_channel(
+    filtered: Mapping[str, Tuple[np.ndarray, np.ndarray]],
+    config: PPGFeatureConfig,
+) -> str:
+    best_channel = ""
+    best_peak = -math.inf
+    for channel, (signal, _missing) in sorted(filtered.items()):
+        _bpm, peak = _autocorrelation_bpm(signal, config)
+        if peak > best_peak:
+            best_channel, best_peak = channel, peak
+    return best_channel
+
+
+def _series_points(
+    signal: np.ndarray,
+    missing: np.ndarray,
+    start_time: float,
+    config: PPGFeatureConfig,
+) -> Tuple[HeartRatePoint, ...]:
+    fs = config.ppg_sample_rate_hz
+    window = int(round(config.hr_series_window_seconds * fs))
+    step = max(1, int(round(config.hr_series_step_seconds * fs)))
+    points = []
+    for first in range(0, signal.size - window + 1, step):
+        time = start_time + (first + window / 2.0) / fs
+        if float(np.mean(missing[first:first + window])) > config.hr_series_max_missing_fraction:
+            points.append(HeartRatePoint(time, math.nan, math.nan, 0.0, False))
+            continue
+        segment = signal[first:first + window]
+        bpm, peak = _autocorrelation_bpm(segment, config)
+        peak_bpm = _peak_interval_bpm(segment, config)
+        agree = bool(
+            math.isfinite(bpm)
+            and math.isfinite(peak_bpm)
+            and abs(bpm - peak_bpm) <= config.hr_series_max_disagreement_bpm
+        )
+        quality = _clamp01(peak) if agree else 0.0
+        used = agree and quality > 0 and quality >= config.hr_series_min_quality
+        points.append(HeartRatePoint(float(time), float(bpm), float(peak_bpm), quality, used))
+    return tuple(points)
+
+
+def _autocorrelation_bpm(segment: np.ndarray, config: PPGFeatureConfig) -> Tuple[float, float]:
+    """Heart rate from the beat period that ``segment`` correlates best with itself at,
+    and that correlation (Pearson, over the overlap at each lag); (NaN, 0) when no lag
+    in the heart-rate range has a positive peak."""
+    fs = config.ppg_sample_rate_hz
+    size = segment.size
+    shortest = max(2, int(math.floor(fs * 60.0 / config.max_valid_hr_bpm)))
+    longest = min(int(math.ceil(fs * 60.0 / config.min_valid_hr_bpm)), size // 2)
+    if longest - shortest < 2:
+        return math.nan, 0.0
+    centred = segment - float(np.mean(segment))
+    fft_size = 1 << int(math.ceil(math.log2(2 * size)))
+    spectrum = np.fft.rfft(centred, fft_size)
+    products = np.fft.irfft(spectrum * np.conj(spectrum), fft_size)
+    energy = np.concatenate(([0.0], np.cumsum(centred * centred)))
+    lags = np.arange(shortest - 1, longest + 2)
+    denominator = np.sqrt(energy[size - lags] * (energy[size] - energy[lags]))
+    correlation = np.full(lags.size, np.nan)
+    positive = denominator > 0
+    correlation[positive] = products[lags[positive]] / denominator[positive]
+
+    inner = correlation[1:-1]
+    with np.errstate(invalid="ignore"):
+        peaks = np.flatnonzero(
+            (inner >= correlation[:-2]) & (inner >= correlation[2:]) & (inner > 0)
+        ) + 1
+    if peaks.size == 0:
+        return math.nan, 0.0
+    heights = correlation[peaks]
+    chosen = int(peaks[np.argmax(heights >= _AUTOCORRELATION_PEAK_SHARE * float(np.max(heights)))])
+    left, middle, right = correlation[chosen - 1], correlation[chosen], correlation[chosen + 1]
+    curvature = left - 2.0 * middle + right
+    shift = 0.5 * (left - right) / curvature if curvature < 0 else 0.0
+    return 60.0 * fs / (float(lags[chosen]) + shift), float(middle)
+
+
+def _peak_interval_bpm(segment: np.ndarray, config: PPGFeatureConfig) -> float:
+    """60 over the median interval between the light maxima of ``segment`` (the pulse
+    foot), each placed between samples by a parabola; NaN with fewer than three."""
+    fs = config.ppg_sample_rate_hz
+    scale = float(np.std(segment))
+    if not math.isfinite(scale) or scale <= 0:
+        return math.nan
+    peaks, _ = find_peaks(
+        segment,
+        distance=max(1, int(math.floor(fs * 60.0 / config.max_valid_hr_bpm))),
+        prominence=config.hr_series_peak_prominence * scale,
+    )
+    if peaks.size < 3:
+        return math.nan
+    left, middle, right = segment[peaks - 1], segment[peaks], segment[peaks + 1]
+    curvature = left - 2.0 * middle + right
+    bent = curvature < 0
+    shift = np.zeros(peaks.size)
+    shift[bent] = 0.5 * (left[bent] - right[bent]) / curvature[bent]
+    return 60.0 * fs / float(np.median(np.diff(peaks + shift)))
+
+
+def _series_hr_changes(
+    points: Sequence[HeartRatePoint],
+    config: PPGFeatureConfig,
+) -> Tuple[SuddenHeartRateChange, ...]:
+    """Changes of at least ``sudden_hr_change_bpm`` between used values
+    ``hr_series_compare_seconds`` to ``hr_series_max_compare_seconds`` apart, the
+    largest pair ending at each value. A held step shows at several neighbouring values;
+    those in one direction at most ``hr_series_compare_seconds`` apart are one change,
+    logged by its largest pair."""
+    shortest = config.hr_series_compare_seconds - _TIME_TOLERANCE_SECONDS
+    longest = config.hr_series_max_compare_seconds + _TIME_TOLERANCE_SECONDS
+    used = [point for point in points if point.used]
+    changes: List[SuddenHeartRateChange] = []
+    last_time = -math.inf
+    for index, after in enumerate(used):
+        largest: Optional[SuddenHeartRateChange] = None
+        for before in used[:index]:
+            if not shortest <= after.time - before.time <= longest:
+                continue
+            delta = float(after.bpm - before.bpm)
+            if largest is None or abs(delta) > abs(largest.delta_bpm):
+                largest = SuddenHeartRateChange(
+                    start_time=before.time,
+                    end_time=after.time,
+                    before_bpm=before.bpm,
+                    after_bpm=after.bpm,
+                    delta_bpm=delta,
+                )
+        if largest is None or abs(largest.delta_bpm) < config.sudden_hr_change_bpm:
+            continue
+        same = (
+            changes
+            and after.time - last_time <= config.hr_series_compare_seconds + _TIME_TOLERANCE_SECONDS
+            and (largest.delta_bpm > 0) == (changes[-1].delta_bpm > 0)
+        )
+        if not same:
+            changes.append(largest)
+        elif abs(largest.delta_bpm) > abs(changes[-1].delta_bpm):
+            changes[-1] = largest
+        last_time = after.time
+    return tuple(changes)
+
+
 def _sudden_hr_changes(
     hr_times: np.ndarray,
     hr_values: np.ndarray,
     config: PPGFeatureConfig,
 ) -> Tuple[SuddenHeartRateChange, ...]:
+    """Consecutive heart-rate samples that differ by ``sudden_hr_change_bpm`` or more;
+    the rule's input when an epoch has heart-rate samples but no optics."""
     finite_mask = np.isfinite(hr_times) & np.isfinite(hr_values)
     times = hr_times[finite_mask]
     values = hr_values[finite_mask]
@@ -530,6 +966,18 @@ def _safe_max(values: Iterable[float]) -> float:
     if finite.size == 0:
         return math.nan
     return float(np.max(finite))
+
+
+def _safe_median(values: Iterable[float]) -> float:
+    values_array = np.asarray(tuple(values), dtype=float)
+    finite = values_array[np.isfinite(values_array)]
+    if finite.size == 0:
+        return math.nan
+    return float(np.median(finite))
+
+
+def _finite_or_none(value: float) -> Optional[float]:
+    return float(value) if math.isfinite(value) else None
 
 
 def _safe_divide(numerator: float, denominator: float) -> float:
