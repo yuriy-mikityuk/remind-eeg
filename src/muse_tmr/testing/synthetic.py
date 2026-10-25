@@ -442,7 +442,9 @@ class SyntheticNightConfig:
     bad_contact_span: Tuple[float, float] = (0.0, 0.0)
     movement_scale: float = 1.0
     heart_rate_bpm: Mapping[str, float] = field(default_factory=lambda: dict(DEFAULT_HEART_RATE_BPM))
-    optics_wander_ratio: float = 0.5
+    # LO_NIR's 0.1 to 0.5 Hz RMS over its 0.7 to 3 Hz RMS on the still epochs of two awake
+    # p1034 recordings with good contact: medians 0.71 and 0.94 (docs/numbers.md).
+    optics_wander_ratio: float = 0.85
     battery_start_percent: float = 100.0
     battery_drain_percent_per_hour: Optional[float] = None
     notifications_per_second: float = 29.03
