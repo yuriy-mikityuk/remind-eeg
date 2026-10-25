@@ -141,6 +141,15 @@ def held_step(onset_seconds, before_bpm, after_bpm):
     return lambda times: np.where(times >= onset_seconds, after_bpm, before_bpm)
 
 
+def surge(onset_seconds, seconds, before_bpm, delta_bpm):
+    """A rate that jumps by ``delta_bpm`` at ``onset_seconds`` and back ``seconds`` later."""
+    return lambda times: np.where(
+        (times >= onset_seconds) & (times < onset_seconds + seconds),
+        before_bpm + delta_bpm,
+        before_bpm,
+    )
+
+
 class TestHeartRateSeries(unittest.TestCase):
     """The series the sudden heart-rate change rule reads (#247). Synthetic input, not sleep."""
 
@@ -185,6 +194,28 @@ class TestHeartRateSeries(unittest.TestCase):
                 self.assertAlmostEqual(row.max_sudden_hr_change_bpm, abs(after - before), delta=1.5)
                 self.assertLess(change.start_time, 1015.0)
                 self.assertGreater(change.end_time, 1015.0)
+
+    def test_short_surges_of_25_to_40_bpm_fire(self):
+        # No window holds only the surge, and one that holds both rates peaks at neither
+        # period; its run of regular fast beats gives the value instead.
+        for delta, seconds in ((25.0, 5.0), (30.0, 6.0), (40.0, 5.0), (40.0, 7.0)):
+            with self.subTest(delta=delta, seconds=seconds):
+                light = pulse_light(surge(10.0, seconds, 60.0, delta), seed=4)
+                row = extract_ppg_features(optics_epoch({"LO_NIR": light}))
+
+                fast = [
+                    point
+                    for point in row.hr_series_used
+                    if point.run_seconds > 0 and abs(point.bpm - (60.0 + delta)) < 3.0
+                ]
+                self.assertTrue(fast)
+                for point in fast:
+                    self.assertGreaterEqual(point.run_seconds, 4.0)
+                    self.assertLess(point.run_seconds, seconds + 0.5)
+                self.assertGreaterEqual(row.sudden_hr_change_count, 1)
+                self.assertGreaterEqual(row.max_sudden_hr_change_bpm, delta - 3.0)
+                logged = json.loads(row.to_dict()["hr_series_json"])
+                self.assertTrue(any(point["run_seconds"] > 0 for point in logged))
 
     def test_low_quality_values_are_skipped_and_logged(self):
         burst = pulse_light(60.0, noise=(10.0, 18.0, 5.0))
@@ -284,6 +315,8 @@ class TestHeartRateSeries(unittest.TestCase):
             {"hr_series_max_disagreement_bpm": 0.0},
             {"hr_series_max_missing_fraction": 1.0},
             {"hr_series_peak_prominence": 0.0},
+            {"hr_series_min_run_seconds": 0.0},
+            {"hr_series_min_run_seconds": 11.0},
         ):
             with self.subTest(**bad), self.assertRaises(ValueError):
                 PPGFeatureConfig(**bad).validate()

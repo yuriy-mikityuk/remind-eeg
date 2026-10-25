@@ -25,6 +25,11 @@ _OPTICS_CLOCK_SLACK_SECONDS = 1.0
 # The autocorrelation estimate takes the shortest lag whose peak reaches this share of the
 # highest peak in the heart-rate range, so one beat wins over two or three (sub-harmonics).
 _AUTOCORRELATION_PEAK_SHARE = 0.9
+# A window that holds two heart rates (a step or a short surge inside it) peaks at neither
+# beat period. Its longest run of at least this many beat intervals, each within this
+# share of the window's median interval, then stands in for it (see _two_rate_run()).
+_RUN_MIN_INTERVALS = 5
+_RUN_INTERVAL_SHARE = 0.15
 # Series times are Unix seconds; their differences carry float rounding.
 _TIME_TOLERANCE_SECONDS = 1e-6
 
@@ -46,8 +51,9 @@ class PPGFeatureConfig:
     # windows of hr_series_window_seconds stepped by hr_series_step_seconds over one optics
     # channel band-passed to ppg_low_hz..ppg_high_hz. A value is used when its two
     # estimates agree within hr_series_max_disagreement_bpm and its quality reaches
-    # hr_series_min_quality; used values hr_series_compare_seconds to
-    # hr_series_max_compare_seconds apart are compared.
+    # hr_series_min_quality, or else when a run of regular beats of at least
+    # hr_series_min_run_seconds inside the window does; used values
+    # hr_series_compare_seconds to hr_series_max_compare_seconds apart are compared.
     hr_series_window_seconds: float = 10.0
     hr_series_step_seconds: float = 1.0
     hr_series_compare_seconds: float = 10.0
@@ -56,6 +62,7 @@ class PPGFeatureConfig:
     hr_series_max_disagreement_bpm: float = 5.0
     hr_series_max_missing_fraction: float = 0.2
     hr_series_peak_prominence: float = 0.5
+    hr_series_min_run_seconds: float = 4.0
 
     def validate(self) -> None:
         if self.ppg_sample_rate_hz <= 0:
@@ -94,6 +101,8 @@ class PPGFeatureConfig:
             raise ValueError("hr_series_max_missing_fraction must be in [0, 1)")
         if self.hr_series_peak_prominence <= 0:
             raise ValueError("hr_series_peak_prominence must be positive")
+        if not 0 < self.hr_series_min_run_seconds <= self.hr_series_window_seconds:
+            raise ValueError("hr_series_min_run_seconds must be positive and fit in a window")
 
 
 @dataclass(frozen=True)
@@ -104,6 +113,8 @@ class HeartRatePoint:
     estimate and ``peak_bpm`` the peak-interval estimate it is checked against, NaN when
     the window gave none. ``quality`` (0 to 1) is the autocorrelation peak when the two
     agree, else 0; ``used`` says whether the sudden-change rule reads the value.
+    ``run_seconds`` is 0, or the length of the run of regular beats inside the window
+    that gave all three when the window's own estimates did not reach the quality.
     """
 
     time: float
@@ -111,6 +122,7 @@ class HeartRatePoint:
     peak_bpm: float
     quality: float
     used: bool
+    run_seconds: float = 0.0
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -119,6 +131,7 @@ class HeartRatePoint:
             "peak_bpm": _finite_or_none(self.peak_bpm),
             "quality": self.quality,
             "used": self.used,
+            "run_seconds": self.run_seconds,
         }
 
 
@@ -360,8 +373,12 @@ def heart_rate_series(
     autocorrelation (the value) and the median interval between pulse maxima (the check).
     Its quality is the autocorrelation peak when the two agree within
     ``hr_series_max_disagreement_bpm``, else 0, and 0 when more than
-    ``hr_series_max_missing_fraction`` of the window is missing. Values below
-    ``hr_series_min_quality`` stay in the series with ``used`` false.
+    ``hr_series_max_missing_fraction`` of the window is missing. A window that holds two
+    rates, where a step or a short surge falls inside it, peaks at neither beat period;
+    when its quality stays below ``hr_series_min_quality``, its longest run of regular
+    beats of at least ``hr_series_min_run_seconds`` gives the two estimates and the
+    quality instead (``run_seconds``). Values below ``hr_series_min_quality`` stay in the
+    series with ``used`` false.
     """
     config = config or PPGFeatureConfig()
     config.validate()
@@ -755,16 +772,72 @@ def _series_points(
             continue
         segment = signal[first:first + window]
         bpm, peak = _autocorrelation_bpm(segment, config)
-        peak_bpm = _peak_interval_bpm(segment, config)
-        agree = bool(
-            math.isfinite(bpm)
-            and math.isfinite(peak_bpm)
-            and abs(bpm - peak_bpm) <= config.hr_series_max_disagreement_bpm
+        maxima = _pulse_maxima(segment, config)
+        peak_bpm = _interval_bpm(maxima, fs)
+        quality = _clamp01(peak) if _estimates_agree(bpm, peak_bpm, config) else 0.0
+        run_seconds = 0.0
+        if quality < config.hr_series_min_quality:
+            run = _two_rate_run(segment, maxima, config)
+            if run is not None:
+                bpm, peak_bpm, quality, run_seconds = run
+        used = quality > 0 and quality >= config.hr_series_min_quality
+        points.append(
+            HeartRatePoint(float(time), float(bpm), float(peak_bpm), quality, used, run_seconds)
         )
-        quality = _clamp01(peak) if agree else 0.0
-        used = agree and quality > 0 and quality >= config.hr_series_min_quality
-        points.append(HeartRatePoint(float(time), float(bpm), float(peak_bpm), quality, used))
     return tuple(points)
+
+
+def _estimates_agree(bpm: float, peak_bpm: float, config: PPGFeatureConfig) -> bool:
+    return bool(
+        math.isfinite(bpm)
+        and math.isfinite(peak_bpm)
+        and abs(bpm - peak_bpm) <= config.hr_series_max_disagreement_bpm
+    )
+
+
+def _two_rate_run(
+    segment: np.ndarray,
+    maxima: np.ndarray,
+    config: PPGFeatureConfig,
+) -> Optional[Tuple[float, float, float, float]]:
+    """The window's longest run of regular beats, for a window that holds two rates.
+
+    A step or a short surge inside a window gives it beats at two rates, and its
+    autocorrelation peaks at neither period (often at two fast beats, near one slow one).
+    The run is the longest stretch of at least ``_RUN_MIN_INTERVALS`` consecutive beat
+    intervals, each within ``_RUN_INTERVAL_SHARE`` of the window's median interval, that
+    spans ``hr_series_min_run_seconds`` or more. It stands in for the window when the
+    autocorrelation of that stretch alone agrees with the median of its intervals:
+    (bpm, peak_bpm, quality, run seconds), else None. A run in noise rarely holds five
+    regular intervals whose stretch also correlates with itself at their period.
+    """
+    fs = config.ppg_sample_rate_hz
+    intervals = np.diff(maxima)
+    if intervals.size < _RUN_MIN_INTERVALS:
+        return None
+    median = float(np.median(intervals))
+    regular = np.abs(intervals - median) <= _RUN_INTERVAL_SHARE * median
+    best: Optional[Tuple[int, int]] = None
+    start: Optional[int] = None
+    for index, flag in enumerate(regular.tolist() + [False]):
+        if flag and start is None:
+            start = index
+        elif not flag and start is not None:
+            if best is None or maxima[index] - maxima[start] > maxima[best[1]] - maxima[best[0]]:
+                best = (start, index)
+            start = None
+    if best is None:
+        return None
+    first, last = best
+    span = float(maxima[last] - maxima[first])
+    if last - first < _RUN_MIN_INTERVALS or span < config.hr_series_min_run_seconds * fs:
+        return None
+    stretch = segment[int(math.floor(maxima[first])):int(math.ceil(maxima[last])) + 1]
+    bpm, peak = _autocorrelation_bpm(stretch, config)
+    peak_bpm = 60.0 * fs / float(np.median(intervals[first:last]))
+    if not _estimates_agree(bpm, peak_bpm, config):
+        return None
+    return bpm, peak_bpm, _clamp01(peak), span / fs
 
 
 def _autocorrelation_bpm(segment: np.ndarray, config: PPGFeatureConfig) -> Tuple[float, float]:
@@ -803,26 +876,31 @@ def _autocorrelation_bpm(segment: np.ndarray, config: PPGFeatureConfig) -> Tuple
     return 60.0 * fs / (float(lags[chosen]) + shift), float(middle)
 
 
-def _peak_interval_bpm(segment: np.ndarray, config: PPGFeatureConfig) -> float:
-    """60 over the median interval between the light maxima of ``segment`` (the pulse
-    foot), each placed between samples by a parabola; NaN with fewer than three."""
+def _pulse_maxima(segment: np.ndarray, config: PPGFeatureConfig) -> np.ndarray:
+    """The light maxima of ``segment`` (the pulse foot), in samples, each placed between
+    samples by a parabola."""
     fs = config.ppg_sample_rate_hz
     scale = float(np.std(segment))
     if not math.isfinite(scale) or scale <= 0:
-        return math.nan
+        return np.zeros(0)
     peaks, _ = find_peaks(
         segment,
         distance=max(1, int(math.floor(fs * 60.0 / config.max_valid_hr_bpm))),
         prominence=config.hr_series_peak_prominence * scale,
     )
-    if peaks.size < 3:
-        return math.nan
     left, middle, right = segment[peaks - 1], segment[peaks], segment[peaks + 1]
     curvature = left - 2.0 * middle + right
     bent = curvature < 0
     shift = np.zeros(peaks.size)
     shift[bent] = 0.5 * (left[bent] - right[bent]) / curvature[bent]
-    return 60.0 * fs / float(np.median(np.diff(peaks + shift)))
+    return peaks + shift
+
+
+def _interval_bpm(maxima: np.ndarray, fs: float) -> float:
+    """60 over the median interval between pulse maxima; NaN with fewer than three."""
+    if maxima.size < 3:
+        return math.nan
+    return 60.0 * fs / float(np.median(np.diff(maxima)))
 
 
 def _series_hr_changes(
