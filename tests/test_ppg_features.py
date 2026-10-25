@@ -11,7 +11,9 @@ import pandas as pd
 from muse_tmr.data.sample_types import HeartRateSample, MuseFrame, PPGSample
 from muse_tmr.features.epochs import EpochBuilder, EpochConfig, SleepEpoch
 from muse_tmr.features.ppg_features import (
+    HeartRatePoint,
     PPGFeatureConfig,
+    _series_hr_changes,
     export_ppg_feature_rows,
     extract_ppg_feature_rows,
     extract_ppg_features,
@@ -217,6 +219,19 @@ class TestHeartRateSeries(unittest.TestCase):
                 logged = json.loads(row.to_dict()["hr_series_json"])
                 self.assertTrue(any(point["run_seconds"] > 0 for point in logged))
 
+    def test_changes_are_logged_from_the_bpm_less_the_margin(self):
+        points = tuple(
+            HeartRatePoint(time=1005.0 + second, bpm=bpm, peak_bpm=bpm, quality=0.9, used=True)
+            for second, bpm in enumerate([60.0] * 10 + [69.5] * 11)
+        )
+
+        changes = _series_hr_changes(points, PPGFeatureConfig())
+        exact = _series_hr_changes(points, PPGFeatureConfig(hr_series_margin_bpm=0.0))
+
+        self.assertEqual(len(changes), 1)
+        self.assertAlmostEqual(changes[0].delta_bpm, 9.5)
+        self.assertEqual(exact, ())
+
     def test_low_quality_values_are_skipped_and_logged(self):
         burst = pulse_light(60.0, noise=(10.0, 18.0, 5.0))
         row = extract_ppg_features(optics_epoch({"LO_NIR": burst}))
@@ -317,6 +332,8 @@ class TestHeartRateSeries(unittest.TestCase):
             {"hr_series_peak_prominence": 0.0},
             {"hr_series_min_run_seconds": 0.0},
             {"hr_series_min_run_seconds": 11.0},
+            {"hr_series_margin_bpm": -1.0},
+            {"hr_series_margin_bpm": 10.0},
         ):
             with self.subTest(**bad), self.assertRaises(ValueError):
                 PPGFeatureConfig(**bad).validate()

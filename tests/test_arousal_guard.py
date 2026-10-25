@@ -378,9 +378,26 @@ class TestSuddenHeartRateRule(unittest.TestCase):
         self.assertEqual(skipped.metadata["hr_series_skipped_count"], 21)
         self.assertEqual(after.action, "allow")
 
+    def test_the_margin_counts_a_change_just_under_the_bpm(self):
+        self.assertEqual(ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=_ppg_with_changes(9.5)).action, "pause")
+        self.assertEqual(ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=_ppg_with_changes(8.5)).action, "allow")
+        exact = ArousalGuard(ArousalGuardConfig(sudden_hr_change_margin_bpm=0.0))
+        self.assertEqual(exact.evaluate(timestamp_seconds=0.0, ppg=_ppg_with_changes(9.5)).action, "allow")
+
+        across = ArousalGuard()
+        across.evaluate(timestamp_seconds=0.0, ppg=_ppg_with_series(60.0, start=0.0))
+        second = across.evaluate(timestamp_seconds=30.0, ppg=_ppg_with_series(69.5, start=30.0))
+        self.assertEqual(second.action, "pause")
+        self.assertAlmostEqual(second.metadata["sudden_hr_change_across_epochs_bpm"], 9.5)
+
     def test_config_rejects_a_negative_link(self):
         with self.assertRaises(ValueError):
             ArousalGuardConfig(sudden_hr_change_link_seconds=-1.0).validate()
+
+    def test_config_rejects_a_margin_outside_the_bpm(self):
+        for margin in (-1.0, 10.0):
+            with self.subTest(margin=margin), self.assertRaises(ValueError):
+                ArousalGuardConfig(sudden_hr_change_margin_bpm=margin).validate()
 
 
 def _ppg_with_changes(*deltas):

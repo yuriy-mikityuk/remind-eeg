@@ -53,7 +53,9 @@ class PPGFeatureConfig:
     # estimates agree within hr_series_max_disagreement_bpm and its quality reaches
     # hr_series_min_quality, or else when a run of regular beats of at least
     # hr_series_min_run_seconds inside the window does; used values
-    # hr_series_compare_seconds to hr_series_max_compare_seconds apart are compared.
+    # hr_series_compare_seconds to hr_series_max_compare_seconds apart are compared, and
+    # changes from sudden_hr_change_bpm less hr_series_margin_bpm (the error of a value)
+    # are logged.
     hr_series_window_seconds: float = 10.0
     hr_series_step_seconds: float = 1.0
     hr_series_compare_seconds: float = 10.0
@@ -63,6 +65,7 @@ class PPGFeatureConfig:
     hr_series_max_missing_fraction: float = 0.2
     hr_series_peak_prominence: float = 0.5
     hr_series_min_run_seconds: float = 4.0
+    hr_series_margin_bpm: float = 1.0
 
     def validate(self) -> None:
         if self.ppg_sample_rate_hz <= 0:
@@ -103,6 +106,8 @@ class PPGFeatureConfig:
             raise ValueError("hr_series_peak_prominence must be positive")
         if not 0 < self.hr_series_min_run_seconds <= self.hr_series_window_seconds:
             raise ValueError("hr_series_min_run_seconds must be positive and fit in a window")
+        if not 0 <= self.hr_series_margin_bpm < self.sudden_hr_change_bpm:
+            raise ValueError("hr_series_margin_bpm must be in [0, sudden_hr_change_bpm)")
 
 
 @dataclass(frozen=True)
@@ -907,13 +912,15 @@ def _series_hr_changes(
     points: Sequence[HeartRatePoint],
     config: PPGFeatureConfig,
 ) -> Tuple[SuddenHeartRateChange, ...]:
-    """Changes of at least ``sudden_hr_change_bpm`` between used values
-    ``hr_series_compare_seconds`` to ``hr_series_max_compare_seconds`` apart, the
-    largest pair ending at each value. A held step shows at several neighbouring values;
-    those in one direction at most ``hr_series_compare_seconds`` apart are one change,
-    logged by its largest pair."""
+    """Changes of at least ``sudden_hr_change_bpm`` less ``hr_series_margin_bpm``
+    between used values ``hr_series_compare_seconds`` to ``hr_series_max_compare_seconds``
+    apart, the largest pair ending at each value. The margin is the error of a value, so
+    a change of ``sudden_hr_change_bpm`` is not lost to it. A held step shows at several
+    neighbouring values; those in one direction at most ``hr_series_compare_seconds``
+    apart are one change, logged by its largest pair."""
     shortest = config.hr_series_compare_seconds - _TIME_TOLERANCE_SECONDS
     longest = config.hr_series_max_compare_seconds + _TIME_TOLERANCE_SECONDS
+    smallest = config.sudden_hr_change_bpm - config.hr_series_margin_bpm
     used = [point for point in points if point.used]
     changes: List[SuddenHeartRateChange] = []
     last_time = -math.inf
@@ -931,7 +938,7 @@ def _series_hr_changes(
                     after_bpm=after.bpm,
                     delta_bpm=delta,
                 )
-        if largest is None or abs(largest.delta_bpm) < config.sudden_hr_change_bpm:
+        if largest is None or abs(largest.delta_bpm) < smallest:
             continue
         same = (
             changes

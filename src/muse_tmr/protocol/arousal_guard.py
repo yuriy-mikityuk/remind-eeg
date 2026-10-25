@@ -53,12 +53,15 @@ class ArousalGuardConfig:
     alpha_lower_volume_relative_power: float = 0.25
     alpha_pause_relative_power: float = 0.40
     # The HR rule pauses when at least sudden_hr_change_pause_count heart-rate changes of
-    # sudden_hr_change_pause_bpm or more are found: the row's own (sudden_hr_changes,
-    # logged from PPGFeatureConfig.sudden_hr_change_bpm up) and the largest change between
-    # the previous row's heart-rate series and this one's, for values at most
-    # sudden_hr_change_link_seconds apart (0 leaves that comparison out).
+    # sudden_hr_change_pause_bpm less sudden_hr_change_margin_bpm or more are found: the
+    # row's own (sudden_hr_changes, logged from PPGFeatureConfig.sudden_hr_change_bpm less
+    # its hr_series_margin_bpm up) and the largest change between the previous row's
+    # heart-rate series and this one's, for values at most sudden_hr_change_link_seconds
+    # apart (0 leaves that comparison out).
+    # The margin is the error of a series value, so a true change of the bpm still pauses.
     sudden_hr_change_pause_count: int = 1
     sudden_hr_change_pause_bpm: float = 10.0
+    sudden_hr_change_margin_bpm: float = 1.0
     sudden_hr_change_link_seconds: float = 20.0
     # Whether the session preset streams optics/PPG at all, as in RemGateConfig.
     # When False (an EEG-only preset such as p21) the PPG-absence flags are not
@@ -96,6 +99,8 @@ class ArousalGuardConfig:
             raise ValueError("sudden_hr_change_pause_count must be positive")
         if self.sudden_hr_change_pause_bpm <= 0:
             raise ValueError("sudden_hr_change_pause_bpm must be positive")
+        if not 0 <= self.sudden_hr_change_margin_bpm < self.sudden_hr_change_pause_bpm:
+            raise ValueError("sudden_hr_change_margin_bpm must be in [0, sudden_hr_change_pause_bpm)")
         if self.sudden_hr_change_link_seconds < 0:
             raise ValueError("sudden_hr_change_link_seconds must be non-negative")
 
@@ -422,11 +427,12 @@ class ArousalGuard:
             lower_reasons.append("low_ppg_hr_coverage")
 
     def _sudden_hr_steps(self, ppg: PPGFeatureRow, metadata: Dict[str, object]) -> int:
-        """Heart-rate changes of sudden_hr_change_pause_bpm or more: the row's own, and
-        the largest one from the previous row's series into this one's."""
-        bpm = self.config.sudden_hr_change_pause_bpm
+        """Heart-rate changes of sudden_hr_change_pause_bpm less the margin or more: the
+        row's own, and the largest one from the previous row's series into this one's."""
+        bpm = self.config.sudden_hr_change_pause_bpm - self.config.sudden_hr_change_margin_bpm
+        counted = [change for change in ppg.sudden_hr_changes if abs(change.delta_bpm) >= bpm]
         if ppg.sudden_hr_changes:
-            steps = sum(1 for change in ppg.sudden_hr_changes if abs(change.delta_bpm) >= bpm)
+            steps = len(counted)
         elif math.isfinite(ppg.max_sudden_hr_change_bpm):
             # A row with the counts but not the changes: all of them reach bpm when the
             # largest does, none otherwise.
