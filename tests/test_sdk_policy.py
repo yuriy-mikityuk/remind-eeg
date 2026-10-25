@@ -23,6 +23,13 @@ class TestSdkPolicy(unittest.TestCase):
         self.assertTrue(policy.is_forbidden("MuseSDK.pkg"))
         self.assertTrue(policy.is_forbidden("Muse-SDK.zip"))
 
+    def test_generated_synthetic_nights_are_not_publishable(self):
+        policy = _load_policy_script()
+
+        self.assertTrue(policy.is_forbidden("data/synthetic/demo_20261025_120000/report.html"))
+        self.assertTrue(policy.is_forbidden("data/synthetic/clean_night/hypnogram.csv"))
+        self.assertFalse(policy.is_forbidden("tests/fixtures/synthetic/agreement_baseline.json"))
+
     def test_sdk_stub_source_file_is_allowed(self):
         policy = _load_policy_script()
 
