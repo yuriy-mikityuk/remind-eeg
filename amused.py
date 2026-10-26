@@ -1,9 +1,19 @@
-"""Compatibility module for the original amused public API.
+"""Deprecated compatibility module for the original amused public API.
 
-The repository uses top-level modules today. This shim makes `import amused`
-work from a checkout and from editable installs until the project has a
-package-layout migration.
+It re-exports the names below from muse_tmr.ble, where the BLE modules moved in #232;
+import them from there. It goes in 0.5, with the top-level muse_* shims. `amused` is
+also the name of the upstream amused-py package on PyPI, so this file is not in the
+wheel and an editable install does not map it either: `import amused` resolves only
+with the repository root on sys.path, as under pytest or `python -m` in the checkout.
 """
+
+import warnings
+
+warnings.warn(
+    "amused is deprecated: import from muse_tmr.ble instead; the module is removed in 0.5",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 __version__ = "1.1.0"
 __author__ = "nexon33 & Claude"

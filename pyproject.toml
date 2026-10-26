@@ -7,7 +7,7 @@ name = "remind-eeg"
 dynamic = ["version"]
 authors = [
     {name = "Yuriy Mikityuk"},
-    # amused-py, the BLE layer in the top-level amused.py and muse_*.py modules
+    # amused-py, the BLE layer in muse_tmr.ble
     {name = "Adrian Tadeusz Belmans", email = "adrian.belmans@gmail.com"},
 ]
 description = "REM-gated targeted memory reactivation for the Muse S Athena EEG headset: overnight recording, real-time REM detection and safety-gated audio cues"
@@ -76,8 +76,9 @@ Repository = "https://github.com/yuriy-mikityuk/remind-eeg"
 Issues = "https://github.com/yuriy-mikityuk/remind-eeg/issues"
 
 [tool.setuptools]
-# amused.py is neither shipped nor mapped by an editable install: `amused` is the
-# upstream package's name on PyPI, and the shim only serves `import amused` with the
+# The deprecated top-level shims of muse_tmr.ble, shipped until 0.5 (#232). amused.py
+# is neither shipped nor mapped by an editable install: `amused` is the upstream
+# package's name on PyPI, and the shim only serves `import amused` with the
 # repository root on sys.path.
 py-modules = [
     "muse_athena_protocol",

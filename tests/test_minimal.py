@@ -8,8 +8,12 @@ import tempfile
 import os
 import sys
 import datetime
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+import importlib
+import subprocess
+# The repository root holds amused.py and the deprecated top-level shims.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(REPO_ROOT)
+sys.path.append(os.path.join(REPO_ROOT, "src"))
 
 from muse_tmr.ble.muse_raw_stream import MuseRawStream, RawPacket
 from muse_tmr.ble.muse_realtime_decoder import MuseRealtimeDecoder, DecodedData
@@ -101,12 +105,48 @@ class TestPackageStructure(unittest.TestCase):
 
     def test_package_import(self):
         """Test main package import"""
-        import amused
+        sys.modules.pop('amused', None)
+        with self.assertWarnsRegex(DeprecationWarning, 'import from muse_tmr.ble instead'):
+            import amused
 
         self.assertTrue(hasattr(amused, '__version__'))
         self.assertTrue(hasattr(amused, 'MuseStreamClient'))
         self.assertTrue(hasattr(amused, 'PPGHeartRateExtractor'))
         self.assertTrue(hasattr(amused, 'FNIRSProcessor'))
+        self.assertIs(amused.MuseRealtimeDecoder, MuseRealtimeDecoder)
+
+
+class TestDeprecatedTopLevelNames(unittest.TestCase):
+    """The muse_*.py modules moved to muse_tmr.ble in #232; their old names work until 0.5."""
+
+    NAMES = sorted(
+        name[:-3]
+        for name in os.listdir(os.path.join(REPO_ROOT, 'src', 'muse_tmr', 'ble'))
+        if name.startswith('muse_') and name.endswith('.py')
+    )
+
+    def test_old_name_warns_and_gives_the_moved_module(self):
+        self.assertEqual(len(self.NAMES), 15)
+        for name in self.NAMES:
+            with self.subTest(name=name):
+                sys.modules.pop(name, None)
+                with self.assertWarnsRegex(DeprecationWarning, f'^{name} moved to muse_tmr.ble.{name};'):
+                    module = importlib.import_module(name)
+                self.assertIs(module, importlib.import_module(f'muse_tmr.ble.{name}'))
+
+    def test_old_script_runs_the_moved_module(self):
+        env = dict(os.environ)
+        env.pop('PYTHONWARNINGS', None)
+        env['PYTHONPATH'] = os.pathsep.join(filter(None, [os.path.join(REPO_ROOT, 'src'), env.get('PYTHONPATH')]))
+        with tempfile.TemporaryDirectory() as tmp:
+            completed = subprocess.run(
+                [sys.executable, os.path.join(REPO_ROOT, 'muse_data_parser.py')],
+                capture_output=True, text=True, env=env, cwd=tmp, timeout=120,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn('Parsing Test Results:', completed.stdout)
+        self.assertIn('DeprecationWarning: muse_data_parser moved to muse_tmr.ble.muse_data_parser', completed.stderr)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=1)
