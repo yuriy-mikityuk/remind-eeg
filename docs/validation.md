@@ -17,6 +17,9 @@ Each night or replay validation bundle should keep the following artifacts toget
 - Replay, epoch, and feature outputs for EEG, IMU, PPG, and HR/HRV rows.
 - REM detector outputs and `StableRemGate` decisions with reason codes.
 - `TmrSchedulerEvent` JSONL from the REM-gated scheduler.
+- `rem_gate_decisions.jsonl` from Pilot 4 and 5, one gate decision per epoch.
+- `cue_arousal_events.jsonl`, `cue_arousal_report.json` and `.md` from the cue arousal
+  scorer, on a night with cues.
 - TLR training or block-plan events when TLR was part of the session.
 - Puzzle session, cued-vs-uncued assignment, dream report, morning retest, and final
   cued-vs-uncued analysis JSON or Markdown.
@@ -45,7 +48,7 @@ with assumptions.
 | --- | --- | --- | --- |
 | EEG feature coverage | Rows with valid EEG bands divided by total epochs | EEG feature rows | Measures how much of the night can feed REM detection. |
 | EEG artifact burden | Epochs flagged for clipping, flatline, missing channels, or high artifact proxy | EEG feature rows | High burden limits REM confidence and should be called out. |
-| IMU stillness and arousal events | Stillness score distribution, movement event count, cue-window motion count | IMU feature rows | Used by arousal guard and to explain blocked cues. |
+| IMU stillness and arousal events | Stillness score distribution, movement event count, cue-window motion count | IMU feature rows; the cue-window count from `cue_arousal_events.jsonl` | Used by arousal guard and to explain blocked cues. The live guard never sees cue times, so its `cue_related_arousal` rule stays off; the scorer counts the window afterwards. |
 | PPG/HR availability | PPG-derived HR rows, `HeartRateSample` rows, missing-modality flags | PPG feature rows | HRV metrics are proxies. A beat-level reference exists when a Polar H10 records with the Muse; see the next row. |
 | Optics HR agreement | Bias, SD, 95 % limits of agreement and MAE of each optics heart-rate estimate against H10 ECG R-peaks, by `ppg_signal_quality`, `ppg_confidence` and the series' quality; the sudden heart-rate change rule's false and missed jumps against the ECG change | `optics_agreement.json` from `analyze-optics-agreement` (`docs/optics_agreement.md`) | Agreement with a chest ECG, a proxy for heart rate. Awake desk sessions say little about sleep; no `p1034` night with the H10 has been recorded yet. |
 | REM-event density | `rem_event_count` and `rem_density_per_min` per epoch, epochs in warm-up, epochs where they are NaN | EEG feature rows, `feature_value_rem_event_*` annotation columns | A supporting term at weight 0 until fitted on REM-bearing nights; against a reference stager it gives an AUC against an automated proxy, not REM accuracy. |
@@ -56,6 +59,22 @@ with assumptions.
 | Arousal guard burden | Counts by guard action and reason code: motion, alpha, HR jump, artifact quality | Guard decisions, scheduler metadata | Explains cue suppression or volume lowering. |
 | Audio calibration status | Comfortable volume, detectable volume, scheduler max volume, device name | Volume calibration JSON, scheduler metadata | Missing calibration should block planned sleep-time cue sessions. |
 | TLR block fidelity | TLR block repetitions, inter-cue intervals, post-block pause, training event count | TLR training JSONL, block plan | Verifies that TLR was administered as planned before sleep or before puzzle cues. |
+
+## Safety Outcome Metrics
+
+What follows a cue, scored afterwards by `muse_tmr.reports.cue_arousal` against quiet
+control moments of the same night (`docs/safety_outcomes.md`, #227). They are arousal
+proxies, not scored arousals, the thresholds are UNFITTED, and no validator fails on any
+of them. No night with sleep-time audio has been scored yet.
+
+| Metric | Computation | Source | Interpretation |
+| --- | --- | --- | --- |
+| Arousal proxy per cue and per control | Windows with a flag over windows where it could be scored, per flag (`alpha`, `beta`, `emg`, `imu`, `hr`, `any`), and cue minus control | `cue_arousal_report.json` `outcomes`, `cue_arousal_events.jsonl` | A cue rate means something only against the control rate of the same night; the study figures in `docs/safety_outcomes.md` come from other devices and scoring. |
+| Movement events per cue and per control | Mean movement events from 2 s before to 10 s after | same | The measure of Konkoly et al. 2024 (0.19 against 0.10), from the headband's IMU instead of a phone. |
+| Cue-attributed awakening rate | Played cues followed within 120 s by an awakening marker | `awakening_events.jsonl`, the report | Only as complete as the markers; `attributed_to_cue` adds the sleeper's own call. |
+| REM periods with any disruption | Gate-open runs with a played cue in which a cue raised `any` or the run closed within 60 s of one | `rem_gate_decisions.jsonl`, the report | A gate-open run is the gate's REM, not a scored REM period. |
+| REM termination within 60 s | Cues, and controls, after which their gate-open run closed within 60 s | same | The control rate is how often the gate closes anyway. |
+| Dose tables | The `any` rate by effective volume, time since the previous cue and cue index in a block | `audio_playback.jsonl`, scheduler play events, the report | Volume is a software gain, not dB SPL; at n = 1 a bin holds a few cues. |
 
 ## Behavioral And Effect Metrics
 
@@ -87,6 +106,8 @@ Every validation report should include a limitations section. At minimum, consid
 - Movement, poor sensor contact, audio audibility, waking, or environment confounds.
 - Self-report and recall bias in dream incorporation and lucidity fields.
 - HRV values based on proxy features rather than validated beat-level intervals.
+- Arousal proxies after cues that are not PSG-scored arousals, with `thresholds_unfitted`
+  until a pull request carries real-night numbers.
 
 ## Pilot Gates
 

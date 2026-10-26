@@ -116,6 +116,37 @@ that comes from where the onset falls in the epoch grid. The table comes from
 `tests/test_first_cue_latency.py`. For a real night, run the command above with
 `--preset p21` at `--stride-seconds 30` and `10` and compare the two metrics.
 
+## Injected cues for the arousal scorer
+
+Before a night with sound, check where `score-cue-arousal` puts its windows on a
+replayed night (`docs/safety_outcomes.md`). `--inject-cues-every-seconds N` adds a
+`synthetic_cue` play event to a gate-open epoch whenever N seconds have passed since the
+last one, decided at the end of the epoch as a scheduler play is. They use mock audio,
+the scheduler never sees them, and the report keeps them apart in `injected_cues`: with
+or without the flag, `scheduler_events` and `cue_plan` are the same. Then score the
+report's cues on the recording it replayed:
+
+```bash
+.venv/bin/python -m muse_tmr.cli.main simulate-replay-cues data/recordings/<pilot-session> \
+  --catalog data/protocol/puzzle_catalog.json \
+  --session data/protocol/night-001_puzzles.json \
+  --assignment data/protocol/night-001_assignment.json \
+  --cue-library data/cues/starter.json \
+  --preset p21 \
+  --inject-cues-every-seconds 180 \
+  --output data/reports/pilot3_injected.json
+
+.venv/bin/python -m muse_tmr.cli.main score-cue-arousal data/recordings/<pilot-session> \
+  --pilot3-report data/reports/pilot3_injected.json
+```
+
+The scorer writes `cue_arousal_events.jsonl` and `cue_arousal_report.json`/`.md` next to
+the report. Each injected cue's window starts at `metrics.first_epoch_start` plus its
+`decision_seconds`, and each has a control in the same gate state more than 60 s from
+every cue; at a 30 s stride cues 180 s apart leave room for one. On a replay nothing made
+a sound, so the report says `no_audio_played`: whatever flags at an injected cue is the
+recording's background, which is what its control measures too.
+
 ## Validate
 
 The command exits `0` only when:
@@ -132,6 +163,10 @@ Inspect `data/reports/pilot3_replay_cue_plan.json`:
 - `epochs`: per-epoch prediction, gate, guard, and scheduler context;
 - `metrics.stride_seconds`, `metrics.first_gate_open_seconds`,
   `metrics.first_play_seconds`: the stride and the first-cue timing above;
+- `metrics.first_epoch_start`: the first epoch's start in the recording's clock, which
+  every `timestamp_seconds` counts from;
+- `injected_cues` and `metrics.injected_cue_count`: the cues
+  `--inject-cues-every-seconds` added, empty without it;
 - `metrics.uncued_puzzle_play_count`: must be `0`;
 - `audio_backend`: must be `mock`;
 - `audio_playback_executed`: must be `false`.

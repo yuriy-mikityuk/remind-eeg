@@ -130,12 +130,23 @@ touch "$OUTDIR/EMERGENCY_STOP"
 
 ## Morning Workflow
 
-Log awakenings or cue recall notes:
+Log awakenings or cue recall notes, with `--attributed-to-cue yes|no|unsure` when you
+have a view on whether a cue woke you:
 
 ```bash
 .venv/bin/python -m muse_tmr.cli.main log-pilot4-awakening \
   "$OUTDIR/awakening_events.jsonl" \
   --notes "woke briefly; cue recall unclear"
+```
+
+As in Pilot 4, the night ends by scoring what followed each TLR and puzzle cue against a
+paired quiet control (`docs/safety_outcomes.md`) and puts a `cue_arousal` block in
+`pilot5_summary.json`. The cue index table separates the TLR cues (`tlr 1`, `tlr 2`,
+...) from the puzzle cues. After logging awakenings, score it again so the
+cue-attributed awakening rate counts them:
+
+```bash
+.venv/bin/python -m muse_tmr.cli.main score-cue-arousal "$OUTDIR"
 ```
 
 In the morning, the app's Morning tab does the next two steps without flags: pick the
@@ -199,8 +210,10 @@ The output directory contains:
 - `raw_amused.bin`, `metadata.json`, `events.jsonl`;
 - `scheduler_events.jsonl`;
 - `arousal_guard_events.jsonl`;
+- `rem_gate_decisions.jsonl`;
 - `audio_playback.jsonl`;
 - `awakening_events.jsonl`;
+- `cue_arousal_events.jsonl`, `cue_arousal_report.json`, `cue_arousal_report.md`;
 - `pilot5_summary.json`.
 
 The summary passes only when the Pilot 4 safety criteria pass and at least one TLR

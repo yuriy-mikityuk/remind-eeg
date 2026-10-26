@@ -129,10 +129,36 @@ If you wake during or after the pilot and want to mark it:
 ```bash
 .venv/bin/python -m muse_tmr.cli.main log-pilot4-awakening \
   "$OUTDIR/awakening_events.jsonl" \
+  --attributed-to-cue unsure \
   --notes "woke briefly; no clear cue recall"
 ```
 
-Use short factual notes. Keep the file local unless you intentionally sanitize it.
+`--attributed-to-cue` (`yes`, `no` or `unsure`) records whether you think a cue woke
+you. The marker gets the current time in UTC, or `--timestamp-utc`; `--timestamp-seconds`
+places it on the night's time base instead, seconds from the first epoch as in
+`scheduler_events.jsonl`. Use short factual notes. Keep the file local unless you
+intentionally sanitize it.
+
+## Cue Arousal Proxies
+
+When the night ends, Pilot 4 scores what followed each cue (`docs/safety_outcomes.md`):
+for every scheduler `play`, the 10 s after it against the 20 s before it, for an alpha,
+beta or 55 to 95 Hz EMG-band rise, an arousal-proxy movement and, on `p1034`, a jump of
+the optics heart-rate series; and the same at a quiet control moment, in the same gate
+state and more than 60 s from every cue, paired with each cue. It replays the night's
+own `raw_amused.bin` once, which takes a few minutes for a full night, after the
+summary is written. `pilot4_summary.json` then gets a `cue_arousal` block with the
+per-cue and per-control rates, the limitation codes and the paths of
+`cue_arousal_events.jsonl`, `cue_arousal_report.json` and `cue_arousal_report.md`; if
+the scorer fails, the block says `failed` and why, and the rest of the summary stands.
+Run it again, for example after adding awakening markers in the morning:
+
+```bash
+.venv/bin/python -m muse_tmr.cli.main score-cue-arousal "$OUTDIR"
+```
+
+The flags are arousal proxies with UNFITTED thresholds, and the effective volume in the
+dose tables is a software gain. No pass criterion reads them.
 
 ## Outputs
 
@@ -141,8 +167,10 @@ The output directory contains:
 - `raw_amused.bin`, `metadata.json`, `events.jsonl`;
 - `scheduler_events.jsonl`;
 - `arousal_guard_events.jsonl`;
+- `rem_gate_decisions.jsonl`, the gate's decision for each epoch;
 - `audio_playback.jsonl`;
 - `awakening_events.jsonl`;
+- `cue_arousal_events.jsonl`, `cue_arousal_report.json`, `cue_arousal_report.md`;
 - `pilot4_summary.json`.
 
 The summary passes only when:
@@ -164,6 +192,7 @@ summary says what played the cues: `afplay` for sound, `dry-run` for a night run
 The summary also has `stride_seconds`, `first_gate_open_seconds` and
 `first_play_seconds`: seconds from the start of the first epoch to the end of the epoch
 whose decision first opened the gate or first played a cue, `null` when that never
-happened. The gate counts the time between epoch starts, so its 60 s stable window and
+happened. `first_epoch_start` is that first epoch's start in the recording's clock, so
+every `timestamp_seconds` of the night can be put on the raw recording. The gate counts the time between epoch starts, so its 60 s stable window and
 120 s cooldown take as long at `--stride-seconds 10` as at the default 30; see
 `docs/pilot3_replay_cue_simulation.md` for what a shorter stride does to the first cue.

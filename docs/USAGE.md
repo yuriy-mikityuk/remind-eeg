@@ -29,6 +29,7 @@ Complete command and code reference for `muse-tmr`, organized by workflow stage.
 - [Morning dream report](#morning-dream-report)
 - [Morning puzzle retest](#morning-puzzle-retest)
 - [Cued-vs-uncued analysis](#cued-vs-uncued-analysis)
+- [Cue-locked arousal proxies](#cue-locked-arousal-proxies)
 - [Meditation complexity analysis](#meditation-complexity-analysis)
 - [Polar H10 companion recording](#polar-h10-companion-recording)
 - [Optics heart rate against the H10](#optics-heart-rate-against-the-h10)
@@ -498,6 +499,25 @@ muse-tmr analyze-cued-uncued data/protocol/night-001_puzzles.json \
 
 The analysis report compares cued and uncued solve rates, dream incorporation rates, mean retest duration/confidence, and scheduler cue timing. It is intentionally descriptive and records limitations such as small sample size or missing cue logs.
 
+## Cue-locked arousal proxies
+
+```bash
+muse-tmr score-cue-arousal data/recordings/pilot4_low_volume_<timestamp>
+```
+
+For every scheduler `play` of a Pilot 4 or 5 night, and for a quiet control moment paired with each, it scores the 10 s from the moment against the 20 s before it: an alpha (8 to 12 Hz), beta (15 to 30 Hz) or 55 to 95 Hz EMG-band rise of at least 2 times, with the 64 Hz optics line taken out, an arousal-proxy movement from 2 s before to 10 s after, and on optics presets a jump of 10 bpm in the optics heart-rate series. A control is a gate decision in the same gate state more than 60 s from every `play`. It reads the night's `scheduler_events.jsonl`, `audio_playback.jsonl` (the effective volume of each cue, #256), `rem_gate_decisions.jsonl`, `awakening_events.jsonl` and summary, replays `raw_amused.bin` once, and writes `cue_arousal_events.jsonl`, `cue_arousal_report.json` and `cue_arousal_report.md` into the directory, or `--output-dir`. `--summary`, `--scheduler-events`, `--audio-log`, `--gate-log`, `--awakening-events` and `--replay-input` point at other files; `--preset` says whether optics are expected, otherwise the preset in `metadata.json` does. Pilot 4 and 5 run it on their own night when it ends and put the rates into the summary as `cue_arousal`. With `--pilot3-report` it scores a Pilot 3 report's planned and injected cues on the recording that report replayed (see Pilot 3 below). The flags are arousal proxies, not scored arousals, the thresholds are UNFITTED, and the command exits 0 whatever the rates are. Definitions, the study figures beside them and every limitation code: `docs/safety_outcomes.md`; the fields: `docs/data_model.md`.
+
+```python
+import asyncio
+from pathlib import Path
+
+from muse_tmr.reports.cue_arousal import score_cue_arousal
+
+report = asyncio.run(score_cue_arousal(Path("data/recordings/pilot4_low_volume_<timestamp>")))
+report.save_outputs(Path("data/recordings/pilot4_low_volume_<timestamp>"))
+print(report.outcomes["arousal_proxy_per_cue"], report.outcomes["arousal_proxy_per_control"])
+```
+
 ## Meditation complexity analysis
 
 ```bash
@@ -596,6 +616,16 @@ See `docs/pilot3_replay_cue_simulation.md` for the replay-only runbook. The simu
 
 `--guard-min-ppg-confidence` and `--guard-min-hr-series-quality` (both 0 to 1, default 0: off) turn the arousal guard's two HR rules off on epochs whose `ppg_confidence`, or the median quality of whose heart-rate series, is below the value; each such decision logs `hr_rule_skipped_by` (`docs/safety.md`). Set one only from an `analyze-optics-agreement` table.
 
+`--inject-cues-every-seconds N` adds a `synthetic_cue` play event to a gate-open epoch whenever N seconds have passed since the last one, decided like a scheduler play at the end of the epoch, with mock audio and outside the scheduler: the report keeps them in `injected_cues` and its `scheduler_events` are what they are without the flag. It is there to check where `score-cue-arousal` puts its windows on a replayed night before a night with sound:
+
+```bash
+muse-tmr simulate-replay-cues <recording> --catalog ... --session ... --assignment ... --cue-library ... \
+  --preset p21 --inject-cues-every-seconds 180 --output data/reports/pilot3_injected.json
+muse-tmr score-cue-arousal <recording> --pilot3-report data/reports/pilot3_injected.json
+```
+
+The report's `metrics` also carry `first_epoch_start`, the first epoch's start in the recording's clock, and `injected_cue_count`. At the default 30 s stride, cues 180 s apart or more leave a gate decision between them more than 60 s from both, where a control can go.
+
 ### Pilot 4: low-volume REM-gated cueing
 
 ```bash
@@ -614,12 +644,15 @@ muse-tmr run-pilot4-cueing \
   --default-volume 0.02
 ```
 
-See `docs/pilot4_low_volume_cueing.md` before using `--backend system`. Pilot 4 requires volume calibration, enforces the comfortable-volume cap, logs scheduler, arousal, audio, awakening, and emergency-stop artifacts, and only sends playback requests for scheduler `play` events after stable REM. With `--backend system` and no `afplay` on PATH it exits with code 2 before it reads an input, connects the headband or writes a file. `--allow-dry-run` runs the night silently instead; `metadata.json` and the summary record the requested and the resolved backend. `--preset` (default `p1034`) is the headband preset for the night and also picks the gate thresholds, as above. `--stride-seconds`, `--guard-min-ppg-confidence` and `--guard-min-hr-series-quality` work as in Pilot 3, and `pilot4_summary.json` has the same `stride_seconds`, `first_gate_open_seconds` and `first_play_seconds`. Mark an awakening with:
+See `docs/pilot4_low_volume_cueing.md` before using `--backend system`. Pilot 4 requires volume calibration, enforces the comfortable-volume cap, logs scheduler, arousal, audio, awakening, and emergency-stop artifacts, and only sends playback requests for scheduler `play` events after stable REM. With `--backend system` and no `afplay` on PATH it exits with code 2 before it reads an input, connects the headband or writes a file. `--allow-dry-run` runs the night silently instead; `metadata.json` and the summary record the requested and the resolved backend. `--preset` (default `p1034`) is the headband preset for the night and also picks the gate thresholds, as above. `--stride-seconds`, `--guard-min-ppg-confidence` and `--guard-min-hr-series-quality` work as in Pilot 3, and `pilot4_summary.json` has the same `stride_seconds`, `first_gate_open_seconds` and `first_play_seconds`. Each epoch's gate decision goes to `rem_gate_decisions.jsonl`, the summary records `first_epoch_start`, and when the night ends the cue arousal scorer runs on it (above) and adds `cue_arousal` to the summary. Mark an awakening with:
 
 ```bash
 muse-tmr log-pilot4-awakening data/recordings/pilot4_low_volume_<timestamp>/awakening_events.jsonl \
+  --attributed-to-cue unsure \
   --notes "woke briefly; no clear cue recall"
 ```
+
+`--attributed-to-cue` (`yes`, `no`, `unsure`) records whether you think a cue woke you, and `--timestamp-seconds` places the marker at that many seconds from the night's first epoch instead of its UTC time (`--timestamp-utc`, by default now). Older markers without them still load.
 
 ### Pilot 5: full-night TLR plus puzzle cueing
 

@@ -36,12 +36,12 @@ The pictures show the app on example data.
 - **Real-time pipeline:** BLE frames → 30-second epochs → multi-modal features → REM detection → stable gate → arousal guard → cue scheduler → volume-capped audio
 - **Multi-modal feature extraction:** EEG band powers (delta–gamma), relative powers, theta–alpha and slow–fast ratios, frontal/posterior asymmetry, an eye-movement proxy; IMU motion/stillness and arousal proxies; PPG heart rate, HR trend, and HRV proxies
 - **Trainable personal REM classifier:** class-balanced logistic regression on hand-annotated epochs, saved as a versioned JSON artifact with calibration metrics, feature importance, and training metrics — on top of a transparent non-ML heuristic baseline
-- **Safety-first cueing:** model probabilities never reach the audio path directly; a `StableRemGate` (minimum stable time, hysteresis, cooldown) and an `ArousalGuard` (motion, alpha, HR-jump, artifact proxies) decide, with hard volume caps, fade in/out, and emergency-stop artifacts
+- **Safety-first cueing:** model probabilities never reach the audio path directly; a `StableRemGate` (minimum stable time, hysteresis, cooldown) and an `ArousalGuard` (motion, alpha, HR-jump, artifact proxies) decide, with hard volume caps, fade in/out, and emergency-stop artifacts; afterwards `score-cue-arousal` counts arousal proxies after each cue against paired quiet controls ([`docs/safety_outcomes.md`](docs/safety_outcomes.md))
 - **Blind experimental protocol:** seeded randomization into cued/uncued puzzle groups, uncued puzzles are never schedulable, the condition is hidden from the subject during morning retests
 - **Pluggable acquisition:** amused-py BLE (default), OpenMuse LSL, and BrainFlow backends, all mapped to one `MuseFrame` contract; a Polar H10 chest strap can record ECG, RR and chest motion alongside, in its own process
 - **Local app, REMind:** live contact check per sensor, session, night, guided-meditation and calibration recordings that start once the contact holds and run as their own process, a recordings page with the reports and EEG numbers, and auto-update from `main`
 - **Reproducible validation:** five staged pilots, each with a runbook and an automated validator
-- **Engineering hygiene:** 44 CLI commands, pytest suite with CI on GitHub Actions, and a privacy-aware gitignore — volume calibration, puzzle content, and dream reports never leave the machine
+- **Engineering hygiene:** 45 CLI commands, pytest suite with CI on GitHub Actions, and a privacy-aware gitignore — volume calibration, puzzle content, and dream reports never leave the machine
 
 ## Install
 
@@ -166,7 +166,7 @@ The same headband also runs guided A/B meditation sessions from the local app: a
 
 ## CLI overview
 
-44 commands under one `muse-tmr` entry point. Full invocations with all flags: [`docs/USAGE.md`](docs/USAGE.md).
+45 commands under one `muse-tmr` entry point. Full invocations with all flags: [`docs/USAGE.md`](docs/USAGE.md).
 
 | Group | Commands |
 | ----- | -------- |
@@ -178,7 +178,7 @@ The same headband also runs guided A/B meditation sessions from the local app: a
 | Puzzle protocol | `import-puzzles` · `record-puzzle-attempt` · `generate-puzzle-session` · `assign-puzzle-cues` · `record-association-check` |
 | Morning & analysis | `record-dream-report` · `record-puzzle-retest` · `analyze-cued-uncued` |
 | Meditation (side track) | `meditation-plan` · `analyze-meditation` · `aggregate-meditation` · `calibration-run` · `calibration-guide` · `calibration-report` |
-| Pilots & validation | `validate-pilot1-recording` · `validate-pilot2-calibration` · `simulate-replay-cues` · `run-pilot4-cueing` · `log-pilot4-awakening` · `run-pilot5-full-night` |
+| Pilots & validation | `validate-pilot1-recording` · `validate-pilot2-calibration` · `simulate-replay-cues` · `run-pilot4-cueing` · `log-pilot4-awakening` · `run-pilot5-full-night` · `score-cue-arousal` |
 | Synthetic nights | `demo` · `synthesize-night` |
 
 ## Testing
