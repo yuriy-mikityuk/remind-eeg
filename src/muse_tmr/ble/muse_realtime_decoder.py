@@ -19,7 +19,7 @@ try:
 except ImportError:
     SCIPY_AVAILABLE = False
 
-import muse_athena_protocol as proto
+from muse_tmr.ble import muse_athena_protocol as proto
 
 logger = logging.getLogger(__name__)
 

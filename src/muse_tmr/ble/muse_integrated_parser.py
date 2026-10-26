@@ -11,9 +11,9 @@ import numpy as np
 from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 import datetime
-from muse_ppg_heart_rate import PPGHeartRateExtractor
-from muse_fnirs_processor import FNIRSProcessor
-import muse_athena_protocol as proto
+from muse_tmr.ble.muse_ppg_heart_rate import PPGHeartRateExtractor
+from muse_tmr.ble.muse_fnirs_processor import FNIRSProcessor
+from muse_tmr.ble import muse_athena_protocol as proto
 
 @dataclass
 class IntegratedSensorData:

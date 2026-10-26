@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 import queue
 from bleak import BleakScanner
 
-from muse_discovery import MuseDevice
+from muse_tmr.ble.muse_discovery import MuseDevice
 
 
 def scan_in_thread(timeout: float = 5.0, callback: Optional[Callable] = None) -> List[MuseDevice]:

@@ -5,7 +5,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from muse_realtime_decoder import DecodedData
+from muse_tmr.ble.muse_realtime_decoder import DecodedData
 from muse_tmr.data.sample_types import EEGSample, MuseFrame
 from muse_tmr.sources.amused_source import AmusedSource
 from muse_tmr.sources.base_source import BaseMuseSource, MuseDeviceInfo, MuseSourceMetadata
@@ -46,7 +46,7 @@ class FakeMuseSource(BaseMuseSource):
 
 class FakeStreamClient:
     def __init__(self, **kwargs):
-        from muse_realtime_decoder import MuseRealtimeDecoder
+        from muse_tmr.ble.muse_realtime_decoder import MuseRealtimeDecoder
 
         self.decoder = MuseRealtimeDecoder()
         self.packet_callback = None

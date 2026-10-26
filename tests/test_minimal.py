@@ -9,10 +9,11 @@ import os
 import sys
 import datetime
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from muse_raw_stream import MuseRawStream, RawPacket
-from muse_realtime_decoder import MuseRealtimeDecoder, DecodedData
-import muse_athena_protocol as proto
+from muse_tmr.ble.muse_raw_stream import MuseRawStream, RawPacket
+from muse_tmr.ble.muse_realtime_decoder import MuseRealtimeDecoder, DecodedData
+from muse_tmr.ble import muse_athena_protocol as proto
 
 
 def build_tag_packet(first_tag, first_data):
@@ -27,11 +28,11 @@ class TestCoreComponents(unittest.TestCase):
 
     def test_imports(self):
         """Test all imports work"""
-        from muse_stream_client import MuseStreamClient
-        from muse_replay import MuseReplayPlayer, MuseBinaryParser
-        from muse_ppg_heart_rate import PPGHeartRateExtractor
-        from muse_fnirs_processor import FNIRSProcessor
-        import muse_athena_protocol
+        from muse_tmr.ble.muse_stream_client import MuseStreamClient
+        from muse_tmr.ble.muse_replay import MuseReplayPlayer, MuseBinaryParser
+        from muse_tmr.ble.muse_ppg_heart_rate import PPGHeartRateExtractor
+        from muse_tmr.ble.muse_fnirs_processor import FNIRSProcessor
+        from muse_tmr.ble import muse_athena_protocol
 
         self.assertTrue(MuseStreamClient)
         self.assertTrue(MuseReplayPlayer)

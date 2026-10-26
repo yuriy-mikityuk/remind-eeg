@@ -10,8 +10,8 @@ import sys
 import time
 from typing import Any, AsyncIterator, Callable, Mapping, Optional, Sequence
 
-from muse_realtime_decoder import DecodedData
-from muse_stream_client import MuseStreamClient
+from muse_tmr.ble.muse_realtime_decoder import DecodedData
+from muse_tmr.ble.muse_stream_client import MuseStreamClient
 
 from muse_tmr.data.sample_types import MuseFrame, frame_from_decoded
 from muse_tmr.sources.base_source import BaseMuseSource, MuseDeviceInfo, MuseSourceMetadata
@@ -23,7 +23,7 @@ import contextlib
 import json
 import sys
 
-from muse_discovery import find_muse_devices
+from muse_tmr.ble.muse_discovery import find_muse_devices
 
 
 async def main():
@@ -245,7 +245,7 @@ async def _discover_muse_devices() -> Sequence[MuseDeviceInfo]:
 
 
 async def _discover_muse_devices_in_process() -> Sequence[MuseDeviceInfo]:
-    from muse_discovery import find_muse_devices
+    from muse_tmr.ble.muse_discovery import find_muse_devices
 
     devices = await find_muse_devices()
     return [

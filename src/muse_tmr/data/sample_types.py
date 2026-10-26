@@ -295,7 +295,7 @@ class MuseFrame:
 
 
 def frame_from_decoded(decoded: Any, source: str = "amused") -> MuseFrame:
-    """Convert a `muse_realtime_decoder.DecodedData`-like object to a MuseFrame."""
+    """Convert a `muse_tmr.ble.muse_realtime_decoder.DecodedData`-like object to a MuseFrame."""
 
     timestamp = _timestamp_seconds(decoded.timestamp)
     gaps = getattr(decoded, "gaps", None) or {}

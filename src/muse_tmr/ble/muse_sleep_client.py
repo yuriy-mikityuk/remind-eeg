@@ -20,8 +20,8 @@ from typing import Optional, Dict, Any, List
 import time
 import os
 import numpy as np
-from muse_ppg_heart_rate import PPGHeartRateExtractor, PPGData
-import muse_athena_protocol as proto
+from muse_tmr.ble.muse_ppg_heart_rate import PPGHeartRateExtractor, PPGData
+from muse_tmr.ble import muse_athena_protocol as proto
 
 # BLE UUIDs (from protocol module)
 MUSE_SERVICE_UUID = proto.MUSE_SERVICE_UUID

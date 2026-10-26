@@ -6,10 +6,10 @@ import unittest
 import numpy as np
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from muse_ppg_heart_rate import PPGHeartRateExtractor, simulate_ppg_signal
-from muse_fnirs_processor import FNIRSProcessor
+from muse_tmr.ble.muse_ppg_heart_rate import PPGHeartRateExtractor, simulate_ppg_signal
+from muse_tmr.ble.muse_fnirs_processor import FNIRSProcessor
 
 class TestPPGHeartRate(unittest.TestCase):
     """Test PPG heart rate extraction"""

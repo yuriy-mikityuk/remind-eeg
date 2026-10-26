@@ -7,9 +7,9 @@ import asyncio
 import sys
 import os
 import json
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from muse_stream_client import MuseStreamClient
+from muse_tmr.ble.muse_stream_client import MuseStreamClient
 
 async def record_test_packets():
     """Record a short session of real packets for testing"""
@@ -80,7 +80,7 @@ async def record_test_packets():
 
 def extract_sample_packets(binary_file):
     """Extract some real packets for use in tests"""
-    from muse_raw_stream import MuseRawStream
+    from muse_tmr.ble.muse_raw_stream import MuseRawStream
     
     stream = MuseRawStream(binary_file)
     stream.open_read()

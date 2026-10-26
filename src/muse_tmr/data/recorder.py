@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from muse_raw_stream import MuseRawStream
+from muse_tmr.ble.muse_raw_stream import MuseRawStream
 
 from muse_tmr.contact import ContactQualityConfig, ContactQualityMonitor
 from muse_tmr.data.sample_types import MuseFrame

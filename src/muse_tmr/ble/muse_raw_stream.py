@@ -13,7 +13,7 @@ from typing import List, Dict, Optional, BinaryIO, Generator
 from dataclasses import dataclass
 import os
 
-import muse_athena_protocol as proto
+from muse_tmr.ble import muse_athena_protocol as proto
 
 @dataclass
 class RawPacket:

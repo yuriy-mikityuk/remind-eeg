@@ -7,7 +7,7 @@ import numpy as np
 from typing import List, Dict, Any
 from dataclasses import dataclass
 
-import muse_athena_protocol as proto
+from muse_tmr.ble import muse_athena_protocol as proto
 
 @dataclass
 class EEGSample:

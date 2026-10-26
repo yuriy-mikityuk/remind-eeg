@@ -14,7 +14,7 @@ from scipy.signal import find_peaks
 from typing import List, Optional
 from dataclasses import dataclass
 
-import muse_athena_protocol as proto
+from muse_tmr.ble import muse_athena_protocol as proto
 
 @dataclass
 class PPGData:

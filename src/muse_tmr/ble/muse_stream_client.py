@@ -14,9 +14,9 @@ import datetime
 from typing import Optional, Callable, Dict, Any
 import os
 
-from muse_raw_stream import MuseRawStream
-from muse_realtime_decoder import MuseRealtimeDecoder, DecodedData
-import muse_athena_protocol as proto
+from muse_tmr.ble.muse_raw_stream import MuseRawStream
+from muse_tmr.ble.muse_realtime_decoder import MuseRealtimeDecoder, DecodedData
+from muse_tmr.ble import muse_athena_protocol as proto
 
 # BLE UUIDs (from protocol module)
 MUSE_SERVICE_UUID = proto.MUSE_SERVICE_UUID

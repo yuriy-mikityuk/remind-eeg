@@ -15,8 +15,8 @@ from typing import Optional, Callable, Dict, Any, List
 from dataclasses import dataclass
 import os
 
-from muse_raw_stream import MuseRawStream, RawPacket
-from muse_realtime_decoder import MuseRealtimeDecoder, DecodedData
+from muse_tmr.ble.muse_raw_stream import MuseRawStream, RawPacket
+from muse_tmr.ble.muse_realtime_decoder import MuseRealtimeDecoder, DecodedData
 
 class MuseReplayPlayer:
     """

@@ -374,7 +374,7 @@ if __name__ == "__main__":
     processor = FNIRSProcessor(sample_rate=64)
     
     # Simulate multi-wavelength PPG data
-    from muse_ppg_heart_rate import simulate_ppg_signal
+    from muse_tmr.ble.muse_ppg_heart_rate import simulate_ppg_signal
     
     print("\n1. Generating simulated multi-wavelength PPG data...")
     

@@ -1,7 +1,7 @@
 import unittest
 import datetime as dt
 
-from muse_realtime_decoder import DecodedData
+from muse_tmr.ble.muse_realtime_decoder import DecodedData
 from muse_tmr.data.sample_types import (
     EEGSample,
     IMUSample,

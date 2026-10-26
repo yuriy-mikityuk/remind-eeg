@@ -14,9 +14,9 @@ from unittest import mock
 
 import numpy as np
 
-import muse_athena_protocol as proto
-from muse_raw_stream import MuseRawStream
-from muse_realtime_decoder import MuseRealtimeDecoder
+from muse_tmr.ble import muse_athena_protocol as proto
+from muse_tmr.ble.muse_raw_stream import MuseRawStream
+from muse_tmr.ble.muse_realtime_decoder import MuseRealtimeDecoder
 
 from muse_tmr.audio import load_cue_library
 from muse_tmr.cli import main as cli_module
