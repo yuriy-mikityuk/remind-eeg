@@ -13,8 +13,8 @@ from muse_tmr.sources.base_source import BaseMuseSource, MuseDeviceInfo, MuseSou
 COARSE_CLOCK = sys.platform == "win32" and sys.version_info < (3, 13)
 COARSE_CLOCK_REASON = (
     "on Windows before Python 3.13 time.monotonic() ticks every 15.6 ms and asyncio runs a timer up to one "
-    "tick early, so after the last wait the deadline can read as not reached: the recorder logs a no-data "
-    "timeout and reconnects, and the 0.6 s recording takes 2 s"
+    "tick early, so after the last wait the deadline can read as not reached: the recorder takes the timeout "
+    "for a stall and reconnects, and the 0.6 s recording takes 2 s"
 )
 
 
