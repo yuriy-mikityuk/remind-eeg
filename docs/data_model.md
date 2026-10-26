@@ -568,13 +568,20 @@ M4/M5 protocol code must call it only after stable gate and safety layers allow 
 captures:
 
 - cue ID, frequency, and duration
-- requested volume, effective capped volume, and max-volume cap
+- `requested_volume`, the request at the max-volume cap (`capped_volume`), the
+  `volume_multiplier` applied after the cap (1.0 unless the arousal guard lowered the
+  volume), the `effective_volume` the backend plays (capped times multiplier), the
+  `max_volume` cap, and `volume_capped` when the cap lowered the request
 - fade-in/fade-out seconds
 - optional device name metadata
-- backend name and reason codes
+- backend name and reason codes, `volume_lowered` when the multiplier is below 1
 
 `CuePlaybackResult` records `played`, `skipped`, `blocked`, or `stopped` outcomes and
-can be appended to a JSONL log. `create_audio_backend("system")` uses macOS `afplay`
+can be appended to a JSONL log. `AudioPlaybackConfig.cue_volume()` computes the four
+volumes for the player and for the scheduler. `capped_volume` and `volume_multiplier`
+are in the log since #255; the other fields keep their values on a cue the guard did not
+lower. Before, a lowered cue was logged with the halved request and no multiplier.
+`create_audio_backend("system")` uses macOS `afplay`
 when it is on PATH and otherwise returns `dry-run`; tests use `MockAudioBackend` so CI
 does not need an audio device.
 
@@ -680,7 +687,9 @@ reactivation:
 
 `muse-tmr create-tlr-cue` writes a `CueLibrary` containing a generated TLR cue.
 `train-tlr-cue` plays or dry-runs the cue through `AudioCuePlayer` and writes both a
-summary JSON and JSONL training events. `plan-tlr-block` writes the TLR block that
+summary JSON and JSONL training events. It plays `--volume`, else the cue's
+`volume_hint`, else the player's default, as Pilot 4 and 5 choose a cue's volume; a hint
+of 0 counts as a hint since #255. `plan-tlr-block` writes the TLR block that
 future scheduler code should insert before puzzle cues when the REM gate opens.
 
 ## TMR Scheduler Events
@@ -699,6 +708,15 @@ the assignment, so uncued puzzle controls are not eligible for playback. Events 
 appended to JSONL with `append_tmr_scheduler_events()` and read with
 `load_tmr_scheduler_events()`.
 
+A play event's `volume_hint` is the cue's own. Under a `lower_volume` guard decision the
+event adds `arousal_guard_action`, `arousal_guard_reason_codes` and the guard's
+`volume_multiplier`. Given the player's config (`playback_config`, as Pilot 4 and 5 pass
+it), every play event also logs `requested_volume`, `capped_volume`, `volume_multiplier`
+and `effective_volume`, the values its line in `audio_playback.jsonl` has. Pilot 3 has no
+player, so its plan carries only the hint and the multiplier. Before #255 a lowered play
+event carried the halved hint as `volume_hint` and the cue's own as
+`original_volume_hint`.
+
 ## Arousal Guard Decisions
 
 `muse_tmr.protocol.arousal_guard.ArousalGuard` emits `ArousalGuardDecision` records:
@@ -706,7 +724,8 @@ appended to JSONL with `append_tmr_scheduler_events()` and read with
 - `action`: `allow`, `lower_volume`, `pause`, or `stop`
 - `timestamp_seconds`: replay/session-relative time
 - `reason_codes`: motion, alpha, HR-jump, or artifact-quality explanations
-- `volume_multiplier`: multiplier for lower-volume cue events
+- `volume_multiplier`: what a `lower_volume` decision multiplies the cue volume by, after
+  the player's cap
 - `pause_seconds`: requested pause duration for pause decisions
 - `metadata`: feature values, artifact flags, and consecutive guard counters;
   `ppg_absent_by_design: true` when the guard runs with `optics_capable=False`
@@ -766,8 +785,8 @@ coverage and flatline flags act.
 
 Decisions can be appended to JSONL with `append_arousal_guard_decisions()` and read
 with `load_arousal_guard_decisions()`. The scheduler can consume a decision directly;
-`lower_volume` scales cue event volume hints, `pause` records a pause and cooldown, and
-`stop` records a stop event.
+`lower_volume` puts its multiplier on the play events, which the player applies after
+its cap, `pause` records a pause and cooldown, and `stop` records a stop event.
 
 ## Dream Reports
 

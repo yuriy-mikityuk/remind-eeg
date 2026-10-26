@@ -76,6 +76,36 @@ class TestTlrProtocol(unittest.TestCase):
         self.assertEqual(len(logged_events), 3)
         self.assertEqual(logged_events[0]["event_type"], "tlr_training_cue")
 
+    def test_training_plays_the_hint_or_the_player_default_under_the_cap(self):
+        cases = (
+            # volume_hint, requested, effective under a 0.06 cap with a 0.02 default
+            (0.10, 0.10, 0.06),
+            (0.05, 0.05, 0.05),
+            (None, 0.02, 0.02),
+            # A hint of 0 is a hint, as in Pilot 4 and 5; it used to fall back to the default.
+            (0.0, 0.0, 0.0),
+        )
+        for volume_hint, requested, effective in cases:
+            with self.subTest(volume_hint=volume_hint):
+                cue = CueMetadata(
+                    cue_id="tlr_custom",
+                    cue_type="generated_tone",
+                    protocol="tlr",
+                    duration_seconds=0.01,
+                    frequency_hz=396.0,
+                    volume_hint=volume_hint,
+                )
+                backend = MockAudioBackend()
+                player = AudioCuePlayer(
+                    AudioPlaybackConfig(max_volume=0.06, default_volume=0.02),
+                    backend=backend,
+                )
+
+                event = train_tlr_cue(cue, player, config=TlrTrainingConfig(repetitions=1)).events[0]
+
+                self.assertEqual((event.requested_volume, event.effective_volume), (requested, effective))
+                self.assertEqual(backend.requests[0].volume_multiplier, 1.0)
+
     def test_training_rejects_non_tlr_or_non_generated_cues(self):
         player = AudioCuePlayer(backend=MockAudioBackend())
         puzzle_cue = CueMetadata(

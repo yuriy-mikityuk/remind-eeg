@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
-from muse_tmr.audio import CueLibrary, CueMetadata, VolumeCalibration
+from muse_tmr.audio import AudioPlaybackConfig, CueLibrary, CueMetadata, VolumeCalibration
 from muse_tmr.models import (
     RemConfidence,
     RemGateConfig,
@@ -197,25 +197,59 @@ class TestTmrCueScheduler(unittest.TestCase):
         self.assertIn("arousal_guard_blocked", event.reason_codes)
         self.assertEqual(len([item for item in scheduler.events if item.event_type == "play"]), 0)
 
-    def test_lower_volume_guard_scales_play_volume_hint(self):
+    def test_lower_volume_guard_adds_its_multiplier_and_keeps_the_hint(self):
         scheduler = _scheduler(tlr_block_plan=None)
-        guard_decision = ArousalGuardDecision(
-            action="lower_volume",
-            timestamp_seconds=0.0,
-            reason_codes=("alpha_arousal_proxy_mild",),
-            volume_multiplier=0.5,
-        )
 
         event = scheduler.update(
             _gate_open(),
             timestamp_seconds=0.0,
-            guard_decision=guard_decision,
+            guard_decision=_lower_volume(),
         )[0]
 
         self.assertEqual(event.event_type, "play")
         self.assertEqual(event.metadata["arousal_guard_action"], "lower_volume")
-        self.assertEqual(event.metadata["original_volume_hint"], 0.10)
-        self.assertAlmostEqual(event.metadata["volume_hint"], 0.05)
+        self.assertEqual(event.metadata["arousal_guard_reason_codes"], ["alpha_arousal_proxy_mild"])
+        self.assertEqual(event.metadata["volume_multiplier"], 0.5)
+        # The player applies the multiplier after its cap (#255), so the hint stays the cue's.
+        self.assertEqual(event.metadata["volume_hint"], 0.10)
+        self.assertNotIn("original_volume_hint", event.metadata)
+        # Without the player's config the scheduler cannot say what will play.
+        self.assertNotIn("effective_volume", event.metadata)
+
+    def test_play_events_log_the_volume_the_player_plays(self):
+        tlr_plan = plan_tlr_block(
+            default_tlr_cue(),
+            config=TlrBlockConfig(repetitions=2, interval_seconds=5.0, post_block_pause_seconds=0.0),
+        )
+        scheduler = _scheduler(
+            tlr_block_plan=tlr_plan,
+            playback_config=AudioPlaybackConfig(max_volume=0.06, default_volume=0.02),
+        )
+
+        tlr_allowed = scheduler.update(_gate_open(), timestamp_seconds=0.0)[0]
+        tlr_lowered = scheduler.update(
+            _gate_open(), timestamp_seconds=5.0, guard_decision=_lower_volume()
+        )[0]
+        puzzle_lowered = scheduler.update(
+            _gate_open(), timestamp_seconds=6.0, guard_decision=_lower_volume()
+        )[0]
+        puzzle_allowed = scheduler.update(_gate_open(), timestamp_seconds=16.0)[0]
+
+        def volumes(event):
+            return tuple(
+                event.metadata[key]
+                for key in ("requested_volume", "capped_volume", "volume_multiplier", "effective_volume")
+            )
+
+        # The TLR hint 0.05 sits below the 0.06 cap, the puzzle hint 0.10 above it.
+        self.assertEqual((tlr_allowed.protocol, tlr_lowered.protocol), ("tlr", "tlr"))
+        self.assertEqual(volumes(tlr_allowed), (0.05, 0.05, 1.0, 0.05))
+        self.assertEqual(volumes(tlr_lowered), (0.05, 0.05, 0.5, 0.025))
+        self.assertEqual((puzzle_lowered.puzzle_id, puzzle_allowed.puzzle_id), ("p1", "p3"))
+        self.assertEqual(volumes(puzzle_lowered), (0.10, 0.06, 0.5, 0.03))
+        self.assertEqual(volumes(puzzle_allowed), (0.10, 0.06, 1.0, 0.06))
+        self.assertNotIn("arousal_guard_action", puzzle_allowed.metadata)
+        self.assertEqual(puzzle_lowered.metadata["volume_hint"], 0.10)
 
     def test_pause_guard_pauses_cueing_and_starts_cooldown(self):
         scheduler = _scheduler(tlr_block_plan=None)
@@ -398,7 +432,7 @@ class _ReplayTick:
     duration_seconds: float = 30.0
 
 
-def _scheduler(config=None, tlr_block_plan=None, event_log_path=None):
+def _scheduler(config=None, tlr_block_plan=None, event_log_path=None, playback_config=None):
     catalog = PuzzleCatalog(
         puzzles=(
             PuzzleTask("p1", "Puzzle 1", "Answer 1", cue_id="cue-p1"),
@@ -462,6 +496,16 @@ def _scheduler(config=None, tlr_block_plan=None, event_log_path=None):
         ),
         tlr_block_plan=tlr_block_plan,
         event_log_path=event_log_path,
+        playback_config=playback_config,
+    )
+
+
+def _lower_volume():
+    return ArousalGuardDecision(
+        action="lower_volume",
+        timestamp_seconds=0.0,
+        reason_codes=("alpha_arousal_proxy_mild",),
+        volume_multiplier=0.5,
     )
 
 

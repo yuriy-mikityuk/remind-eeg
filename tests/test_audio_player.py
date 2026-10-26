@@ -15,6 +15,8 @@ from muse_tmr.audio import (
     AudioPlaybackConfig,
     MockAudioBackend,
     TestCue,
+    VolumeCalibration,
+    audio_config_with_calibration,
     create_audio_backend,
     resolve_audio_backend,
 )
@@ -116,6 +118,122 @@ class TestAudioCuePlayer(unittest.TestCase):
 
         self.assertFalse(hasattr(result, "gate_open"))
         self.assertFalse(hasattr(result, "should_play"))
+
+
+# The fields of these five log lines as main wrote them before #255, without the clock
+# times: three plays at 0.10, 0.05 and the default volume under a cap of 0.06, the
+# emergency stop and a blocked play.
+_LOG_LINE_DEFAULTS = {
+    "backend_name": "mock",
+    "cue_id": "cue-p1",
+    "device_name": "Sleep Headphones",
+    "fade_in_seconds": 0.25,
+    "fade_out_seconds": 0.25,
+    "max_volume": 0.06,
+}
+_LOG_LINES_BEFORE_255 = (
+    {**_LOG_LINE_DEFAULTS, "status": "played", "requested_volume": 0.1, "effective_volume": 0.06,
+     "volume_capped": True, "reason_codes": ["volume_capped", "mock_playback", "device_selected"]},
+    {**_LOG_LINE_DEFAULTS, "status": "played", "requested_volume": 0.05, "effective_volume": 0.05,
+     "volume_capped": False, "reason_codes": ["mock_playback", "device_selected"]},
+    {**_LOG_LINE_DEFAULTS, "status": "played", "requested_volume": 0.02, "effective_volume": 0.02,
+     "volume_capped": False, "reason_codes": ["mock_playback", "device_selected"]},
+    {**_LOG_LINE_DEFAULTS, "cue_id": "emergency-stop", "status": "stopped", "requested_volume": 0.0,
+     "effective_volume": 0.0, "volume_capped": False, "reason_codes": ["emergency_stop", "mock_stop"]},
+    {**_LOG_LINE_DEFAULTS, "status": "blocked", "requested_volume": 0.1, "effective_volume": 0.06,
+     "volume_capped": True, "reason_codes": ["emergency_stop_active"]},
+)
+
+
+class TestVolumeMultiplier(unittest.TestCase):
+    """A lower_volume multiplier scales the volume that would play, after the cap (#255)."""
+
+    def test_multiplier_scales_the_capped_volume(self):
+        cases = (
+            # volume asked for, max_volume, capped volume, effective volume at 0.5
+            (0.10, 0.06, 0.06, 0.03),  # a hint above the calibrated cap
+            (0.05, 0.10, 0.05, 0.025),  # a hint below it
+            (None, 0.06, 0.02, 0.01),  # no hint: the default volume
+            (0.80, 0.20, 0.20, 0.10),  # the hard cap
+        )
+        for volume, max_volume, capped, effective in cases:
+            with self.subTest(volume=volume, max_volume=max_volume):
+                backend = MockAudioBackend()
+                player = AudioCuePlayer(
+                    AudioPlaybackConfig(max_volume=max_volume, default_volume=0.02),
+                    backend=backend,
+                )
+                normal = player.play_test_cue(TestCue(duration_seconds=0.01), volume=volume)
+                lowered = player.play_test_cue(
+                    TestCue(duration_seconds=0.01), volume=volume, volume_multiplier=0.5
+                )
+
+                self.assertEqual(normal.effective_volume, capped)
+                self.assertEqual(lowered.requested_volume, normal.requested_volume)
+                self.assertEqual(lowered.capped_volume, capped)
+                self.assertEqual(lowered.volume_multiplier, 0.5)
+                self.assertEqual(lowered.effective_volume, effective)
+                self.assertEqual(lowered.effective_volume, 0.5 * normal.effective_volume)
+                self.assertEqual(backend.requests[-1].effective_volume, effective)
+                self.assertEqual(lowered.volume_capped, normal.volume_capped)
+                self.assertIn("volume_lowered", lowered.reason_codes)
+                self.assertNotIn("volume_lowered", normal.reason_codes)
+
+    def test_a_multiplier_outside_0_to_1_is_rejected(self):
+        player = AudioCuePlayer(backend=MockAudioBackend())
+
+        for multiplier in (-0.1, 1.5):
+            with self.subTest(multiplier=multiplier), self.assertRaises(ValueError):
+                player.play_test_cue(TestCue(duration_seconds=0.01), volume_multiplier=multiplier)
+
+    def test_the_tone_is_written_at_the_lowered_volume(self):
+        backend = MockAudioBackend()
+        player = AudioCuePlayer(
+            AudioPlaybackConfig(max_volume=0.06, fade_in_seconds=0.0, fade_out_seconds=0.0),
+            backend=backend,
+        )
+
+        player.play_test_cue(TestCue(duration_seconds=0.01), volume=0.10, volume_multiplier=0.5)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "tone.wav")
+            _write_test_tone(path, backend.requests[0])
+            samples = TestToneGeneration._samples(path)
+
+        # What afplay would play: half the capped 0.06, not half of the 0.10 asked for.
+        peak = max(abs(sample) for sample in samples)
+        self.assertLessEqual(peak, int(32767 * 0.03))
+        self.assertGreater(peak, int(32767 * 0.03 * 0.9))
+
+    def test_allow_keeps_every_field_the_log_had(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "audio.jsonl"
+            config = audio_config_with_calibration(
+                AudioPlaybackConfig(
+                    max_volume=0.20,
+                    default_volume=0.02,
+                    device_name="Sleep Headphones",
+                    log_path=log_path,
+                ),
+                VolumeCalibration("Sleep Headphones", 0.01, 0.02, 0.06),
+            )
+            player = AudioCuePlayer(config, backend=MockAudioBackend())
+            cue = TestCue(cue_id="cue-p1", frequency_hz=440.0, duration_seconds=0.01)
+            for volume in (0.10, 0.05, None):
+                player.play_test_cue(cue, volume=volume)
+            player.emergency_stop()
+            player.play_test_cue(cue, volume=0.10)
+            lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual(len(lines), len(_LOG_LINES_BEFORE_255))
+        for line, before in zip(lines, _LOG_LINES_BEFORE_255):
+            kept = {key: line[key] for key in before}
+            self.assertEqual(json.dumps(kept, sort_keys=True), json.dumps(before, sort_keys=True))
+            # The two new fields say nothing was lowered.
+            self.assertEqual(line["volume_multiplier"], 1.0)
+            self.assertEqual(line["capped_volume"], line["effective_volume"])
+            self.assertEqual(
+                set(line) - set(before), {"capped_volume", "volume_multiplier", "started_at", "ended_at"}
+            )
 
 
 class TestAudioPlaybackValidation(unittest.TestCase):

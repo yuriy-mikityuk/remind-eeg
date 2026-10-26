@@ -115,9 +115,10 @@ in Pilot 4, the command exits with code 2 before it connects or creates `$OUTDIR
 
 The arousal guard is Pilot 4's. On `p1034` an epoch whose heart-rate series skipped more
 than half of its values is `hr_rule_blind` and lowers the volume of the TLR and puzzle
-cues played in it (#234): their play events in `scheduler_events.jsonl` carry
-`volume_multiplier` 0.5 and the halved `volume_hint`, and `audio_playback.jsonl` the
-requested volume. A pause or stop reason in the same epoch still wins.
+cues played in it (#234): their play events in `scheduler_events.jsonl` and their lines
+in `audio_playback.jsonl` carry `volume_multiplier` 0.5 and an `effective_volume` of half
+the `capped_volume`, the volume after the calibration and hard caps (#255). A pause or
+stop reason in the same epoch still wins.
 
 ## Emergency Stop
 

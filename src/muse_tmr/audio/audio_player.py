@@ -33,6 +33,49 @@ class AudioPlaybackConfig:
         if self.fade_out_seconds < 0:
             raise ValueError("fade_out_seconds must be non-negative")
 
+    def cue_volume(
+        self,
+        volume: Optional[float] = None,
+        *,
+        volume_multiplier: float = 1.0,
+    ) -> CueVolume:
+        """The volume a player with this config plays a cue at.
+
+        ``volume`` (``default_volume`` when None) is capped at ``max_volume`` first and
+        then scaled by ``volume_multiplier``, the arousal guard's ``lower_volume``
+        factor, so a lowered cue plays at exactly that fraction of what it would have
+        played at, and never above a cap.
+        """
+        requested_volume = self.default_volume if volume is None else volume
+        _validate_volume(requested_volume)
+        if not 0.0 <= volume_multiplier <= 1.0:
+            raise ValueError("volume_multiplier must be between 0.0 and 1.0")
+        capped_volume = min(requested_volume, self.max_volume)
+        return CueVolume(
+            requested_volume=requested_volume,
+            capped_volume=capped_volume,
+            volume_multiplier=volume_multiplier,
+            effective_volume=capped_volume * volume_multiplier,
+        )
+
+
+@dataclass(frozen=True)
+class CueVolume:
+    """One cue's volume: asked for, capped at max_volume, the multiplier, what plays."""
+
+    requested_volume: float
+    capped_volume: float
+    volume_multiplier: float
+    effective_volume: float
+
+    def to_dict(self) -> Dict[str, float]:
+        return {
+            "requested_volume": self.requested_volume,
+            "capped_volume": self.capped_volume,
+            "volume_multiplier": self.volume_multiplier,
+            "effective_volume": self.effective_volume,
+        }
+
 
 @dataclass(frozen=True)
 class TestCue:
@@ -60,10 +103,16 @@ class AudioPlaybackRequest:
     fade_in_seconds: float
     fade_out_seconds: float
     device_name: Optional[str] = None
+    # Applied after the cap: effective_volume = capped_volume * volume_multiplier.
+    volume_multiplier: float = 1.0
+
+    @property
+    def capped_volume(self) -> float:
+        return min(self.requested_volume, self.max_volume)
 
     @property
     def volume_capped(self) -> bool:
-        return self.effective_volume < self.requested_volume
+        return self.capped_volume < self.requested_volume
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -71,6 +120,8 @@ class AudioPlaybackRequest:
             "frequency_hz": self.frequency_hz,
             "duration_seconds": self.duration_seconds,
             "requested_volume": self.requested_volume,
+            "capped_volume": self.capped_volume,
+            "volume_multiplier": self.volume_multiplier,
             "effective_volume": self.effective_volume,
             "max_volume": self.max_volume,
             "volume_capped": self.volume_capped,
@@ -95,10 +146,15 @@ class CuePlaybackResult:
     reason_codes: Tuple[str, ...] = ()
     started_at: Optional[str] = None
     ended_at: Optional[str] = None
+    volume_multiplier: float = 1.0
 
     @property
     def played(self) -> bool:
         return self.status == "played"
+
+    @property
+    def capped_volume(self) -> float:
+        return min(self.requested_volume, self.max_volume)
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -106,6 +162,8 @@ class CuePlaybackResult:
             "status": self.status,
             "backend_name": self.backend_name,
             "requested_volume": self.requested_volume,
+            "capped_volume": self.capped_volume,
+            "volume_multiplier": self.volume_multiplier,
             "effective_volume": self.effective_volume,
             "max_volume": self.max_volume,
             "volume_capped": self.volume_capped,
@@ -200,21 +258,25 @@ class AudioCuePlayer:
         cue: Optional[TestCue] = None,
         *,
         volume: Optional[float] = None,
+        volume_multiplier: float = 1.0,
     ) -> CuePlaybackResult:
+        """Play ``cue`` at ``volume`` (``default_volume`` when None), capped at
+        ``max_volume`` and then scaled by ``volume_multiplier``, as
+        ``AudioPlaybackConfig.cue_volume()`` computes it."""
         cue = cue or TestCue()
         cue.validate()
-        requested_volume = self.config.default_volume if volume is None else volume
-        _validate_volume(requested_volume)
+        volume_plan = self.config.cue_volume(volume, volume_multiplier=volume_multiplier)
         request = AudioPlaybackRequest(
             cue_id=cue.cue_id,
             frequency_hz=cue.frequency_hz,
             duration_seconds=cue.duration_seconds,
-            requested_volume=requested_volume,
-            effective_volume=min(requested_volume, self.config.max_volume),
+            requested_volume=volume_plan.requested_volume,
+            effective_volume=volume_plan.effective_volume,
             max_volume=self.config.max_volume,
             fade_in_seconds=self.config.fade_in_seconds,
             fade_out_seconds=self.config.fade_out_seconds,
             device_name=self.config.device_name,
+            volume_multiplier=volume_plan.volume_multiplier,
         )
 
         if self._emergency_stop_active:
@@ -230,6 +292,8 @@ class AudioCuePlayer:
         reasons = []
         if request.volume_capped:
             reasons.append("volume_capped")
+        if request.volume_multiplier < 1.0:
+            reasons.append("volume_lowered")
 
         started_at = _utc_now()
         backend_reasons = self.backend.play_test_cue(request)
@@ -369,6 +433,7 @@ def _result_from_request(
         reason_codes=reason_codes,
         started_at=started_at,
         ended_at=ended_at,
+        volume_multiplier=request.volume_multiplier,
     )
 
 
