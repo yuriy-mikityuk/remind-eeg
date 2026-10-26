@@ -756,9 +756,13 @@ to set one from.
 An optics row whose series skipped more than `hr_rule_blind_skipped_share` (0.5) of its
 values is `hr_rule_blind`: the HR rule could not see that epoch, which no artifact flag
 covers. Every decision then logs `hr_rule_blind: true`, `allow` included.
-`hr_rule_blind_action` says what else happens: `allow` (the default) nothing,
-`lower_volume` or `pause` add the reason code `hr_rule_blind`. A row without series
-values is not counted; its coverage and flatline flags act.
+`hr_rule_blind_action` says what else happens: `lower_volume` (the default, the
+maintainer's choice on #234) adds the reason code `hr_rule_blind` as a lower-volume
+reason, so the decision is `lower_volume` with `lower_volume_multiplier` unless a pause or
+stop reason in the same epoch wins; `pause` adds it as a pause reason; `allow` adds
+nothing. It is never an artifact reason, so blind epochs in a row do not lead to a
+`repeated_artifact_quality` pause. A row without series values is not counted; its
+coverage and flatline flags act.
 
 Decisions can be appended to JSONL with `append_arousal_guard_decisions()` and read
 with `load_arousal_guard_decisions()`. The scheduler can consume a decision directly;

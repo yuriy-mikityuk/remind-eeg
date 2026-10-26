@@ -46,12 +46,16 @@ falls in an epoch, and every held step of 10 bpm the rule missed had a scripted 
 under 10 bpm between the compared windows. A surge of 15 to 40 bpm held 5 s pauses in 19
 or 20 of 21 places inside an epoch but rarely when it straddles an epoch boundary with
 under 4 s on either side; held 10 s it pauses everywhere (`docs/numbers.md`). A still
-stretch too noisy for the series has no HR rule: no artifact flag covers noisy optics, so
-only the motion, EEG and coverage rules act there. An optics epoch whose series skipped
-more than half of its values is logged as `hr_rule_blind`, `allow` decisions included;
-`ArousalGuardConfig.hr_rule_blind_action` can make it lower the volume or pause, and stays
-`allow` until a paired optics and ECG night says which (#234). There is no paired optics
-and ECG recording of sleep yet to say how the series behaves asleep.
+stretch too noisy for the series has no HR rule, and no artifact flag covers noisy
+optics. When an optics epoch's series skipped more than half of its values, the epoch is
+`hr_rule_blind` and the guard lowers the volume there, as the maintainer decided on #234
+(`ArousalGuardConfig.hr_rule_blind_action`, `lower_volume`; `allow` only logs the flag,
+`pause` pauses). A pause or stop reason in the same epoch still wins, blind epochs in a
+row do not add up to a pause, and a preset without optics never raises it. Like every
+`lower_volume` reason it halves the cue's volume hint before the calibration cap, so a
+cue plays quieter only where the cap sits above half its hint, and a cue without a hint
+plays at the default volume. There is no paired optics and ECG recording of sleep yet to
+say how often the series goes blind asleep.
 
 The HR rules can also be gated on the quality of the epoch's heart rate:
 `min_ppg_confidence_for_hr_rule` (`--guard-min-ppg-confidence`), `ppg_quality_for_hr_rule`
