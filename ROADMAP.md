@@ -1,6 +1,6 @@
 # Roadmap
 
-Dated 2026-10-26. Each item's issue has its live state; this page sums them up and is updated by hand.
+Dated 2026-10-27. Each item's issue has its live state; this page sums them up and is updated by hand.
 
 ## Where REMind stands
 
@@ -18,11 +18,11 @@ The figures and their sources are in the README's [project status](README.md#pro
 
 The research of October 2026 ([`docs/research/2026-10-uniqueness/`](docs/research/2026-10-uniqueness/report.md)) ended in ten initiatives, filed as sub-issues of [EPIC #1](https://github.com/yuriy-mikityuk/remind-eeg/issues/1).
 
-| Initiative | State on 2026-10-26 |
+| Initiative | State on 2026-10-27 |
 |---|---|
 | 1. Replace the saturated eye-movement proxy, refit the detector, publish the first-cue latency ([#225](https://github.com/yuriy-mikityuk/remind-eeg/issues/225)) | 1a, 1b and 1c merged ([#239](https://github.com/yuriy-mikityuk/remind-eeg/pull/239), [#241](https://github.com/yuriy-mikityuk/remind-eeg/pull/241), [#242](https://github.com/yuriy-mikityuk/remind-eeg/pull/242)). The refit, 1d, waits for two or more REM-bearing `p21` nights. |
 | 2. Validate the detector and the gate against PSG consensus on the open BOAS dataset ([#226](https://github.com/yuriy-mikityuk/remind-eeg/issues/226)) | Not started. |
-| 3. Cue-locked arousal scoring with quiet control windows ([#227](https://github.com/yuriy-mikityuk/remind-eeg/issues/227)) | Not started. |
+| 3. Cue-locked arousal scoring with quiet control windows ([#227](https://github.com/yuriy-mikityuk/remind-eeg/issues/227)) | The scorer, the gate log and the Pilot 3, 4 and 5 wiring in [#261](https://github.com/yuriy-mikityuk/remind-eeg/pull/261). Scoring a night with sound waits on the maintainer. |
 | 4. Sham and no-cue nights, N-of-1 blocks, delayed retest, blind incorporation coding ([#228](https://github.com/yuriy-mikityuk/remind-eeg/issues/228)) | Not started. |
 | 5. Honesty, provenance and positioning pass ([#229](https://github.com/yuriy-mikityuk/remind-eeg/issues/229)) | Merged ([#236](https://github.com/yuriy-mikityuk/remind-eeg/pull/236), [#237](https://github.com/yuriy-mikityuk/remind-eeg/pull/237)). Open only for a re-run of the REM check on the night behind the figures, if that recording turns up. |
 | 6. EDF+/BIDS export, MNE, and import of hypnograms and other recordings ([#230](https://github.com/yuriy-mikityuk/remind-eeg/issues/230)) | Not started. |
@@ -40,6 +40,7 @@ These need the maintainer's own nights, hardware or accounts:
 - two or more REM-bearing `p21` nights without audio, for the refit of [#225](https://github.com/yuriy-mikityuk/remind-eeg/issues/225) and [#116](https://github.com/yuriy-mikityuk/remind-eeg/issues/116)
 - a PyPI trusted publisher for `remind-eeg` and the repository variable `PYPI_PUBLISH`, the Zenodo integration, and the release tag ([`docs/release.md`](docs/release.md))
 - one listen to `muse-tmr play-test-cue --backend system` through the intended headphones
+- one low-volume Pilot 4 night with sound after a Pilot 2 calibration, scored with `muse-tmr score-cue-arousal` ([#227](https://github.com/yuriy-mikityuk/remind-eeg/issues/227))
 - paired Muse and H10 sessions in three postures, and a `p1034` night with the H10 ([#234](https://github.com/yuriy-mikityuk/remind-eeg/issues/234))
 
 One ask stands for anyone with a sleep lab: a night of the Muse S Athena next to PSG would give REMind its first reference that is not an automated stager.
