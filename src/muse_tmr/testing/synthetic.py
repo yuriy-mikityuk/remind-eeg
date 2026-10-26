@@ -99,8 +99,8 @@ _BEAT_FOOT_DIP = (0.33, 0.157, 0.021)
 # as they were.
 (
     _RNG_SCRIPT, _RNG_EEG, _RNG_EVENTS, _RNG_LINE, _RNG_IMU, _RNG_OPTICS, _RNG_BLE, _RNG_MOVES,
-    _RNG_READOUT, _RNG_WANDER,
-) = range(10)
+    _RNG_READOUT, _RNG_WANDER, _RNG_OPTICS_NOISE,
+) = range(11)
 
 
 def _rng(seed: int, stream: int) -> np.random.Generator:
@@ -402,7 +402,11 @@ class SyntheticNightConfig:
     between 0.1 and 0.5 Hz with ``optics_wander_ratio`` times the RMS of the pulse's
     0.7 to 3 Hz band, and sensor noise. ``heart_rate_steps`` adds sharp steps for tests:
     each (onset s, seconds, bpm) raises the heart rate by bpm from onset for that long,
-    with no ramp and no movement. Battery: ``battery_start_percent`` falling by
+    with no ramp and no movement. ``noisy_optics`` adds noisy stretches for tests: each
+    (onset s, seconds, ratio) puts noise between 0.5 and 4 Hz on every optics channel from
+    onset for that long, at ratio times the RMS of the pulse's 0.7 to 3 Hz band, with no
+    movement, as when the band loses its optical contact on a still sleeper (#234).
+    Battery: ``battery_start_percent`` falling by
     ``battery_drain_percent_per_hour`` (None: 10.60 for ``p21``, 23.34 for ``p1034``);
     at 0 % the stream ends.
 
@@ -449,6 +453,9 @@ class SyntheticNightConfig:
     # LO_NIR's 0.1 to 0.5 Hz RMS over its 0.7 to 3 Hz RMS on the still epochs of two awake
     # p1034 recordings with good contact: medians 0.71 and 0.94 (docs/numbers.md).
     optics_wander_ratio: float = 0.85
+    # (onset_seconds, duration_seconds, ratio) stretches of optics noise between 0.5 and
+    # 4 Hz at ratio times the pulse's 0.7 to 3 Hz RMS; none by default.
+    noisy_optics: Tuple[Tuple[float, float, float], ...] = ()
     battery_start_percent: float = 100.0
     battery_drain_percent_per_hour: Optional[float] = None
     notifications_per_second: float = 29.03
@@ -479,6 +486,9 @@ class SyntheticNightConfig:
         for onset, seconds, _delta in self.heart_rate_steps:
             if onset < 0 or seconds <= 0:
                 raise ValueError("heart_rate_steps need a non-negative onset and a positive length")
+        for onset, seconds, ratio in self.noisy_optics:
+            if onset < 0 or seconds <= 0 or ratio < 0:
+                raise ValueError("noisy_optics need a non-negative onset and ratio and a positive length")
         if self.notifications_per_second <= 0:
             raise ValueError("notifications_per_second must be positive")
         if not self.imu_bundle_shares or min(self.imu_bundle_shares) < 0 or sum(self.imu_bundle_shares) <= 0:
@@ -948,9 +958,12 @@ def _optics_signal(config: SyntheticNightConfig, night: ScriptedNight, arousals,
     fs = OPTICS_RATE_HZ
     n = int(duration * fs) // 2 * 2
     pulse = beat_volume(_beat_cycles(config, night, arousals, n, rng))
+    pulse_rms = _band_rms(pulse, fs, 0.7, 3.0)
     # In pulse heights, so the wander has the same ratio to the pulse on every channel.
     wander = band_limited_noise(n, 0.1, 0.5, _rng(config.seed, _RNG_WANDER), fs=fs)
-    wander *= config.optics_wander_ratio * _band_rms(pulse, fs, 0.7, 3.0)
+    wander *= config.optics_wander_ratio * pulse_rms
+    # Noisy stretches, in pulse heights too; a night without them draws nothing for them.
+    noise = _noisy_optics(config, n, pulse_rms) if config.noisy_optics else None
     moving = np.zeros(n)
     for onset, seconds in movements:
         first = int(onset * fs)
@@ -961,8 +974,24 @@ def _optics_signal(config: SyntheticNightConfig, night: ScriptedNight, arousals,
     values = np.empty((n, len(OPTICS_CHANNELS)))
     for column, (dc, share) in enumerate(zip(_OPTICS_DC, _OPTICS_PULSE_SHARE)):
         values[:, column] = dc * (1.0 + share * (wander - pulse) + 0.03 * moving)
+        if noise is not None:
+            values[:, column] += dc * share * noise
         values[:, column] += _OPTICS_NOISE_SHARE * dc * rng.standard_normal(n)
     return values
+
+
+def _noisy_optics(config: SyntheticNightConfig, n: int, pulse_rms: float) -> np.ndarray:
+    """Noise between 0.5 and 4 Hz over each stretch of ``config.noisy_optics``, at its
+    ratio times ``pulse_rms``, the pulse's 0.7 to 3 Hz RMS; zero elsewhere."""
+    rng = _rng(config.seed, _RNG_OPTICS_NOISE)
+    fs = OPTICS_RATE_HZ
+    noise = np.zeros(n)
+    for onset, seconds, ratio in config.noisy_optics:
+        first = min(n, int(round(onset * fs)))
+        stop = min(n, int(round((onset + seconds) * fs)))
+        if stop - first >= 8:
+            noise[first:stop] += ratio * pulse_rms * band_limited_noise(stop - first, 0.5, 4.0, rng, fs=fs)
+    return noise
 
 
 def heartbeat_onsets(night: SyntheticNight) -> np.ndarray:

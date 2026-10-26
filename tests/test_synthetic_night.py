@@ -544,6 +544,35 @@ class OpticsPulseTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             replace(base, heart_rate_steps=((10.0, 0.0, 5.0),)).validate()
 
+    def test_noisy_optics_bury_the_pulse_only_in_their_stretch(self):
+        base = replace(
+            scenario_config("short_allow_short", hours=3 / 60),
+            stages=("N2",) * 6,
+            arousals_per_hour=0.0,
+            optics_loss_fraction=0.0,
+            ble_gaps_per_hour=0.0,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            clean = generate_night(base, Path(tmp) / "clean")
+            noisy = generate_night(replace(base, noisy_optics=((60.0, 60.0, 3.0),)), Path(tmp) / "noisy")
+            written = json.loads((noisy.recording_dir / "generation.json").read_text(encoding="utf-8"))
+            clean_light, _ = _decode_optics(clean.raw_path)
+            noisy_light, _ = _decode_optics(noisy.raw_path)
+        first, stop = int(60 * OPTICS_RATE_HZ), int(120 * OPTICS_RATE_HZ)
+
+        # The same beats, and the same light outside the stretch.
+        np.testing.assert_array_equal(heartbeat_onsets(clean), heartbeat_onsets(noisy))
+        np.testing.assert_array_equal(clean_light[:first], noisy_light[:first])
+        np.testing.assert_array_equal(clean_light[stop:], noisy_light[stop:])
+        # Inside it, noise between 0.5 and 4 Hz at three times the pulse's 0.7 to 3 Hz RMS.
+        added = _band_rms(noisy_light[first:stop] - clean_light[first:stop], 0.5, 4.0)
+        pulse = _band_rms(clean_light[first:stop], 0.7, 3.0)
+        self.assertAlmostEqual(added / pulse, 3.0, delta=0.1)
+        self.assertEqual(written["config"]["noisy_optics"], [[60.0, 60.0, 3.0]])
+        for stretch in ((10.0, 0.0, 3.0), (-1.0, 5.0, 3.0), (10.0, 5.0, -1.0)):
+            with self.subTest(stretch=stretch), self.assertRaises(ValueError):
+                replace(base, noisy_optics=(stretch,)).validate()
+
 
 class Pilot1Test(unittest.TestCase):
     def _validate(self, recording_dir, *args):
