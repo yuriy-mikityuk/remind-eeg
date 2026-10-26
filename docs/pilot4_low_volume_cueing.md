@@ -94,11 +94,15 @@ values of the previous epoch with the first of this one (#247). Each decision in
 `arousal_guard_events.jsonl`, an `allow` too once a value was skipped, says how many
 values were used and how many were too noisy to use (`hr_series_used_count`,
 `hr_series_skipped_count`). Skipped values never pause for heart rate. Under a movement
-the motion rules still pause, but on a still stretch with poor optical contact no PPG
-rule acts: no artifact flag covers noisy optics. The skipped count shows that the HR rule
-was blind there, and when more than half the values were skipped the decision also says
-`hr_rule_blind` (#234); it stays `allow` unless `ArousalGuardConfig.hr_rule_blind_action`
-is changed. `--guard-min-ppg-confidence` and `--guard-min-hr-series-quality` (default 0,
+the motion rules still pause, but on a still stretch with poor optical contact no artifact
+flag acts: none covers noisy optics. When more than half of an epoch's values were
+skipped the decision says `hr_rule_blind` and lowers the volume (#234,
+`ArousalGuardConfig.hr_rule_blind_action`), unless a pause or stop reason wins in the same
+epoch. A cue played then shows it in `scheduler_events.jsonl` (`arousal_guard_action`
+`lower_volume`, `arousal_guard_reason_codes`, `volume_multiplier` 0.5,
+`original_volume_hint` and the halved `volume_hint`) and in the requested volume in
+`audio_playback.jsonl`; the calibration cap still applies after the halving.
+`--guard-min-ppg-confidence` and `--guard-min-hr-series-quality` (default 0,
 off) turn the HR rules off on epochs of low PPG quality, logged as `hr_rule_skipped_by`;
 leave them off for a night until `docs/optics_agreement.md` has a paired table that
 supports a value.

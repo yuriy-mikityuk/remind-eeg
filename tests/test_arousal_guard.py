@@ -384,7 +384,8 @@ class TestSuddenHeartRateRule(unittest.TestCase):
 
     def test_allow_decisions_log_skipped_hr_values(self):
         clean = ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=_ppg_with_series(60.0, start=0.0))
-        blind = ArousalGuard().evaluate(
+        # hr_rule_blind_action allow, so the all-skipped row stays an allow decision.
+        blind = ArousalGuard(ArousalGuardConfig(hr_rule_blind_action="allow")).evaluate(
             timestamp_seconds=0.0, ppg=_ppg_with_series(60.0, start=0.0, used=False)
         )
 
@@ -510,7 +511,6 @@ class TestHrRuleQualityGates(unittest.TestCase):
         self.assertEqual(config.min_ppg_confidence_for_hr_rule, 0.0)
         self.assertEqual(config.ppg_quality_for_hr_rule, ())
         self.assertEqual(config.min_hr_series_quality_for_hr_rule, 0.0)
-        self.assertEqual(config.hr_rule_blind_action, "allow")
         missing = replace(_ppg_with_changes(15.0), ppg_confidence=0.0, ppg_signal_quality="Missing")
         decision = ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=missing)
         self.assertEqual(decision.action, "pause")
@@ -518,21 +518,17 @@ class TestHrRuleQualityGates(unittest.TestCase):
         self.assertEqual(decision.metadata["ppg_confidence"], 0.0)
         self.assertEqual(decision.metadata["ppg_signal_quality"], "Missing")
 
-    def test_a_blind_epoch_is_logged_and_acted_on_only_when_asked(self):
+    def test_a_blind_epoch_is_logged_and_acted_on_as_configured(self):
         blind = _ppg_with_series(60.0, start=0.0, used=False)
-        half = replace(
-            blind,
-            hr_series=tuple(
-                replace(point, used=True, bpm=60.0, peak_bpm=60.0, quality=0.9) if index % 2 else point
-                for index, point in enumerate(blind.hr_series)
-            ),
-        )
+        half = _half_skipped(blind)
 
-        logged = ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=blind)
+        logged = ArousalGuard(ArousalGuardConfig(hr_rule_blind_action="allow")).evaluate(
+            timestamp_seconds=0.0, ppg=blind
+        )
         self.assertEqual(logged.action, "allow")
         self.assertEqual(logged.reason_codes, ())
         self.assertIs(logged.metadata["hr_rule_blind"], True)
-        # 11 of 21 skipped is more than half; 10 of 21 is not.
+        # 11 of 21 skipped is more than half; 10 of 20 is not.
         self.assertIn("hr_rule_blind", ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=half).metadata)
         fewer = replace(half, hr_series=half.hr_series[:-1])
         self.assertNotIn("hr_rule_blind", ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=fewer).metadata)
@@ -546,14 +542,76 @@ class TestHrRuleQualityGates(unittest.TestCase):
         stricter = ArousalGuard(ArousalGuardConfig(hr_rule_blind_skipped_share=1.0))
         self.assertNotIn("hr_rule_blind", stricter.evaluate(timestamp_seconds=0.0, ppg=blind).metadata)
 
+    def test_a_blind_epoch_lowers_the_volume_by_default(self):
+        # The maintainer's choice on #234: lower the volume, the threshold as 10b set it.
+        config = ArousalGuardConfig()
+        self.assertEqual(config.hr_rule_blind_action, "lower_volume")
+        self.assertEqual(config.hr_rule_blind_skipped_share, 0.5)
+        blind = _ppg_with_series(60.0, start=0.0, used=False)
+        guard = ArousalGuard()
+
+        decisions = [
+            guard.evaluate(
+                timestamp_seconds=index * 30.0,
+                eeg=_eeg(alpha=0.10),
+                imu=_imu(stillness_score=0.99),
+                ppg=replace(blind, start_time=index * 30.0, end_time=index * 30.0 + 30.0),
+            )
+            for index in range(4)
+        ]
+
+        for decision in decisions:
+            self.assertEqual(decision.action, "lower_volume")
+            self.assertEqual(decision.reason_codes, ("hr_rule_blind",))
+            self.assertEqual(decision.volume_multiplier, config.lower_volume_multiplier)
+            self.assertEqual(decision.pause_seconds, 0.0)
+            self.assertIs(decision.metadata["hr_rule_blind"], True)
+            self.assertEqual(decision.metadata["hr_series_skipped_count"], 21)
+        # Not an artifact: blind epochs in a row never add up to a repeated_artifact_quality pause.
+        self.assertEqual(guard.consecutive_artifact_epochs, 0)
+        self.assertEqual(guard.consecutive_pause_epochs, 0)
+        # More than half skipped, as before: 11 of 21 lowers, 10 of 20 does not.
+        half = _half_skipped(blind)
+        self.assertEqual(ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=half).action, "lower_volume")
+        fewer = replace(half, hr_series=half.hr_series[:-1])
+        self.assertEqual(ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=fewer).action, "allow")
+
+    def test_a_pause_or_stop_in_the_same_epoch_wins_over_a_blind_epoch(self):
+        blind = _ppg_with_series(60.0, start=0.0, used=False)
+        moving = _imu(arousal_guard_reason_codes=("motion_arousal_proxy",), arousal_event_count=1)
+
+        pause = ArousalGuard().evaluate(timestamp_seconds=0.0, imu=moving, ppg=blind)
+        self.assertEqual(pause.action, "pause")
+        self.assertEqual(pause.volume_multiplier, 0.0)
+        self.assertEqual(pause.pause_seconds, 120.0)
+        self.assertEqual(pause.reason_codes[0], "motion_arousal_proxy")
+        self.assertIn("hr_rule_blind", pause.reason_codes)
+
+        stopping = ArousalGuard(ArousalGuardConfig(stop_after_consecutive_critical_artifact_epochs=1))
+        stop = stopping.evaluate(
+            timestamp_seconds=0.0,
+            eeg=_eeg(
+                artifact_flags=("eeg_clipping_AF7", "eeg_clipping_AF8", "eeg_clipping_TP9"),
+                bad_channels=("AF7", "AF8", "TP9"),
+                usable_channel_count=1,
+            ),
+            ppg=blind,
+        )
+        self.assertEqual(stop.action, "stop")
+        self.assertEqual(stop.volume_multiplier, 0.0)
+        self.assertIn("critical_eeg_artifact", stop.reason_codes)
+        self.assertIn("hr_rule_blind", stop.reason_codes)
+
     def test_no_blind_flag_without_optics_or_without_a_series(self):
         eeg_only = _eeg_only_ppg()
         self.assertNotIn("hr_rule_blind", ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=eeg_only).metadata)
-        p21 = ArousalGuard(ArousalGuardConfig(optics_capable=False))
         blind = _ppg_with_series(60.0, start=0.0, used=False)
-        self.assertEqual(
-            p21.evaluate(timestamp_seconds=0.0, ppg=blind).metadata, {"ppg_absent_by_design": True}
-        )
+        # A preset without optics (p21) never raises it, whatever the action.
+        for action in ("lower_volume", "pause"):
+            p21 = ArousalGuard(ArousalGuardConfig(optics_capable=False, hr_rule_blind_action=action))
+            decision = p21.evaluate(timestamp_seconds=0.0, ppg=blind)
+            self.assertEqual((decision.action, decision.reason_codes), ("allow", ()), action)
+            self.assertEqual(decision.metadata, {"ppg_absent_by_design": True})
 
     def test_config_rejects_bad_gates(self):
         for kwargs in (
@@ -604,6 +662,17 @@ def _ppg_with_series(bpm, *, start, used=True):
         sudden_hr_change_source="optics",
         hr_series_channel="LO_NIR",
         hr_series=points,
+    )
+
+
+def _half_skipped(row):
+    """``row`` with every other series value used: 11 of its 21 skipped."""
+    return replace(
+        row,
+        hr_series=tuple(
+            replace(point, used=True, bpm=60.0, peak_bpm=60.0, quality=0.9) if index % 2 else point
+            for index, point in enumerate(row.hr_series)
+        ),
     )
 
 

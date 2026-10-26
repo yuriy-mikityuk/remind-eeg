@@ -113,6 +113,12 @@ in Pilot 4, the command exits with code 2 before it connects or creates `$OUTDIR
 `afplay` is not on PATH, `--allow-dry-run` runs the night silently instead, and
 `pilot5_summary.json` names the requested and the resolved backend.
 
+The arousal guard is Pilot 4's. On `p1034` an epoch whose heart-rate series skipped more
+than half of its values is `hr_rule_blind` and lowers the volume of the TLR and puzzle
+cues played in it (#234): their play events in `scheduler_events.jsonl` carry
+`volume_multiplier` 0.5 and the halved `volume_hint`, and `audio_playback.jsonl` the
+requested volume. A pause or stop reason in the same epoch still wins.
+
 ## Emergency Stop
 
 Creating the emergency stop file blocks future playback while the recording continues:

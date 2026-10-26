@@ -90,10 +90,11 @@ class ArousalGuardConfig:
     ppg_quality_for_hr_rule: Tuple[str, ...] = ()
     min_hr_series_quality_for_hr_rule: float = 0.0
     # An optics row whose heart-rate series skipped more than this share of its values is
-    # hr_rule_blind, logged in metadata on every decision; hr_rule_blind_action allow
-    # leaves the decision as it is, lower_volume or pause adds the reason code.
+    # hr_rule_blind, logged in metadata on every decision; hr_rule_blind_action
+    # lower_volume (the maintainer's choice on #234) or pause adds the reason code, allow
+    # leaves the decision as it is. A pause or stop reason in the same epoch still wins.
     hr_rule_blind_skipped_share: float = 0.5
-    hr_rule_blind_action: str = "allow"
+    hr_rule_blind_action: str = "lower_volume"
 
     def validate(self) -> None:
         if not 0.0 < self.lower_volume_multiplier <= 1.0:

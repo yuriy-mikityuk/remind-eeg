@@ -115,10 +115,11 @@ extraction and `TmrCueScheduler`. It consumes `EEGFeatureRow`, `IMUFeatureRow`, 
 - `stop`
 
 The conservative default watches motion/arousal guard reason codes, stillness, relative
-alpha power, sudden HR changes, out-of-range HR, and artifact/coverage flags. Mild alpha
-or artifact-quality concerns lower volume. Motion arousal, low stillness, strong alpha,
-HR jumps, and out-of-range HR pause cueing. Repeated pause or artifact epochs stop the
-session plan. Decisions can be appended to JSONL for replay analysis and passed into
+alpha power, sudden HR changes, out-of-range HR, and artifact/coverage flags. Mild alpha,
+artifact-quality concerns and, on optics presets, an epoch whose heart-rate series is too
+noisy for the HR rule (`hr_rule_blind`, #234) lower volume. Motion arousal, low
+stillness, strong alpha, HR jumps, and out-of-range HR pause cueing. Repeated pause or
+artifact epochs stop the session plan. Decisions can be appended to JSONL for replay analysis and passed into
 `TmrCueScheduler.update(..., guard_decision=decision)`.
 
 ## Morning Dream Report

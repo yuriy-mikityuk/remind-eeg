@@ -94,7 +94,13 @@ in `src/muse_tmr/testing/synthetic.py`, with a row in [`numbers.md`](numbers.md#
   many times the pulse. `heartbeat_onsets()` gives the scripted beat times, which the
   recording does not hold. `heart_rate_steps` adds sharp steps to the scripted heart
   rate, each (onset s, seconds, bpm), with no ramp and no movement; the default has none,
-  and tests use it to check the arousal guard's heart-rate rule (#247).
+  and tests use it to check the arousal guard's heart-rate rule (#247). `noisy_optics`
+  adds stretches of noise between 0.5 and 4 Hz on every optics channel, each (onset s,
+  seconds, ratio to the RMS of the pulse's 0.7 to 3 Hz band), with no movement, as when
+  the band loses its optical contact on a still sleeper; the default has none, and a test
+  uses one to check that the guard lowers the volume where the heart-rate series is blind
+  (#234). The detector reads the noise's peak intervals as high heart-rate variability,
+  so P_REM rises on such a stretch.
 - Battery: falling at the preset's measured drain until it is empty; the stream ends there.
 - BLE: notifications of at most 244 bytes, each carrying the subpackets made since the one
   before, one, two or three ACCGYRO subpackets read out together, subpackets lost and

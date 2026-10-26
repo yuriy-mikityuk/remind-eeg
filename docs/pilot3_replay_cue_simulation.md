@@ -59,7 +59,8 @@ changed (#247). A pause for it records in the guard metadata how many of the epo
 values were used and skipped (`hr_series_used_count`, `hr_series_skipped_count`) and the
 largest change from the previous epoch's values into this one's
 (`sudden_hr_change_across_epochs_bpm`); an `allow` decision records the two counts when
-a value was skipped, and `hr_rule_blind` when more than half of them were (#234).
+a value was skipped. When more than half of them were, the decision says `hr_rule_blind`
+and lowers the volume, so a cue planned in that epoch carries half its volume hint (#234).
 `docs/data_model.md` has the details.
 
 `--guard-min-ppg-confidence` and `--guard-min-hr-series-quality` (default 0, off) turn

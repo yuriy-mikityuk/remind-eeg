@@ -134,18 +134,19 @@ holds back the true jumps first.
 
 ## What the tables are for
 
-Three guard settings wait for them; all of them default to doing nothing:
+Three guard settings wait for them:
 
 - `min_ppg_confidence_for_hr_rule` (`--guard-min-ppg-confidence`) and
   `min_hr_series_quality_for_hr_rule` (`--guard-min-hr-series-quality`) on
   `simulate-replay-cues`, `run-pilot4-cueing` and `run-pilot5-full-night`, and
   `ppg_quality_for_hr_rule` in `ArousalGuardConfig` (the `ppg_signal_quality` levels the
-  HR rules run on). The gate table shows what each would keep; set one only from a
-  paired-session table.
+  HR rules run on). They default to doing nothing. The gate table shows what each would
+  keep; set one only from a paired-session table.
 - `hr_rule_blind`: an optics epoch whose series skipped more than half of its values is
-  logged in the guard's metadata, with action `allow`. The jump table's `hr_rule_blind`
-  rows show how many ECG jumps fell in such epochs before `hr_rule_blind_action` is set
-  to `lower_volume` or `pause`.
+  logged in the guard's metadata and lowers the volume (`hr_rule_blind_action`
+  `lower_volume`, the maintainer's choice on #234). The jump table's `hr_rule_blind` rows
+  show how many ECG jumps fell in such epochs, where cues now play quieter and a `pause`
+  would hold them back.
 - The series rows by quality show how far the values the series uses, from quality 0.5,
   are from the ECG at each level, for `PPGFeatureConfig.hr_series_min_quality`. By
   `ppg_confidence` and `ppg_signal_quality` they show the same for the epochs a gate on
