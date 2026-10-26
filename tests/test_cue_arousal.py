@@ -53,6 +53,7 @@ from tests.test_pilot4_cueing import (
     build_rem_frames,
     pilot4_config,
     protocol_fixture,
+    rem_frames,
     still_accel_rows,
     still_gyro_rows,
     synthetic_ppg,
@@ -696,6 +697,65 @@ class AwakeningFieldsTest(unittest.TestCase):
             row = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(exit_code, 0)
         self.assertEqual((row["timestamp_seconds"], row["attributed_to_cue"]), (1250.5, "unsure"))
+
+
+class MorningRescoreTest(unittest.TestCase):
+    def test_scoring_the_night_again_rewrites_its_summary_block(self):
+        # The night scores itself when it ends, before any marker is logged; the runbooks
+        # say to score it again after logging awakenings in the morning.
+        from muse_tmr.validation import AwakeningEvent, append_awakening_event
+
+        catalog, session, assignment, cue_library = protocol_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            night_dir = Path(tmpdir)
+            summary = asyncio.run(
+                run_pilot4_cueing_night(
+                    FakeMuseSource(rem_frames(4)),
+                    config=pilot4_config(night_dir, duration_seconds=60.0),
+                    catalog=catalog,
+                    session=session,
+                    assignment=assignment,
+                    cue_library=cue_library,
+                    calibration=VolumeCalibration("Sleep Headphones", 0.01, 0.02, 0.04),
+                    backend=MockAudioBackend(),
+                )
+            )
+            summary_path = Path(summary.summary_path)
+            at_night_end = json.loads(summary_path.read_text(encoding="utf-8"))
+            # 30 s after the first cue (60 s), as the sleeper marks it in the morning.
+            append_awakening_event(
+                night_dir / "awakening_events.jsonl",
+                AwakeningEvent(timestamp_seconds=90.0, attributed_to_cue="yes"),
+            )
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                exit_code = cli_main(["score-cue-arousal", str(night_dir)])
+            rescored = json.loads(summary_path.read_text(encoding="utf-8"))
+            report = json.loads((night_dir / "cue_arousal_report.json").read_text(encoding="utf-8"))
+
+            # A summary from before the block existed is left as it is.
+            old = {key: value for key, value in rescored.items() if key != "cue_arousal"}
+            old["schema_version"] = 1
+            summary_path.write_text(json.dumps(old), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()) as printed_old:
+                old_exit_code = cli_main(["score-cue-arousal", str(night_dir)])
+            old_after = summary_path.read_text(encoding="utf-8")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(at_night_end["cue_arousal"]["cue_attributed_awakening_rate"], 0.0)
+        block = rescored["cue_arousal"]
+        self.assertEqual(block["status"], "scored")
+        self.assertEqual(block["cue_attributed_awakening_rate"], 0.5)
+        self.assertEqual(report["outcomes"]["cue_attributed_awakening_rate"], 0.5)
+        self.assertEqual(report["outcomes"]["awakening_attribution_counts"], {"yes": 1})
+        self.assertEqual(block["report_path"], str(night_dir / "cue_arousal_report.json"))
+        self.assertIn(f"summary={summary_path}", printed.getvalue())
+        self.assertEqual(
+            {key: value for key, value in rescored.items() if key != "cue_arousal"},
+            {key: value for key, value in at_night_end.items() if key != "cue_arousal"},
+        )
+        self.assertEqual(old_exit_code, 0)
+        self.assertEqual(json.loads(old_after), old)
+        self.assertNotIn("summary=", printed_old.getvalue())
 
 
 class BoundaryTest(unittest.TestCase):

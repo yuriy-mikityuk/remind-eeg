@@ -143,7 +143,7 @@ As in Pilot 4, the night ends by scoring what followed each TLR and puzzle cue a
 paired quiet control (`docs/safety_outcomes.md`) and puts a `cue_arousal` block in
 `pilot5_summary.json`. The cue index table separates the TLR cues (`tlr 1`, `tlr 2`,
 ...) from the puzzle cues. After logging awakenings, score it again so the
-cue-attributed awakening rate counts them:
+cue-attributed awakening rate in the report and in that block counts them:
 
 ```bash
 .venv/bin/python -m muse_tmr.cli.main score-cue-arousal "$OUTDIR"

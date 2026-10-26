@@ -922,7 +922,9 @@ order:
 `cue_arousal_report.md` has the summary table, the dose tables and the limitations. The
 `cue_arousal` block of a Pilot 4/5 summary has `status` (`scored` or `failed` with
 `error`), the counts and rates of `outcomes` named above, the limitation codes and the
-three paths.
+three paths. `score-cue-arousal` on the night's directory rewrites it with the report it
+writes there (`write_summary_block()`); a schema 1 summary has no block and is left as it
+is.
 
 ## Optics Agreement Reports
 

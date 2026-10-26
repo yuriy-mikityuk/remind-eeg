@@ -2825,7 +2825,12 @@ def _log_pilot4_awakening(args: argparse.Namespace) -> int:
 async def _score_cue_arousal(args: argparse.Namespace) -> int:
     """Score a night's or a Pilot 3 report's cues and write the three outputs."""
     from muse_tmr.presets import preset_provides_optics
-    from muse_tmr.reports.cue_arousal import SYNTHETIC_NOTE, score_cue_arousal
+    from muse_tmr.reports.cue_arousal import (
+        SYNTHETIC_NOTE,
+        find_night_summary,
+        score_cue_arousal,
+        write_summary_block,
+    )
 
     recording_dir = _resolve_output_path(args.recording_dir)
     pilot3_report = _optional_path(args.pilot3_report)
@@ -2851,6 +2856,18 @@ async def _score_cue_arousal(args: argparse.Namespace) -> int:
     else:
         output_dir = recording_dir
     paths = report.save_outputs(output_dir)
+    summary_note = ""
+    if pilot3_report is None:
+        # Pilot 4/5 put the block into the summary when the night ended; scored again, for
+        # example after awakening markers were added, the block follows the new report.
+        # It keeps that report's paths, so only a report written next to it replaces it.
+        summary_file = find_night_summary(recording_dir, _optional_path(args.summary))
+        if (
+            summary_file is not None
+            and summary_file.parent.resolve() == Path(output_dir).resolve()
+            and write_summary_block(summary_file, report.summary_block(paths))
+        ):
+            summary_note = f" summary={summary_file}"
     outcomes = report.outcomes
     per_cue = dict(outcomes.get("arousal_proxy_per_cue", {}) or {})
     per_control = dict(outcomes.get("arousal_proxy_per_control", {}) or {})
@@ -2862,7 +2879,7 @@ async def _score_cue_arousal(args: argparse.Namespace) -> int:
         f"any_per_cue={_format_float(per_cue.get('any'), 3)} "
         f"any_per_control={_format_float(per_control.get('any'), 3)} "
         f"limitations={','.join(report.limitation_codes)} "
-        f"report={paths['report_path']}{note}"
+        f"report={paths['report_path']}{summary_note}{note}"
     )
     return 0
 

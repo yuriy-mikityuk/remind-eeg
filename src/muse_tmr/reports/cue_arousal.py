@@ -693,15 +693,35 @@ def _night_inputs(
     )
 
 
+def find_night_summary(recording_dir: Path, summary_path: Optional[Path] = None) -> Optional[Path]:
+    """The Pilot 4/5 summary the scorer reads for a night: ``summary_path``, else the
+    directory's ``pilot4_summary.json`` or ``pilot5_summary.json``; None without one."""
+    candidates = [Path(summary_path).expanduser()] if summary_path else [
+        Path(recording_dir).expanduser() / name for name in SUMMARY_FILENAMES
+    ]
+    return next((path for path in candidates if path.exists()), None)
+
+
+def write_summary_block(summary_path: Path, block: Mapping[str, object]) -> bool:
+    """Put ``block`` (``CueArousalReport.summary_block()``) into a Pilot 4/5 summary as its
+    ``cue_arousal``, as the night does when it ends, so that scoring the night again,
+    after awakening markers were added, leaves no older figure there. A summary without
+    the field, from before #227, is left as it is. Returns whether it was written."""
+    summary_path = Path(summary_path).expanduser()
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or "cue_arousal" not in payload:
+        return False
+    payload["cue_arousal"] = _json_safe(dict(block))
+    _write_text(summary_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return True
+
+
 def _read_summary(recording_dir: Path, summary_path: Optional[Path]) -> Tuple[Dict[str, object], Optional[str]]:
     """The night's Pilot 4/5 summary and its file name; empty without one."""
-    candidates = [Path(summary_path).expanduser()] if summary_path else [
-        recording_dir / name for name in SUMMARY_FILENAMES
-    ]
-    for path in candidates:
-        if path.exists():
-            return json.loads(path.read_text(encoding="utf-8")), path.name
-    return {}, None
+    path = find_night_summary(recording_dir, summary_path)
+    if path is None:
+        return {}, None
+    return json.loads(path.read_text(encoding="utf-8")), path.name
 
 
 def _awakenings(path: Optional[Path], recording_dir: Optional[Path]) -> Optional[Tuple[AwakeningEvent, ...]]:

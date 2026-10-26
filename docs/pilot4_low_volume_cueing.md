@@ -151,7 +151,8 @@ summary is written. `pilot4_summary.json` then gets a `cue_arousal` block with t
 per-cue and per-control rates, the limitation codes and the paths of
 `cue_arousal_events.jsonl`, `cue_arousal_report.json` and `cue_arousal_report.md`; if
 the scorer fails, the block says `failed` and why, and the rest of the summary stands.
-Run it again, for example after adding awakening markers in the morning:
+The block counts the awakening markers logged by the end of the night. Run it again
+after adding markers in the morning; it rewrites the report and the block:
 
 ```bash
 .venv/bin/python -m muse_tmr.cli.main score-cue-arousal "$OUTDIR"
