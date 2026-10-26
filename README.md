@@ -19,7 +19,7 @@ Not a medical device. This is n = 1 research software for self-experimentation, 
 - No night with sleep-time audio has been run yet; Pilots 4 and 5 exist as tooling only ([EPIC #1](https://github.com/yuriy-mikityuk/remind-eeg/issues/1)).
 - The heuristic detector is effectively one feature: against GSSC only `low_delta_power` separates REM, and the eye-movement proxy is saturated, so its weight is now 0; the `p21` thresholds were tuned before that and wait for a re-grid ([#116](https://github.com/yuriy-mikityuk/remind-eeg/issues/116), [#225](https://github.com/yuriy-mikityuk/remind-eeg/issues/225)). Its replacement, a count of eye-movement deflections on band-passed AF7 − AF8, is computed and exported at weight 0 and has only been checked on synthetic input; fitting it needs REM-bearing nights.
 - The gate's 60 s stable window counts real time at any `--stride-seconds`. On a synthetic NREM-to-REM stream the first cue came 60 to 85 s after REM onset at the default 30 s stride and 80 to 85 s at 10 s, so a shorter stride does not bring it earlier with the gate as it is; it has not been measured on a real night ([#167](https://github.com/yuriy-mikityuk/remind-eeg/issues/167), [#225](https://github.com/yuriy-mikityuk/remind-eeg/issues/225)).
-- The pip distribution is `remind-eeg`, with the `muse-tmr` command and the `muse_tmr` import. It is not on PyPI yet: the release workflow is in place, publishing waits on the maintainer ([#232](https://github.com/yuriy-mikityuk/remind-eeg/issues/232), [`docs/release.md`](docs/release.md)).
+- The pip distribution is `remind-eeg`, with the `muse-tmr` command and the `muse_tmr` import. It is not on PyPI yet and has no DOI: the release workflow and `CITATION.cff` are in place, publishing and the Zenodo archive wait on the maintainer ([#232](https://github.com/yuriy-mikityuk/remind-eeg/issues/232), [`docs/release.md`](docs/release.md)).
 
 How REMind relates to the other open projects: [`docs/compare.md`](docs/compare.md). Answers to what comes up in the issues: [`docs/faq.md`](docs/faq.md). The papers: [`docs/references.md`](docs/references.md).
 
@@ -43,9 +43,9 @@ The pictures show the app on example data.
 - **Reproducible validation:** five staged pilots, each with a runbook and an automated validator
 - **Engineering hygiene:** 44 CLI commands, pytest suite with CI on GitHub Actions, and a privacy-aware gitignore — volume calibration, puzzle content, and dream reports never leave the machine
 
-## Quick start
+## Install
 
-You need Python 3.11 to 3.13, and a Muse S Athena to record. CI runs the tests on Linux, macOS and Windows; the app launcher is for macOS.
+REMind is n = 1 research software, not a medical device. It is not on PyPI yet ([#232](https://github.com/yuriy-mikityuk/remind-eeg/issues/232)), so it installs from this repository. You need Python 3.11 to 3.13, and a Muse S Athena to record. CI runs the tests on Linux, macOS and Windows; the app launcher is for macOS.
 
 ```bash
 git clone https://github.com/yuriy-mikityuk/remind-eeg.git
@@ -53,6 +53,14 @@ cd remind-eeg
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
+muse-tmr status
+```
+
+`muse-tmr status` prints `REMind <version>: n = 1 research software, not a medical device`. Without a clone, `pip install "git+https://github.com/yuriy-mikityuk/remind-eeg.git"` installs the command, but not the scripts or the macOS launcher.
+
+## Quick start
+
+```bash
 muse-tmr demo
 ```
 
@@ -193,8 +201,14 @@ Audio output is capped by per-device calibration and a hard session maximum, alw
 
 ## Contributing
 
-Changes from people and from coding agents follow [`AGENTS.md`](AGENTS.md): the git preflight, small PRs tied to one issue, tests, conservative sleep-time audio defaults, no SDK files or private data in the repo, and no medical claims. [`docs/agent_rules.md`](docs/agent_rules.md) is the short version. CI runs the forbidden-files check and the test suite on every pull request. What changed in each version is in [`CHANGELOG.md`](CHANGELOG.md).
+Changes from people and from coding agents follow [`AGENTS.md`](AGENTS.md): the git preflight, small PRs tied to one issue, tests, conservative sleep-time audio defaults, no SDK files or private data in the repo, and no medical claims. [`CONTRIBUTING.md`](CONTRIBUTING.md) is the version for people, with what an issue about a night may share, and [`docs/agent_rules.md`](docs/agent_rules.md) the short one; [`ROADMAP.md`](ROADMAP.md) says what is planned. CI runs the forbidden-files check, the test suite and the `CITATION.cff` validation on every pull request. What changed in each version is in [`CHANGELOG.md`](CHANGELOG.md).
+
+## How to cite
+
+If you use REMind in research, cite the version you used. [`CITATION.cff`](CITATION.cff) has the metadata, and the "Cite this repository" button on the GitHub page turns it into APA or BibTeX. DOI: pending. It comes with the first release archived on Zenodo, which is not set up yet ([#232](https://github.com/yuriy-mikityuk/remind-eeg/issues/232)).
+
+If you build on the BLE layer, `muse_tmr.ble`, please also cite amused-py by Adrian Tadeusz Belmans. `CITATION.cff` lists it under `references`, and its own citation block is preserved in [`docs/amused_upstream.md`](docs/amused_upstream.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE). If you build on the BLE layer specifically, please also cite upstream amused-py (citation block preserved in [`docs/amused_upstream.md`](docs/amused_upstream.md)).
+MIT — see [LICENSE](LICENSE).

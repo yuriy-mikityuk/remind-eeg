@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from muse_tmr import __version__
 from muse_tmr.cli import main as cli_main
 from muse_tmr.cli.main import _default_recording_dir, _resolve_output_dir, build_parser
 from muse_tmr.sources.amused_source import AmusedSource
@@ -1083,6 +1084,31 @@ class TestAudioPreflightCli(unittest.TestCase):
             load_calibrations.assert_not_called()
             build_source.assert_not_called()
             self.assertEqual(list(Path(tmp).iterdir()), [])
+
+
+class TestBanner(unittest.TestCase):
+    """`muse-tmr status` and the end of `muse-tmr --help` say what REMind is (#232)."""
+
+    BANNER = f"REMind {__version__}: n = 1 research software, not a medical device"
+
+    def test_status_prints_the_banner(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(cli_main.main(["status"]), 0)
+        self.assertEqual(stdout.getvalue(), self.BANNER + "\n")
+
+    def test_help_ends_with_the_banner(self):
+        for argv in (["--help"], []):
+            with self.subTest(argv=argv):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    try:
+                        rc = cli_main.main(argv)
+                    except SystemExit as exc:
+                        rc = exc.code
+                self.assertEqual(rc, 0)
+                # argparse wraps the help to the terminal's width, so compare without line breaks.
+                self.assertTrue(" ".join(stdout.getvalue().split()).endswith(self.BANNER))
 
 
 if __name__ == "__main__":

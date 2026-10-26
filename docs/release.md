@@ -34,11 +34,18 @@ on PyPI, and the shim only serves `import amused` with the repository root on
    `yuriy-mikityuk`, repository `remind-eeg`, workflow `release.yml`, environment `pypi`
    (<https://docs.pypi.org/trusted-publishers/>).
 2. In the repository's Actions settings, set the variable `PYPI_PUBLISH` to `true`.
+3. For a DOI, turn on the Zenodo integration for `yuriy-mikityuk/remind-eeg`
+   (<https://docs.github.com/en/repositories/archiving-a-github-repository/referencing-and-citing-content>).
+   Zenodo then archives each GitHub release. After the first one, put the concept DOI,
+   the one that stands for every version, into `CITATION.cff` as `doi:` and into the
+   README's How to cite; until then both say the DOI is pending.
 
 ## Each release
 
 1. Set `__version__` in `src/muse_tmr/__init__.py`; the wheel takes its version from
-   there. Move the Unreleased part of `CHANGELOG.md` under that version.
+   there. Move the Unreleased part of `CHANGELOG.md` under that version and the release
+   date, and set `version` and `date-released` in `CITATION.cff` to the same two;
+   `tests/test_packaging.py` fails until all three agree.
 2. Merge that to `main` and check the build without publishing:
    `gh workflow run release.yml -f dry_run=true`. The run's `dist` artifact holds the
    files that a tag would publish.

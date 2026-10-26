@@ -1,0 +1,48 @@
+# Citation File Format 1.2.0, https://citation-file-format.github.io/
+# At each release, version follows muse_tmr.__version__ and date-released the date of that
+# version in CHANGELOG.md; tests/test_packaging.py checks both, and CI runs cffconvert --validate.
+# DOI: pending. It comes with the first release archived on Zenodo, which the maintainer has
+# not set up yet (#232); add it here as doi: once it exists.
+cff-version: 1.2.0
+message: >-
+  If you use REMind in research, please cite the version you used, and amused-py
+  as well when you use its BLE layer (muse_tmr.ble). REMind is n = 1 research
+  software, not a medical device.
+type: software
+title: "REMind: REM-gated targeted memory reactivation for the Muse S Athena EEG headset"
+abstract: >-
+  Overnight recording, offline replay, real-time REM detection and safety-gated
+  audio cues for the Muse S Athena EEG headset, with the single-subject protocol
+  around them: pre-sleep puzzles with seeded cued and uncued groups, REM-gated
+  cueing, morning dream reports, blind retests and a descriptive cued-vs-uncued
+  analysis. n = 1 research software, not a medical device; it makes no clinical,
+  diagnostic, therapeutic or lucid-dreaming claims.
+authors:
+  - family-names: Mikityuk
+    given-names: Yuriy
+version: 0.3.0
+date-released: 2026-10-19
+license: MIT
+repository-code: "https://github.com/yuriy-mikityuk/remind-eeg"
+url: "https://github.com/yuriy-mikityuk/remind-eeg"
+keywords:
+  - muse
+  - eeg
+  - sleep
+  - targeted-memory-reactivation
+  - lucid-dreaming
+  - research-software
+references:
+  - type: software
+    title: "Amused: A Muse S Direct BLE Implementation"
+    authors:
+      - family-names: Belmans
+        given-names: Adrian Tadeusz
+        alias: nexon33
+    year: 2025
+    license: MIT
+    repository-code: "https://github.com/Amused-EEG/amused-py"
+    commit: bce20f98ddc7fa2efe3219d1b5d2f7554a55eb97
+    notes: >-
+      The BLE layer of REMind, muse_tmr.ble, is forked from amused-py at this
+      commit.

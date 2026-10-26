@@ -18,6 +18,11 @@ jobs:
         run: python scripts/check_forbidden_files.py
       - name: Check CLI scaffold
         run: PYTHONPATH=src python -m muse_tmr.cli.main --help
+      # tests/test_packaging.py keeps its version and date with muse_tmr and CHANGELOG.md.
+      - name: Validate CITATION.cff against the CFF 1.2.0 schema
+        run: |
+          python -m pip install "cffconvert==2.0.0"
+          cffconvert --validate
 
   # The Pythons of this matrix and of the package job are the ones pyproject.toml
   # claims in requires-python and its classifiers; tests/test_packaging.py keeps them equal.
