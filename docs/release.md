@@ -23,8 +23,9 @@ Run by hand with `dry_run` (the default), and on a pull request that changes
 and publishes nothing.
 
 The wheel holds `muse_tmr` and the top-level `muse_*` modules of the BLE layer. It does
-not hold `amused.py`: `amused` is the name of the upstream package on PyPI, and the shim
-only serves `import amused` from a checkout.
+not hold `amused.py`, and an editable install does not map it either: `amused` is the
+name of the upstream package on PyPI, and the shim only serves `import amused` with the
+repository root on `sys.path`.
 
 ## Once, before the first release
 

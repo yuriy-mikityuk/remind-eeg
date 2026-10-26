@@ -76,8 +76,9 @@ Repository = "https://github.com/yuriy-mikityuk/remind-eeg"
 Issues = "https://github.com/yuriy-mikityuk/remind-eeg/issues"
 
 [tool.setuptools]
-# amused.py is not shipped: `amused` is the upstream package's name on PyPI, and the
-# shim only serves `import amused` from a checkout.
+# amused.py is neither shipped nor mapped by an editable install: `amused` is the
+# upstream package's name on PyPI, and the shim only serves `import amused` with the
+# repository root on sys.path.
 py-modules = [
     "muse_athena_protocol",
     "muse_data_parser",
