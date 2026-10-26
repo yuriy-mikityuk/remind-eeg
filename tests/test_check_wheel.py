@@ -38,6 +38,21 @@ class TestCheckWheel(unittest.TestCase):
                 archive.writestr("muse_tmr/validation/__init__.py", "")
             self.assertEqual(check.missing_files(wheel, src), [])
 
+    def test_reports_a_top_level_amused(self):
+        check = _load_check_script()
+        with tempfile.TemporaryDirectory() as tmp:
+            wheel = Path(tmp) / "pkg.whl"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr("muse_tmr/sources/amused_source.py", "")
+                archive.writestr("muse_raw_stream.py", "")
+                archive.writestr("remind_eeg-0.3.0.dist-info/RECORD", "")
+            self.assertEqual(check.top_level_amused(wheel), [])
+
+            with zipfile.ZipFile(wheel, "a") as archive:
+                archive.writestr("amused.py", "")
+                archive.writestr("amused/__init__.py", "")
+            self.assertEqual(check.top_level_amused(wheel), ["amused", "amused.py"])
+
 
 if __name__ == "__main__":
     unittest.main()
