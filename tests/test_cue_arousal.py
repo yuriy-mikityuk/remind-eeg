@@ -149,6 +149,23 @@ def stream(
     return frames
 
 
+def stamped_late(frames, start, seconds):
+    """frames with each one from start to start + seconds stamped at start + seconds, as
+    the BLE client stamps the packets a busy event loop held; none is lost."""
+    moment = start + seconds
+    late = []
+    for frame in frames:
+        if start <= frame.timestamp < moment:
+            frame = replace(
+                frame,
+                timestamp=moment,
+                eeg=replace(frame.eeg, timestamp=moment),
+                imu=replace(frame.imu, timestamp=moment),
+            )
+        late.append(frame)
+    return late
+
+
 CUE = T0 + 40.0
 CONTROL = T0 + 100.0
 
@@ -238,6 +255,23 @@ class WindowFlagTest(unittest.TestCase):
         cue, _ = score(stream(alpha=[(42.0, 48.0, 25.0)], gaps=[(36.0, 36.25)]))
         self.assertIs(cue.flags["alpha"], True)
         self.assertNotIn("eeg_gap", cue.quality_flags)
+
+    def test_frames_that_came_late_but_whole_keep_their_place(self):
+        # A busy event loop stamps every packet it held with the moment it is free again.
+        # Up to 127 subpackets (1.98 s of 4-channel EEG) the decoder would have reported a
+        # loss, so frames that late with none reported lost nothing; later than that the
+        # counter cannot tell, and the scorer counts a gap.
+        frames = stream(alpha=[(42.0, 48.0, 25.0)])
+        for seconds in (1.3, 1.9):
+            with self.subTest(seconds=seconds):
+                cue, control = score(stamped_late(frames, CUE + 0.2, seconds))
+                self.assertIs(cue.flags["alpha"], True)
+                self.assertEqual(cue.values["eeg_coverage_post"], 1.0)
+                self.assertNotIn("eeg_gap", cue.quality_flags)
+                self.assertEqual(control.values["eeg_coverage_post"], 1.0)
+        cue, _ = score(stamped_late(frames, CUE + 0.2, 2.5))
+        self.assertIn("eeg_gap", cue.quality_flags)
+        self.assertLess(cue.values["eeg_coverage_post"], 0.8)
 
     def test_no_frames_scores_nothing(self):
         (window,) = score_frame_windows([], [CUE])

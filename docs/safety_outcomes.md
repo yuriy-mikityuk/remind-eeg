@@ -16,6 +16,8 @@ The thresholds are UNFITTED starting values. A cue's volume is a software gain f
 
 A cue is a scheduler `play`. Its moment is the end of the epoch whose decision played it,
 the time Pilot 4 hands it to the player; the sound starts a fraction of a second later.
+Pilot 4 plays it on a worker thread, so the event loop keeps taking the headband's
+packets while the tone plays and they keep the time they came.
 A TLR cue logged at its planned time is placed at the end of the first epoch that starts
 at or after it, the epoch that plays it. Times count from the first epoch's start, which
 Pilot 3, 4 and 5 now record as `first_epoch_start`.
@@ -33,14 +35,17 @@ post window) out of one replay pass over `raw_amused.bin`, and sets five flags:
 
 `any` is set when one of them is. The EEG is put on one sample clock per window, as the
 optics clock of `ppg_features` is: samples the decoder reports lost, and a BLE gap, stay
-missing and are never read as zeros. A window that misses more than 20 % of its baseline
-or post window gets `eeg_gap` and no EEG flags; a channel that clips or is flat before
-the cue is left out. The band powers come from 1 s Hann segments every 0.5 s, averaged
-over the usable channels and over 3 s, the shortest arousal AASM scoring counts. The
-heart-rate flag reads only values the series used; a window with fewer than three on
-either side gets `hr_unavailable`, and one without optics, by preset or by dropout,
-`ppg_absent`. Neither is a flag. The decoder's `heart_rate` stream is not read: it jumps
-by 10 bpm or more between values 36 to 77 ms apart.
+missing and are never read as zeros. The decoder's subpacket counter reports any loss of
+up to 127 subpackets (1.98 s of 4-channel EEG, 0.99 s of 8-channel), so a frame that
+comes later than the clock expects by less than that, with no loss reported, only came
+late and keeps its place; a longer lateness counts as a gap. A window that misses more
+than 20 % of its baseline or post window gets `eeg_gap` and no EEG flags; a channel that
+clips or is flat before the cue is left out. The band powers come from 1 s Hann segments
+every 0.5 s, averaged over the usable channels and over 3 s, the shortest arousal AASM
+scoring counts. The heart-rate flag reads only values the series used; a window with
+fewer than three on either side gets `hr_unavailable`, and one without optics, by preset
+or by dropout, `ppg_absent`. Neither is a flag. The decoder's `heart_rate` stream is not
+read: it jumps by 10 bpm or more between values 36 to 77 ms apart.
 
 The ratios are taken against the moment's own baseline, so a slow change of contact or
 stage moves both. Absolute band power is used, not relative: relative alpha rises when

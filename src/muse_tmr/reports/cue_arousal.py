@@ -34,9 +34,10 @@ import numpy as np
 from scipy.integrate import trapezoid
 from scipy.signal import detrend
 
+from muse_tmr.ble.muse_athena_protocol import COUNTER_MODULO, SENSOR_CONFIG
 from muse_tmr.ble.muse_raw_stream import MuseRawStream
 from muse_tmr.data.replay import ReplayConfig, ReplaySession, resolve_raw_path
-from muse_tmr.data.sample_types import MuseFrame
+from muse_tmr.data.sample_types import EEGSample, MuseFrame
 from muse_tmr.features.complexity_features import bridge_lines
 from muse_tmr.features.epochs import SleepEpoch
 from muse_tmr.features.imu_features import IMUFeatureConfig, extract_imu_features
@@ -68,6 +69,13 @@ SUMMARY_FILENAMES = ("pilot4_summary.json", "pilot5_summary.json")
 _DEFAULT_EPOCH_SECONDS = 30.0
 _FRAME_LEAD_SECONDS = 1.0
 _TIME_TOLERANCE_SECONDS = 1e-6
+# The decoder reports a loss of up to this many subpackets of a TAG; a longer one reads
+# as a restarted stream (muse_athena_protocol.SubpacketSequence).
+_REPORTED_LOSS_SUBPACKETS = COUNTER_MODULO // 2 - 1
+# Samples in one EEG subpacket, by the layout's channel count.
+_EEG_SUBPACKET_SAMPLES = {
+    channels: samples for kind, channels, samples, *_ in SENSOR_CONFIG.values() if kind == "EEG"
+}
 
 
 @dataclass(frozen=True)
@@ -117,6 +125,8 @@ class CueArousalConfig:
     clipping_uv: float = 500.0
     clipping_fraction: float = 0.05
     flat_std_uv: float = 1e-6
+    # How late an EEG frame may come before it starts after a gap, where the subpacket
+    # counter does not allow more (an unknown layout; see _gap_lateness()).
     clock_slack_seconds: float = 0.5
     awakening_window_seconds: float = 120.0
     rem_termination_seconds: float = 60.0
@@ -1261,9 +1271,10 @@ def _eeg_window(frames: Sequence[MuseFrame], start: float, count: int, config: C
 
     The frames go on one sample clock that starts at the first EEG frame's timestamp and
     moves one sample a row, as the optics clock of ``ppg_features`` does: samples the
-    decoder reports lost stay missing, and a frame that arrives more than
-    ``clock_slack_seconds`` after the clock expects it starts after a gap. A BLE gap is
-    therefore missing samples, never zeros counted as signal.
+    decoder reports lost stay missing, and a frame that arrives later than the clock
+    expects starts after a gap only when no reported loss can explain it
+    (``_gap_lateness()``). A BLE gap is therefore missing samples, never zeros counted as
+    signal, and a frame that came late with nothing lost keeps its place.
     """
     fs = config.eeg_sample_rate_hz
     channels = config.eeg_channels
@@ -1285,7 +1296,7 @@ def _eeg_window(frames: Sequence[MuseFrame], start: float, count: int, config: C
             lead = 0
         else:
             late = float(eeg.timestamp) - (clock_start + (length + lead) / fs)
-            if late > config.clock_slack_seconds:
+            if late > _gap_lateness(eeg, fs, config):
                 lead += int(round(late * fs))
         block = np.full((rows, len(channels)), np.nan)
         for column, name in enumerate(channels):
@@ -1305,6 +1316,21 @@ def _eeg_window(frames: Sequence[MuseFrame], start: float, count: int, config: C
     if high > low:
         out[low - first:high - first] = clock[low:high]
     return out
+
+
+def _gap_lateness(eeg: EEGSample, fs: float, config: CueArousalConfig) -> float:
+    """How much later than the clock expects a frame must come to start after a gap.
+
+    The subpacket counter reports any loss of up to ``_REPORTED_LOSS_SUBPACKETS``
+    subpackets, so a frame that is later by less signal than that, with no loss reported
+    before it, lost nothing: it came late. The BLE client stamps each packet when the
+    event loop takes it, and a loop that was busy stamps all the packets it held with
+    the moment it is free. Only a loss too long for the counter is read from the clock.
+    An EEG layout the protocol does not know falls back to ``clock_slack_seconds``.
+    """
+    samples = _EEG_SUBPACKET_SAMPLES.get(len(eeg.channels_uv))
+    reach = 0.0 if samples is None else _REPORTED_LOSS_SUBPACKETS * samples / fs
+    return max(config.clock_slack_seconds, reach)
 
 
 def _row_offsets(rows: int, gaps: Sequence[Tuple[int, int]]) -> Tuple[int, np.ndarray]:
