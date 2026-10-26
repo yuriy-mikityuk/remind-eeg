@@ -364,6 +364,20 @@ class ControlSelectionTest(unittest.TestCase):
         ]
         self.assertEqual(_control_targets(cues, gate, T0, CueArousalConfig()), [])
 
+    def test_a_cue_the_player_did_not_play_gets_no_control(self):
+        # It is left out of the cue rates, so its control would only add to the control
+        # rates; a control still keeps more than 60 s from it.
+        gate = records([True] * 40)
+        cues = [
+            _Target(kind="cue", index=0, time=T0 + 300.0, offset_seconds=300.0, gate_open=True, cue={"played": True}),
+            _Target(kind="cue", index=1, time=T0 + 900.0, offset_seconds=900.0, gate_open=True, cue={"played": False}),
+            _Target(kind="cue", index=2, time=T0 + 960.0, offset_seconds=960.0, gate_open=True, cue={"played": True}),
+        ]
+        controls = _control_targets(cues, gate, T0, CueArousalConfig())
+        self.assertEqual([control.paired_index for control in controls], [0, 2])
+        for control in controls:
+            self.assertGreater(min(abs(control.offset_seconds - cue.offset_seconds) for cue in cues), 60.0)
+
 
 def hand_built_night():
     """A night of logs without frames: the gate open from 90 to 330 s, puzzle cues decided

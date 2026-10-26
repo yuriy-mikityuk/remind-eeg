@@ -859,12 +859,14 @@ def _control_targets(
     first_epoch_start: float,
     config: CueArousalConfig,
 ) -> List[_Target]:
-    """One quiet control per cue where one exists.
+    """One quiet control per played cue where one exists.
 
     The candidates are the gate decisions of the night more than
     ``control_exclusion_seconds`` from every play, with the whole window inside the
-    epochs. Each cue, in time order, takes the nearest one in its own gate state (the
-    earlier on a tie), and no two controls are closer than ``control_spacing_seconds``.
+    epochs. Each played cue, in time order, takes the nearest one in its own gate state
+    (the earlier on a tie), and no two controls are closer than
+    ``control_spacing_seconds``. A play the player blocked or skipped is left out of the
+    cue rates, so it gets no control in the control rates either.
     """
     if not records or not cues:
         return []
@@ -882,7 +884,7 @@ def _control_targets(
     chosen: List[float] = []
     controls = []
     for cue in sorted(cues, key=lambda target: target.offset_seconds or 0.0):
-        if cue.gate_open is None or cue.offset_seconds is None:
+        if cue.gate_open is None or cue.offset_seconds is None or not cue.cue.get("played", True):
             continue
         best = None
         for offset, gate_open in candidates:

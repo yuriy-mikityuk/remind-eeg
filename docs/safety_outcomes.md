@@ -54,9 +54,10 @@ delta falls, which a move from N3 to N2 does without any arousal.
 ## Controls
 
 A control is a gate decision in the same gate state as its cue, more than 60 s from every
-`play` of the night, with its whole window inside the recorded epochs. Each cue, in time
-order, takes the nearest such moment that is at least 30 s from the controls already
-taken, so no two control windows overlap. A cue without one stays unpaired and the
+`play` of the night, with its whole window inside the recorded epochs. Each played cue, in
+time order, takes the nearest such moment that is at least 30 s from the controls already
+taken, so no two control windows overlap. A play the player blocked or skipped is left
+out of the cue rates and gets no control. A cue without one stays unpaired and the
 report lists it (`unpaired_cues`). Controls are scored with the same windows and rules,
 so `arousal_proxy_per_control` is the night's background rate for the same proxies, and
 the difference is what can be read against the literature, not the cue rate alone. The
