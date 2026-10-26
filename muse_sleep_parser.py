@@ -386,7 +386,7 @@ class MuseSleepParser:
             import matplotlib.pyplot as plt
         except ModuleNotFoundError as exc:
             raise RuntimeError(
-                "matplotlib is required for plotting; install requirements-viz.txt"
+                "matplotlib is required for plotting; install it with: pip install matplotlib"
             ) from exc
         
         if channel not in session.eeg_data or not session.eeg_data[channel]:

@@ -1,16 +1,25 @@
 # Test Status
 
 ## Current Test Results
-- **724 tests passing**, 5 skipped ✅
-- **0 tests failing** 🎉
-- **88% line coverage** on the `muse_tmr` package
+- **985 tests passing**, 6 skipped, 0 failing on Ubuntu and macOS with Python 3.11, 3.12 and 3.13
+- On Windows **971 passing**, 20 skipped with Python 3.11 and 3.12, **974 passing**, 17 skipped with 3.13, 0 failing
+- **90 % line coverage** on the `muse_tmr` package (14,299 of 15,894 lines) on Ubuntu with Python 3.11
 
-Measured in CI on 2026-10-19 with Python 3.11 on Ubuntu. Three skipped tests require an
-optional pandas Parquet engine (`pyarrow` or `fastparquet`) for the Parquet export
-paths; two cross-check the complexity metrics against `antropy` and `neurokit2` and
-run only when those are installed.
+Measured in CI run [40281779150](https://github.com/yuriy-mikityuk/remind-eeg/actions/runs/40281779150)
+on 2026-10-26 (commit `1391b0f`). The line counts come from the `coverage.xml` artifact of
+that cell, `coverage-ubuntu-latest-py3.11`; the nine cells range from 89.8 to 90.0 %.
+Six tests are skipped on every cell: three require an optional pandas Parquet engine
+(`pyarrow` or `fastparquet`) for the Parquet export paths, two cross-check the complexity
+metrics against `antropy` and `neurokit2` and run only when those are installed, and one
+checks the version in `CITATION.cff`, which 8c of #232 adds. Windows skips 11 more, the
+tests of POSIX signals and process groups, the macOS launcher, `afplay` and the app's
+shell report command, and before Python 3.13 another 3 that time waits shorter than its
+15.6 ms clock tick. Each skip prints its reason.
 
 ## Coverage Overview
+Written by hand at release 0.3.0 and not re-measured since; the per-file figures of a
+run are in its `coverage.xml` artifacts.
+
 Well covered: REM detection (heuristic + personal classifier), the
 `StableRemGate` and `ArousalGuard` safety gates, the TMR cue scheduler,
 randomization, the staged pilots, audio playback safety branches
@@ -55,4 +64,5 @@ python -m pytest tests/test_rem_gate.py -v
 - A repository-root `conftest.py` puts `src/` on `sys.path` so `pytest` works
   from a checkout without an editable install.
 - CI (`.github/workflows/guardrails.yml`) runs the full suite with coverage on
-  every push and pull request.
+  every pull request and every push to `main`, on Python 3.11 to 3.13 on Ubuntu, macOS
+  and Windows, prints each cell's total and uploads its `coverage.xml`.

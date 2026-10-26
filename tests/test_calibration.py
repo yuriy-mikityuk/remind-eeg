@@ -108,7 +108,8 @@ class GuideTest(unittest.TestCase):
 
             self.assertEqual(result.stop_reason, "completed")
             self.assertEqual(len(speaker.spoken), len(schedule()))
-            cues = [json.loads(line) for line in (folder / "calibration" / "cues.jsonl").read_text().splitlines()]
+            cues_path = folder / "calibration" / "cues.jsonl"
+            cues = [json.loads(line) for line in cues_path.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(len(cues), len(schedule()))
             self.assertTrue(all(abs(cue["elapsed_s"] - cue["planned_s"]) < 0.06 for cue in cues))
             self.assertTrue(all(item["completed"] for item in result.segments))
@@ -124,7 +125,7 @@ class GuideTest(unittest.TestCase):
             breathing = load_meditation_blocks(Path(result.blocks_files["breathing"]))
             self.assertEqual(breathing.conditions, ("breath_6", "breath_12"))
             self.assertEqual(read_state(folder)["state"], "done")
-            segments = json.loads((folder / "calibration" / "segments.json").read_text())
+            segments = json.loads((folder / "calibration" / "segments.json").read_text(encoding="utf-8"))
             paced = next(item for item in segments["segments"] if item["name"] == "breath_6")
             self.assertEqual(len(paced["cycle_starts_s"]), 17)
             self.assertEqual(paced["known_rate_bpm"], 6.0)
@@ -386,7 +387,7 @@ class CalibrationReportTest(unittest.TestCase):
             )
             paths = report.write(Path(tmp) / "out")
             self.assertTrue((Path(tmp) / "out" / "jaw" / "report.html").is_file())
-            page = paths["report"].read_text()
+            page = paths["report"].read_text(encoding="utf-8")
 
         pairs = report.summary["pairs"]
         self.assertEqual(sorted(pairs), ["breathing", "clench", "forehead", "jaw"])

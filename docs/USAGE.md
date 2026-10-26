@@ -37,6 +37,8 @@ Complete command and code reference for `muse-tmr`, organized by workflow stage.
 
 ## Installation & local development
 
+The pip distribution is `remind-eeg`, with the `muse-tmr` command and the `muse_tmr` import. It is not on PyPI yet, so install it from a checkout; [`release.md`](release.md) says how a release gets there. CI runs the tests and the installed wheel on Python 3.11 to 3.13 on Linux, macOS and Windows. The app launcher and real audio (`afplay`) are macOS only, and the local app starts and stops recordings with POSIX signals, which Windows lacks, so the tests of those parts are skipped on Windows. Windows before Python 3.13 has a 15.6 ms clock, on which a recording can take its last wait for a stall and reconnect right at its end, and a Pilot 4 night can end as `no_data_timeout`; the tests that time this are skipped there too. On 3.9 and 3.10 a Stop could be lost: `asyncio.wait_for` can swallow its cancel, and the recorder needs `Task.cancelling()`, new in 3.11, to notice.
+
 ```bash
 pip install -e .
 python -m muse_tmr.cli.main --help
@@ -46,6 +48,8 @@ python scripts/check_forbidden_files.py
 ```
 
 `muse-tmr status` only prints a line confirming the package is installed.
+
+A venv set up before the rename has the checkout installed as `athena-tmr-lucid`. Run `pip uninstall athena-tmr-lucid` before installing again, so that two distributions do not both own the `muse-tmr` command.
 
 ## Acquisition: discover, stream, record
 

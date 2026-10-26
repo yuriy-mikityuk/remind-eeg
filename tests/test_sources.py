@@ -10,6 +10,10 @@ from muse_tmr.data.sample_types import EEGSample, MuseFrame
 from muse_tmr.sources.amused_source import AmusedSource
 from muse_tmr.sources.base_source import BaseMuseSource, MuseDeviceInfo, MuseSourceMetadata
 
+# A recent time rather than one in the first day of 1970: on Windows,
+# datetime.timestamp() of a naive time that early raises OSError.
+DECODED_AT = dt.datetime.fromtimestamp(1_760_000_003.0)
+
 
 class FakeMuseSource(BaseMuseSource):
     def __init__(self):
@@ -55,7 +59,7 @@ class FakeStreamClient:
         if self.packet_callback:
             self.packet_callback(raw)
         decoded = DecodedData(
-            timestamp=dt.datetime.fromtimestamp(3.0),
+            timestamp=DECODED_AT,
             packet_type="EEG",
             eeg={"TP9": [0.25]},
             raw_bytes=raw,
@@ -199,7 +203,7 @@ class TestSources(unittest.IsolatedAsyncioTestCase):
         await source.connect()
         source._ensure_queue()
         decoded = DecodedData(
-            timestamp=dt.datetime.fromtimestamp(3.0),
+            timestamp=DECODED_AT,
             packet_type="EEG",
             eeg={"TP9": [0.25]},
             raw_bytes=b"\x11",

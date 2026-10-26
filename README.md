@@ -2,9 +2,9 @@
 
 **REM-gated Targeted Memory Reactivation engine for the Muse S Athena EEG headset — overnight recording, real-time REM detection, and safety-gated audio cueing for a one-way, REM-timed cue protocol: a cue paired with a puzzle or lucidity intention before sleep, replayed when the stable REM gate opens; no eye-signal verification. Python.**
 
-Repository `remind-eeg`, Python package `muse_tmr`, command `muse-tmr`. The pip distribution in `pyproject.toml` is still `athena-tmr-lucid`; it will be renamed `remind-eeg`.
+Repository and pip distribution `remind-eeg` (not on PyPI yet), Python package `muse_tmr`, command `muse-tmr`.
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11 to 3.13](https://img.shields.io/badge/python-3.11--3.13-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/yuriy-mikityuk/remind-eeg/actions/workflows/guardrails.yml/badge.svg)](https://github.com/yuriy-mikityuk/remind-eeg/actions)
 
@@ -19,7 +19,7 @@ Not a medical device. This is n = 1 research software for self-experimentation, 
 - No night with sleep-time audio has been run yet; Pilots 4 and 5 exist as tooling only ([EPIC #1](https://github.com/yuriy-mikityuk/remind-eeg/issues/1)).
 - The heuristic detector is effectively one feature: against GSSC only `low_delta_power` separates REM, and the eye-movement proxy is saturated, so its weight is now 0; the `p21` thresholds were tuned before that and wait for a re-grid ([#116](https://github.com/yuriy-mikityuk/remind-eeg/issues/116), [#225](https://github.com/yuriy-mikityuk/remind-eeg/issues/225)). Its replacement, a count of eye-movement deflections on band-passed AF7 − AF8, is computed and exported at weight 0 and has only been checked on synthetic input; fitting it needs REM-bearing nights.
 - The gate's 60 s stable window counts real time at any `--stride-seconds`. On a synthetic NREM-to-REM stream the first cue came 60 to 85 s after REM onset at the default 30 s stride and 80 to 85 s at 10 s, so a shorter stride does not bring it earlier with the gate as it is; it has not been measured on a real night ([#167](https://github.com/yuriy-mikityuk/remind-eeg/issues/167), [#225](https://github.com/yuriy-mikityuk/remind-eeg/issues/225)).
-- The pip distribution is still `athena-tmr-lucid`. It will be renamed `remind-eeg`, keeping the `muse-tmr` command and the `muse_tmr` import; the rename itself is [Initiative 8, #232](https://github.com/yuriy-mikityuk/remind-eeg/issues/232).
+- The pip distribution is `remind-eeg`, with the `muse-tmr` command and the `muse_tmr` import. It is not on PyPI yet: the release workflow is in place, publishing waits on the maintainer ([#232](https://github.com/yuriy-mikityuk/remind-eeg/issues/232), [`docs/release.md`](docs/release.md)).
 
 How REMind relates to the other open projects: [`docs/compare.md`](docs/compare.md). Answers to what comes up in the issues: [`docs/faq.md`](docs/faq.md). The papers: [`docs/references.md`](docs/references.md).
 
@@ -45,7 +45,7 @@ The pictures show the app on example data.
 
 ## Quick start
 
-You need Python 3.8 or newer, and a Muse S Athena to record. The app launcher is for macOS.
+You need Python 3.11 to 3.13, and a Muse S Athena to record. CI runs the tests on Linux, macOS and Windows; the app launcher is for macOS.
 
 ```bash
 git clone https://github.com/yuriy-mikityuk/remind-eeg.git

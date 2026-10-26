@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Test runner for Amused library
+Test runner for REMind (the muse_tmr package and its BLE layer)
 Runs fast tests by default, use --all for complete test suite
 """
 
@@ -74,6 +74,7 @@ def run_fast_tests():
         'tests.test_rem_validation_provenance',
         'tests.test_synthetic_night',
         'tests.test_rem_metrics',
+        'tests.test_packaging',
     ]
     
     for module in fast_modules:
@@ -98,7 +99,7 @@ def run_all_tests():
     return result.wasSuccessful()
 
 def main():
-    parser = argparse.ArgumentParser(description='Run Amused tests')
+    parser = argparse.ArgumentParser(description='Run the REMind tests')
     parser.add_argument('--all', action='store_true', 
                        help='Run all tests including slow ones')
     parser.add_argument('--integration', action='store_true',
@@ -106,7 +107,7 @@ def main():
     args = parser.parse_args()
     
     print("="*60)
-    print("Amused Test Suite")
+    print("REMind Test Suite")
     print("="*60)
     
     if args.all:

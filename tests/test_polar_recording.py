@@ -33,6 +33,11 @@ from muse_tmr.data.sample_types import EEGSample, MuseFrame
 from tests.polar_synthetic import acc_frame_delta, ecg_frame, hr_measurement, write_raw_session
 from tests.test_recorder import RecordingFakeSource
 
+POSIX_STOP_SIGNALS = (
+    "the recorder stops its companion with SIGINT, then SIGTERM, and these tests start children with "
+    "preexec_fn; Windows can send neither signal to a child and has no preexec_fn"
+)
+
 
 class ClockMappingTest(unittest.TestCase):
     def test_offset_drift_and_positive_delays_recovered_within_10_ms(self):
@@ -246,7 +251,9 @@ class PolarRecorderTest(unittest.IsolatedAsyncioTestCase):
     async def test_disconnect_mid_session_reconnects_and_files_are_complete(self):
         with tempfile.TemporaryDirectory() as tmp:
             client = MockPolarClient(frames_before_disconnect=(5, None))
-            summary = await self.recorder(tmp, 0.6).record(client)
+            # The five frames take about 50 ms, but a Windows runner once spent all of a
+            # 0.6 s recording on them and its new files, so the drop came after the end.
+            summary = await self.recorder(tmp, 2.0).record(client)
 
             self.assertEqual(summary["stop_reason"], "duration_complete")
             self.assertEqual(summary["reconnects"], 1)
@@ -349,6 +356,7 @@ class ControlPointFragmentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(written[-1], bytes([0x02, 0x02, 0x00, 0x01, 50, 0, 0x01, 0x01, 16, 0, 0x02, 0x01, 4, 0]))
 
 
+@unittest.skipIf(sys.platform == "win32", POSIX_STOP_SIGNALS)
 class StopSignalTest(unittest.TestCase):
     """Reproduces the first live smoke: started via `( ... & )`, SIGINT is inherited as ignored."""
 
@@ -440,6 +448,7 @@ class CompanionTest(unittest.IsolatedAsyncioTestCase):
             exited = [item for item in events if item["event"] == "companion_exited"]
             self.assertEqual(exited[0]["details"]["returncode"], 3)
 
+    @unittest.skipIf(sys.platform == "win32", POSIX_STOP_SIGNALS)
     async def test_companion_is_stopped_even_when_muse_cleanup_raises(self):
         class BrokenStop(SlowFakeSource):
             async def stop(self):
@@ -461,6 +470,7 @@ class CompanionTest(unittest.IsolatedAsyncioTestCase):
             sleeper.process.wait(timeout=10)
             self.assertTrue(marker.exists())
 
+    @unittest.skipIf(sys.platform == "win32", POSIX_STOP_SIGNALS)
     async def test_long_running_companion_gets_sigint_after_the_muse_summary(self):
         script = "import signal, sys, time\nsignal.signal(signal.SIGINT, lambda *a: sys.exit(0))\ntime.sleep(60)\n"
         with tempfile.TemporaryDirectory() as tmp:

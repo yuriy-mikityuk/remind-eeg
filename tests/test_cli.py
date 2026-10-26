@@ -742,8 +742,8 @@ class TestCli(unittest.TestCase):
             output_dir = _resolve_output_dir(Path("data/recordings/smoke"))
 
         self.assertTrue(output_dir.is_absolute())
-        self.assertTrue(str(output_dir).endswith("data/recordings/smoke"))
-        self.assertFalse(str(output_dir).startswith("/data/"))
+        self.assertTrue(output_dir.as_posix().endswith("data/recordings/smoke"))
+        self.assertNotEqual(output_dir.parent.parent.parent, Path(output_dir.anchor))
 
 
 class TestCliStreamRuntime(unittest.IsolatedAsyncioTestCase):

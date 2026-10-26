@@ -1,6 +1,7 @@
 import importlib.util
 import plistlib
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALLER_PATH = REPO_ROOT / "scripts" / "install_macos_launcher.py"
+NO_EXECUTABLE_BIT = "the launcher is a macOS app bundle whose scripts need the executable bit, which Windows does not keep"
 
 
 def load_installer():
@@ -19,6 +21,7 @@ def load_installer():
 
 
 class MacosLauncherTest(unittest.TestCase):
+    @unittest.skipIf(sys.platform == "win32", NO_EXECUTABLE_BIT)
     def test_create_launcher_app_writes_executable_bundle(self):
         installer = load_installer()
         original_install_icon = installer._install_icon

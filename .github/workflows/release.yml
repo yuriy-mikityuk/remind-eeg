@@ -1,0 +1,104 @@
+name: Release
+
+# Builds the sdist and the wheel of remind-eeg and checks them. On a v* tag it also
+# attaches them to the tag's GitHub release and, only when the repository variable
+# PYPI_PUBLISH is "true", publishes them to PyPI through trusted publishing. Run by hand
+# with dry_run (the default), or on a pull request that changes this file, it builds,
+# checks and uploads the files as an artifact and publishes nothing. docs/release.md
+# has the steps.
+
+on:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build, check and upload the files as an artifact; publish nothing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Refuse to publish from a branch
+        if: github.event_name == 'workflow_dispatch' && !inputs.dry_run && github.ref_type != 'tag'
+        run: |
+          echo "::error::dry_run=false publishes, so the ref has to be a v* tag: gh workflow run release.yml --ref vX.Y.Z -f dry_run=false"
+          exit 1
+      - name: Build the sdist and the wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+          ls -l dist
+      - name: Check the wheel has every file from src/muse_tmr
+        run: python scripts/check_wheel.py dist/remind_eeg-*.whl
+      - name: Run the CLI from the installed wheel
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -m venv wheel-env
+          wheel-env/bin/python -m pip install "$GITHUB_WORKSPACE"/dist/remind_eeg-*.whl
+          wheel-env/bin/muse-tmr --version
+          echo "PACKAGE_VERSION=$(wheel-env/bin/python -c 'import muse_tmr; print(muse_tmr.__version__)')" >> "$GITHUB_ENV"
+      - name: Check the tag is v + muse_tmr.__version__
+        if: github.ref_type == 'tag'
+        run: |
+          if [ "$GITHUB_REF_NAME" != "v$PACKAGE_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match muse_tmr.__version__ $PACKAGE_VERSION"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  github-release:
+    needs: build
+    if: github.ref_type == 'tag' && (github.event_name == 'push' || !inputs.dry_run)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Attach dist/* to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "REMind $GITHUB_REF_NAME" \
+              --notes "n = 1 research software, not a medical device. Changes: CHANGELOG.md at $GITHUB_REF_NAME."
+          fi
+
+  pypi:
+    needs: [build, github-release]
+    if: github.ref_type == 'tag' && (github.event_name == 'push' || !inputs.dry_run) && vars.PYPI_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/remind-eeg/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1

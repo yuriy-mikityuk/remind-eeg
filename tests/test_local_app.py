@@ -19,6 +19,13 @@ from muse_tmr.app.server import CAFFEINATE
 from muse_tmr.contact import MockContactProvider, builtin_contact_snapshots
 from muse_tmr.sources.base_source import MuseSourceMetadata
 
+ON_WINDOWS = sys.platform == "win32"
+POSIX_SHELL_LINE = "the report command is a POSIX shell line for the macOS Terminal (shlex quoting, .venv/bin/python)"
+POSIX_PROCESS_CONTROL = (
+    "the app stops a recorder with SIGINT and SIGKILL to its process group and checks a detached one "
+    "with os.kill(pid, 0) and ps; Windows has no SIGKILL or ps, and there os.kill(pid, 0) ends the process"
+)
+
 
 class LoopSafeFakeAmusedSource:
     instances = []
@@ -584,6 +591,7 @@ class TestLocalMuseAppRecording(unittest.TestCase):
         self.assertEqual(int(status), 400)
         self.assertEqual(self.launcher.calls, [])
 
+    @unittest.skipIf(ON_WINDOWS, POSIX_SHELL_LINE)
     def test_record_night_builds_expected_command_and_folder(self):
         state = self._make_state()
         payload, status = state.start_recording("night")
@@ -627,6 +635,7 @@ class TestLocalMuseAppRecording(unittest.TestCase):
         self.assertTrue(payload["active"])
         self.assertTrue((expected_dir / "launch.json").exists())
 
+    @unittest.skipIf(ON_WINDOWS, POSIX_SHELL_LINE)
     def test_report_command_uses_project_venv_outside_a_venv(self):
         project_root = self.recordings_base / "project"
         venv_python = project_root / ".venv" / "bin" / "python"
@@ -744,6 +753,7 @@ class TestLocalMuseAppRecording(unittest.TestCase):
         self.assertNotIn("--with-polar", self.launcher.calls[0][0])
         self.assertIsNone(payload["polar"])
 
+    @unittest.skipIf(ON_WINDOWS, POSIX_PROCESS_CONTROL)
     def test_stop_waits_longer_before_sigkill_when_polar_is_on(self):
         for with_polar, expect_kill in ((False, True), (True, False)):
             terminator = TerminatorSpy()
@@ -957,7 +967,7 @@ class TestLocalMuseAppReport(unittest.TestCase):
         command, report_proc = self.procs[1]
         report_file = (self.reports / "session" / f"{output_dir.name}.html").resolve()
         self.assertEqual(command[0], sys.executable)
-        self.assertTrue(command[1].endswith("scripts/generate_nightly_report.py"))
+        self.assertTrue(Path(command[1]).as_posix().endswith("scripts/generate_nightly_report.py"))
         self.assertEqual(command[2:], [str(output_dir.resolve()), "--output", str(report_file)])
         self.assertEqual(payload["report"]["state"], "running")
 
@@ -1338,6 +1348,7 @@ class TestLocalMuseAppRecentRecordings(TestLocalMuseAppReport):
             _payload, status = self.state.build_report_for(kind, name)
             self.assertEqual(int(status), expected, (kind, name))
 
+    @unittest.skipIf(ON_WINDOWS, POSIX_PROCESS_CONTROL)
     def test_detached_recorder_is_still_live_after_an_app_restart(self):
         import os
         import subprocess
@@ -1555,7 +1566,10 @@ class TestLocalMuseAppRecordingGate(unittest.TestCase):
     def post(self, path, body=None):
         request = urllib.request.Request(
             f"{self.base_url}{path}",
-            data=json.dumps(body or {}).encode("utf-8"),
+            # No body unless the test gives one, as the page posts. The endpoints that
+            # take none leave it unread, the server then resets the connection on
+            # close, and on a Windows runner the reset once dropped the response.
+            data=json.dumps(body).encode("utf-8") if body is not None else b"",
             headers={"Content-Type": "application/json"},
             method="POST",
         )

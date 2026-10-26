@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,13 @@ from muse_tmr.data.recorder import OvernightRecorder, RecordingConfig
 from muse_tmr.data.sample_types import EEGSample, MuseFrame
 from muse_tmr.data.watchdog import RecordingWatchdog
 from muse_tmr.sources.base_source import BaseMuseSource, MuseDeviceInfo, MuseSourceMetadata
+
+COARSE_CLOCK = sys.platform == "win32" and sys.version_info < (3, 13)
+COARSE_CLOCK_REASON = (
+    "on Windows before Python 3.13 time.monotonic() ticks every 15.6 ms and asyncio runs a timer up to one "
+    "tick early, so after the last wait the deadline can read as not reached: the recorder takes the timeout "
+    "for a stall and reconnects after a 1 s backoff"
+)
 
 
 class RecordingFakeSource(BaseMuseSource):
@@ -144,7 +152,10 @@ class TestOvernightRecorder(unittest.IsolatedAsyncioTestCase):
             recorder = OvernightRecorder(
                 RecordingConfig(
                     output_dir=Path(tmp),
-                    duration_seconds=0.01,
+                    # The source ends after its one frame. A 10 ms recording could end
+                    # before that frame where the clock ticks every 15.6 ms (Windows
+                    # before Python 3.13).
+                    duration_seconds=1.0,
                     allow_short=True,
                 )
             )
@@ -180,7 +191,9 @@ class TestOvernightRecorder(unittest.IsolatedAsyncioTestCase):
             recorder = OvernightRecorder(
                 RecordingConfig(
                     output_dir=Path(tmp),
-                    duration_seconds=0.08,
+                    # The second stream ends after its one frame. A deadline of tens of
+                    # milliseconds passed before the reconnect on a Windows runner.
+                    duration_seconds=1.0,
                     no_data_timeout_seconds=0.01,
                     max_reconnect_attempts=2,
                     allow_short=True,
@@ -207,7 +220,8 @@ class TestOvernightRecorder(unittest.IsolatedAsyncioTestCase):
             recorder = OvernightRecorder(
                 RecordingConfig(
                     output_dir=Path(tmp),
-                    duration_seconds=0.05,
+                    # The second stream ends after its one frame, see the test above.
+                    duration_seconds=1.0,
                     no_data_timeout_seconds=0.01,
                     max_reconnect_attempts=2,
                     allow_short=True,
@@ -234,7 +248,8 @@ class TestOvernightRecorder(unittest.IsolatedAsyncioTestCase):
             recorder = OvernightRecorder(
                 RecordingConfig(
                     output_dir=Path(tmp),
-                    duration_seconds=0.1,
+                    # The third stream ends after its one frame, see the tests above.
+                    duration_seconds=1.0,
                     no_data_timeout_seconds=0.01,
                     max_reconnect_attempts=3,
                     allow_short=True,
@@ -256,7 +271,8 @@ class TestOvernightRecorder(unittest.IsolatedAsyncioTestCase):
     async def test_progress_publishes_contact_and_source_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:
             recorder = OvernightRecorder(
-                RecordingConfig(output_dir=Path(tmp), duration_seconds=0.01, allow_short=True)
+                # The source ends after its one frame, see test_record_writes_expected_outputs.
+                RecordingConfig(output_dir=Path(tmp), duration_seconds=1.0, allow_short=True)
             )
 
             await recorder.record(DiagnosticsFakeSource())
@@ -276,7 +292,8 @@ class TestOvernightRecorder(unittest.IsolatedAsyncioTestCase):
     async def test_failing_source_diagnostics_do_not_break_recording(self):
         with tempfile.TemporaryDirectory() as tmp:
             recorder = OvernightRecorder(
-                RecordingConfig(output_dir=Path(tmp), duration_seconds=0.01, allow_short=True)
+                # The source ends after its one frame, see test_record_writes_expected_outputs.
+                RecordingConfig(output_dir=Path(tmp), duration_seconds=1.0, allow_short=True)
             )
 
             summary = await recorder.record(BrokenDiagnosticsFakeSource())
@@ -354,10 +371,11 @@ class TestOvernightRecorder(unittest.IsolatedAsyncioTestCase):
             summary = await asyncio.wait_for(task, timeout=5)
             self.assertEqual(summary.stop_reason, "user_stopped")
 
+    @unittest.skipIf(COARSE_CLOCK, COARSE_CLOCK_REASON)
     async def test_duration_can_count_from_the_first_frame(self):
         class SlowConnect(EndlessFakeSource):
             async def connect(self, device=None):
-                await asyncio.sleep(0.4)  # a slow BLE connect
+                await asyncio.sleep(1.0)  # a slow BLE connect
                 return await super().connect(device)
 
         for from_first_frame in (False, True):
@@ -365,7 +383,7 @@ class TestOvernightRecorder(unittest.IsolatedAsyncioTestCase):
                 recorder = OvernightRecorder(
                     RecordingConfig(
                         output_dir=Path(tmp),
-                        duration_seconds=0.6,
+                        duration_seconds=1.5,
                         allow_short=True,
                         duration_from_first_frame=from_first_frame,
                     )
@@ -375,9 +393,11 @@ class TestOvernightRecorder(unittest.IsolatedAsyncioTestCase):
                 wall = asyncio.get_running_loop().time() - started
                 self.assertEqual(summary.stop_reason, "duration_complete")
                 if from_first_frame:
-                    self.assertGreater(wall, 0.95)  # 0.4 s connect + a full 0.6 s of data
+                    self.assertGreater(wall, 2.4)  # 1 s connect + a full 1.5 s of data
                 else:
-                    self.assertLess(wall, 0.85)
+                    # The connect counts against the 1.5 s. The bound leaves 0.7 s for the
+                    # recorder's own work; a Windows runner once took 0.3 s of it.
+                    self.assertLess(wall, 2.2)
 
     def test_duration_requires_overnight_window_unless_allowed(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -42,7 +42,8 @@ def _searched_files():
 
 
 def _read_text(path: Path) -> str:
-    return path.read_bytes().decode("utf-8", errors="ignore")
+    # A Windows checkout can have CRLF line ends, which the ^...$ patterns below would miss.
+    return path.read_bytes().decode("utf-8", errors="ignore").replace("\r\n", "\n")
 
 
 def _outside_code_spans(line: str, phrase: str):

@@ -1,5 +1,6 @@
 import io
 import json
+import sys
 import tempfile
 import unittest
 import wave
@@ -203,6 +204,11 @@ class TestMacOSAfplayBackend(unittest.TestCase):
         self.assertEqual(result.status, "skipped")
         self.assertIn("afplay_unavailable", result.reason_codes)
 
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "afplay is macOS only, and the backend writes the tone into its open NamedTemporaryFile by name, "
+        "which Windows refuses",
+    )
     def test_afplay_playback_writes_tone_and_reports_device_limitation(self):
         config = AudioPlaybackConfig(device_name="Bedroom Headphones")
         with patch(
