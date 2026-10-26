@@ -18,6 +18,21 @@ from muse_tmr.features.epochs import SleepEpoch
 # from the optics, the heart-rate samples when the epoch has no optics, or neither.
 SUDDEN_HR_CHANGE_SOURCES = ("optics", "heart_rate", "missing")
 
+# Every ppg_signal_quality a row or a channel estimate can carry: the four confidence
+# levels of a peak-interval estimate (above 0.8, 0.6, 0.4, else), then the states that
+# give no estimate.
+PPG_SIGNAL_QUALITIES = (
+    "Excellent",
+    "Good",
+    "Fair",
+    "Poor",
+    "Irregular rhythm",
+    "Too few peaks detected",
+    "Flatline",
+    "Insufficient data",
+    "Missing",
+)
+
 # A frame that arrives this much later than the optics sample clock says it should lost
 # samples the decoder did not report (a loss long enough to wrap the subpacket counter);
 # the clock moves on to it and the samples in between are missing.
@@ -153,6 +168,36 @@ class HeartRateSeries:
 
 
 @dataclass(frozen=True)
+class ChannelHeartRate:
+    """The peak-interval heart rate of one optics channel over an epoch (#234).
+
+    ``estimated_hr_bpm``, ``confidence``, ``peak_count`` and ``signal_quality`` are what
+    a PPG row reports as ``ppg_estimated_hr_bpm``, ``ppg_confidence``, ``ppg_peak_count``
+    and ``ppg_signal_quality`` when this channel is its primary one. ``periodicity`` is
+    the highest autocorrelation peak of the channel's band-passed epoch between
+    ``min_valid_hr_bpm`` and ``max_valid_hr_bpm``, the measure ``heart_rate_series()``
+    picks its channel by; 0 when the channel is flat or shorter than one series window.
+    """
+
+    channel: str
+    estimated_hr_bpm: float
+    confidence: float
+    peak_count: int
+    signal_quality: str
+    periodicity: float
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "channel": self.channel,
+            "estimated_hr_bpm": _finite_or_none(self.estimated_hr_bpm),
+            "confidence": self.confidence,
+            "peak_count": self.peak_count,
+            "signal_quality": self.signal_quality,
+            "periodicity": self.periodicity,
+        }
+
+
+@dataclass(frozen=True)
 class SuddenHeartRateChange:
     start_time: float
     end_time: float
@@ -220,6 +265,11 @@ class PPGFeatureRow:
     def hr_series_skipped_count(self) -> int:
         return sum(1 for point in self.hr_series if not point.used)
 
+    @property
+    def hr_series_median_quality(self) -> float:
+        """Median quality of every series value, skipped ones included; NaN without any."""
+        return _safe_median(point.quality for point in self.hr_series)
+
     def to_dict(self) -> Dict[str, object]:
         payload: Dict[str, object] = {
             "epoch_index": self.epoch_index,
@@ -252,7 +302,7 @@ class PPGFeatureRow:
             "hr_series_channel": self.hr_series_channel,
             "hr_series_used_count": len(self.hr_series_used),
             "hr_series_skipped_count": self.hr_series_skipped_count,
-            "hr_series_median_quality": _safe_median(point.quality for point in self.hr_series),
+            "hr_series_median_quality": self.hr_series_median_quality,
             "is_noisy": self.is_noisy,
             "artifact_flags": ";".join(self.artifact_flags),
             "quality_flags": ";".join(self.quality_flags),
@@ -387,24 +437,47 @@ def heart_rate_series(
     """
     config = config or PPGFeatureConfig()
     config.validate()
-    fs = config.ppg_sample_rate_hz
-    window = int(round(config.hr_series_window_seconds * fs))
-    start_time, channels, lost = _optics_samples(epoch, fs)
-    if lost.size < window:
-        return HeartRateSeries("", ())
-
-    filtered: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
-    for name, values in sorted(channels.items()):
-        missing = lost | ~np.isfinite(values)
-        signal = _band_passed(values, missing, config)
-        if signal is not None:
-            filtered[name] = (signal, missing)
+    start_time, filtered = _band_passed_channels(epoch, config)
     if not filtered:
         return HeartRateSeries("", ())
 
     channel = _most_periodic_channel(filtered, config)
     signal, missing = filtered[channel]
     return HeartRateSeries(channel, _series_points(signal, missing, start_time, config))
+
+
+def estimate_channel_heart_rates(
+    epoch: SleepEpoch,
+    config: Optional[PPGFeatureConfig] = None,
+) -> Tuple[ChannelHeartRate, ...]:
+    """The peak-interval heart rate of every optics channel of an epoch, by channel name.
+
+    Each channel is estimated as ``extract_ppg_features()`` estimates its primary channel,
+    the one with the largest variance, for ``ppg_estimated_hr_bpm``, so the primary
+    channel's entry carries the row's values. ``periodicity`` adds how periodic the
+    channel's band-passed epoch is (see ``ChannelHeartRate``). Empty without optics.
+    """
+    config = config or PPGFeatureConfig()
+    config.validate()
+    channels = _collect_ppg_channels(epoch)
+    _start_time, filtered = _band_passed_channels(epoch, config)
+    estimates = []
+    for channel, values in sorted(channels.items()):
+        result = _channel_peak_result(channel, values, config)
+        periodicity = 0.0
+        if channel in filtered:
+            periodicity = _clamp01(_autocorrelation_bpm(filtered[channel][0], config)[1])
+        estimates.append(
+            ChannelHeartRate(
+                channel=channel,
+                estimated_hr_bpm=result.estimated_hr_bpm,
+                confidence=result.confidence,
+                peak_count=len(result.peak_times),
+                signal_quality=result.signal_quality,
+                periodicity=periodicity,
+            )
+        )
+    return tuple(estimates)
 
 
 def heart_rate_change_across_epochs(
@@ -491,6 +564,14 @@ def _estimate_ppg_heart_rate(
         return _PPGPeakResult("", math.nan, 0.0, (), "Missing")
 
     channel, values = _primary_ppg_channel(channels)
+    return _channel_peak_result(channel, values, config)
+
+
+def _channel_peak_result(
+    channel: str,
+    values: np.ndarray,
+    config: PPGFeatureConfig,
+) -> _PPGPeakResult:
     finite_values = values[np.isfinite(values)]
     min_samples = int(config.ppg_sample_rate_hz * config.min_ppg_seconds_for_peak_hr)
     if finite_values.size < min_samples:
@@ -715,6 +796,27 @@ def _frame_row_offsets(rows: int, gaps: Sequence[Tuple[int, int]]) -> Tuple[int,
         elif index < rows:
             offsets[index:] += int(missing)
     return lead, offsets
+
+
+def _band_passed_channels(
+    epoch: SleepEpoch,
+    config: PPGFeatureConfig,
+) -> Tuple[float, Dict[str, Tuple[np.ndarray, np.ndarray]]]:
+    """The epoch's optics clock start and, by channel name, each channel band-passed on
+    that clock with its missing-sample mask; no channel when the clock holds less than
+    one series window, and none that is flat or too short (see ``_band_passed()``)."""
+    fs = config.ppg_sample_rate_hz
+    window = int(round(config.hr_series_window_seconds * fs))
+    start_time, channels, lost = _optics_samples(epoch, fs)
+    filtered: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+    if lost.size < window:
+        return start_time, filtered
+    for name, values in sorted(channels.items()):
+        missing = lost | ~np.isfinite(values)
+        signal = _band_passed(values, missing, config)
+        if signal is not None:
+            filtered[name] = (signal, missing)
+    return start_time, filtered
 
 
 def _band_passed(

@@ -14,6 +14,7 @@ from muse_tmr.features.ppg_features import (
     HeartRatePoint,
     PPGFeatureConfig,
     _series_hr_changes,
+    estimate_channel_heart_rates,
     export_ppg_feature_rows,
     extract_ppg_feature_rows,
     extract_ppg_features,
@@ -361,6 +362,50 @@ class TestHeartRateSeries(unittest.TestCase):
         ):
             with self.subTest(**bad), self.assertRaises(ValueError):
                 PPGFeatureConfig(**bad).validate()
+
+
+class TestChannelHeartRates(unittest.TestCase):
+    """The peak-interval heart rate of every optics channel (#234). Synthetic input, not sleep."""
+
+    def test_each_channel_is_estimated_as_the_primary_one(self):
+        rng = np.random.default_rng(7)
+        channels = {
+            "C_strong": pulse_light(72.0, seed=7, dc=12.0, pulse_share=0.012),
+            "A_noise": 9.0 + 0.005 * rng.standard_normal(1920),
+            "B_pulse": pulse_light(72.0, seed=8),
+        }
+        epoch = optics_epoch(channels)
+
+        estimates = estimate_channel_heart_rates(epoch)
+        row = extract_ppg_features(epoch)
+
+        self.assertEqual([estimate.channel for estimate in estimates], ["A_noise", "B_pulse", "C_strong"])
+        primary = estimates[2]
+        self.assertEqual(row.primary_ppg_channel, "C_strong")
+        self.assertEqual(
+            (primary.estimated_hr_bpm, primary.confidence, primary.peak_count, primary.signal_quality),
+            (row.ppg_estimated_hr_bpm, row.ppg_confidence, row.ppg_peak_count, row.ppg_signal_quality),
+        )
+        for estimate in estimates[1:]:
+            self.assertAlmostEqual(estimate.estimated_hr_bpm, 72.0, delta=1.5)
+            self.assertGreater(estimate.periodicity, 0.8)
+        noise = estimates[0]
+        self.assertLess(noise.periodicity, 0.5)
+        # Band-passed noise has peaks almost as regular as a pulse's: its peak-interval
+        # confidence does not flag it, its periodicity does.
+        self.assertGreater(noise.confidence, 0.4)
+        self.assertEqual(noise.to_dict()["channel"], "A_noise")
+
+    def test_flat_short_and_missing_channels(self):
+        flat = optics_epoch({"A_flat": np.full(1920, 9.0), "B_pulse": pulse_light(60.0)})
+        estimates = estimate_channel_heart_rates(flat)
+        self.assertEqual(estimates[0].signal_quality, "Flatline")
+        self.assertEqual(estimates[0].periodicity, 0.0)
+        self.assertTrue(math.isnan(estimates[0].estimated_hr_bpm))
+        self.assertIsNone(estimates[0].to_dict()["estimated_hr_bpm"])
+        short = optics_epoch({"A": pulse_light(60.0, seconds=8.0)})
+        self.assertEqual(estimate_channel_heart_rates(short)[0].periodicity, 0.0)
+        self.assertEqual(estimate_channel_heart_rates(ppg_hr_epoch(hr_values=[60.0] * 30)), ())
 
 
 class TestPPGFeatures(unittest.TestCase):
