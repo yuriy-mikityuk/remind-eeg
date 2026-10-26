@@ -1,7 +1,8 @@
-"""Packaging metadata against the CI matrix (Initiative 8, #232).
+"""Packaging and citation metadata against the CI matrix and the version (Initiative 8, #232).
 
 pyproject.toml is read with tomllib; guardrails.yml and CITATION.cff as text, since
-PyYAML is not a dependency. Nothing is built or installed.
+PyYAML is not a dependency, and CHANGELOG.md for the date of a version. Nothing is
+built or installed. CI's policy job validates CITATION.cff against its schema.
 """
 
 import re
@@ -16,6 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "guardrails.yml"
 CITATION = REPO_ROOT / "CITATION.cff"
+CHANGELOG = REPO_ROOT / "CHANGELOG.md"
 VERSION_FILE = REPO_ROOT / "src" / "muse_tmr" / "__init__.py"
 
 MATRIX_JOBS = ("tests", "package")
@@ -133,13 +135,23 @@ class PythonVersionsTest(unittest.TestCase):
 
 
 class CitationTest(unittest.TestCase):
-    @unittest.skipUnless(CITATION.is_file(), "CITATION.cff does not exist yet; 8c of #232 adds it")
+    def _cited(self, key: str) -> str:
+        found = re.search(rf"""^{key}:\s*["']?([^"'\s#]+)""", CITATION.read_text(encoding="utf-8"), re.M)
+        self.assertIsNotNone(found, f"CITATION.cff has no {key}")
+        return found.group(1)
+
     def test_citation_version_is_the_package_version(self):
         version = re.search(r"""^__version__\s*=\s*["']([^"']+)["']""", VERSION_FILE.read_text(encoding="utf-8"), re.M)
-        cited = re.search(r"""^version:\s*["']?([^"'\s#]+)""", CITATION.read_text(encoding="utf-8"), re.M)
         self.assertIsNotNone(version)
-        self.assertIsNotNone(cited, "CITATION.cff has no version")
-        self.assertEqual(cited.group(1), version.group(1))
+        self.assertEqual(self._cited("version"), version.group(1))
+
+    def test_citation_date_is_the_changelog_date_of_that_version(self):
+        version = self._cited("version")
+        heading = re.search(
+            rf"^## {re.escape(version)} \((\d{{4}}-\d{{2}}-\d{{2}})\)", CHANGELOG.read_text(encoding="utf-8"), re.M
+        )
+        self.assertIsNotNone(heading, f"CHANGELOG.md has no heading for {version}")
+        self.assertEqual(self._cited("date-released"), heading.group(1))
 
 
 if __name__ == "__main__":
