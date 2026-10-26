@@ -56,6 +56,9 @@ class HeuristicRemConfig:
     hrv_rmssd_ms_strong: float = 80.0
     hr_trend_abs_bpm_per_min_min: float = 5.0
     hr_trend_abs_bpm_per_min_strong: float = 40.0
+    # HRV scored from PPG peaks whose ppg_confidence is below this adds the reason code
+    # low_ppg_quality; scores and P_REM stay as they are (#234).
+    low_ppg_quality_confidence: float = 0.40
     limited_feature_weight_threshold: float = 0.40
     limited_feature_probability_cap: float = 0.55
     motion_arousal_probability_cap: float = 0.35
@@ -84,6 +87,8 @@ class HeuristicRemConfig:
             or self.hr_trend_abs_bpm_per_min_strong <= self.hr_trend_abs_bpm_per_min_min
         ):
             raise ValueError("HR trend thresholds must be ordered")
+        if not 0 <= self.low_ppg_quality_confidence <= 1:
+            raise ValueError("low_ppg_quality_confidence must be between 0 and 1")
         if not 0 <= self.limited_feature_weight_threshold:
             raise ValueError("limited_feature_weight_threshold must be non-negative")
         if not 0 <= self.limited_feature_probability_cap <= 1:
@@ -300,6 +305,9 @@ class HeuristicRemDetector:
                 if scores["hr_variability"] >= 0.5
                 else "hr_variability_low"
             )
+        if ppg.hrv_source == "ppg" and ppg.ppg_confidence < self.config.low_ppg_quality_confidence:
+            # The peak intervals behind that HRV are irregular; the score is kept.
+            reasons.append("low_ppg_quality")
 
         if math.isfinite(ppg.hr_trend_bpm_per_min):
             abs_trend = abs(ppg.hr_trend_bpm_per_min)

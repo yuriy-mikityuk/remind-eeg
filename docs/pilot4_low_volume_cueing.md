@@ -95,8 +95,13 @@ values of the previous epoch with the first of this one (#247). Each decision in
 values were used and how many were too noisy to use (`hr_series_used_count`,
 `hr_series_skipped_count`). Skipped values never pause for heart rate. Under a movement
 the motion rules still pause, but on a still stretch with poor optical contact no PPG
-rule acts: no artifact flag covers noisy optics, so only the skipped count shows that
-the HR rule was blind there.
+rule acts: no artifact flag covers noisy optics. The skipped count shows that the HR rule
+was blind there, and when more than half the values were skipped the decision also says
+`hr_rule_blind` (#234); it stays `allow` unless `ArousalGuardConfig.hr_rule_blind_action`
+is changed. `--guard-min-ppg-confidence` and `--guard-min-hr-series-quality` (default 0,
+off) turn the HR rules off on epochs of low PPG quality, logged as `hr_rule_skipped_by`;
+leave them off for a night until `docs/optics_agreement.md` has a paired table that
+supports a value.
 
 ## Emergency Stop
 

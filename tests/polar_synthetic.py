@@ -100,7 +100,7 @@ def acc_frame_delta(timestamp_ns, samples, resolution=16, block=8):
 
 def write_raw_session(
     session_dir, seconds, rng, *, breaths_per_min=12.0, drift_ppm=50.0, with_ecg=True, reset_at_s=None, gap_s=5.0,
-    wall0=1_790_000_000.0, acc_breaths_per_min=None, no_contact=None, report_contact=True,
+    wall0=1_790_000_000.0, acc_breaths_per_min=None, no_contact=None, report_contact=True, beats_s=None,
 ):
     """Write polar/raw_notifications.jsonl (+ clock anchors) for a synthetic session.
 
@@ -111,7 +111,9 @@ def write_raw_session(
     rail with negative spikes; with report_contact=False the notifications keep
     saying contact, as when the battery comes out before the H10 notices.
     reset_at_s may be one time or several: the sensor clock restarts at each,
-    after gap_s without link. Returns the ground truth.
+    after gap_s without link. beats_s gives the R waves, seconds from wall0, for
+    a session that shares its beats with another recording; by default they are
+    drawn around 60 bpm. Returns the ground truth.
     """
     import base64
     import json
@@ -126,7 +128,11 @@ def write_raw_session(
     drift = drift_ppm * 1e-6
     breathing_hz = breaths_per_min / 60.0
 
-    beats = beat_times(seconds, rng, breathing_hz=breathing_hz)
+    if beats_s is None:
+        beats = beat_times(seconds, rng, breathing_hz=breathing_hz)
+    else:
+        beats = np.asarray(beats_s, dtype=float)
+        beats = beats[(beats >= 1.0) & (beats < seconds - 1.0)]
     t_ecg, ecg = ecg_signal(beats, seconds, rng, breathing_hz=breathing_hz)
     if no_contact is not None:
         off = np.flatnonzero((t_ecg >= no_contact[0]) & (t_ecg < no_contact[1]))

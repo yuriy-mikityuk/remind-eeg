@@ -7,6 +7,7 @@ from muse_tmr.data.sample_types import EEGSample, HeartRateSample, IMUSample, Mu
 from muse_tmr.features.eeg_features import extract_eeg_features
 from muse_tmr.features.epochs import EpochBuilder, EpochConfig
 from muse_tmr.features.imu_features import extract_imu_features
+from muse_tmr.features.ppg_features import extract_ppg_features
 from muse_tmr.models import HeuristicRemConfig, HeuristicRemDetector, RemPrediction
 from muse_tmr.models.heuristic_rem_detector import DEFAULT_REM_WEIGHTS
 from tests.rem_event_synthetic import rem_deflection_train
@@ -279,6 +280,56 @@ class TestHeuristicRemWeights(unittest.TestCase):
         self.assertNotIn("limited_feature_support", prediction.reason_codes)
         self.assertNotIn("hr_variability", prediction.feature_scores)
         self.assertGreater(prediction.probability, detector.config.limited_feature_probability_cap)
+
+
+class TestLowPpgQualityReason(unittest.TestCase):
+    """HRV from irregular PPG peaks is flagged, not rescored (#234)."""
+
+    def setUp(self):
+        epoch = build_epoch(
+            eeg_channels=rem_like_eeg_channels(),
+            accel_rows=still_accel_rows(),
+            gyro_rows=still_gyro_rows(),
+            ppg_channels={"LO_NIR": synthetic_ppg(72.0)},
+        )
+        self.eeg = extract_eeg_features(epoch)
+        self.imu = extract_imu_features(epoch)
+        self.ppg = extract_ppg_features(epoch)
+        self.detector = HeuristicRemDetector()
+
+    def test_low_confidence_peaks_add_the_reason_and_change_nothing_else(self):
+        self.assertEqual(self.ppg.hrv_source, "ppg")
+        steady = self.detector.predict_features(
+            eeg=self.eeg, imu=self.imu, ppg=dataclasses.replace(self.ppg, ppg_confidence=0.9)
+        )
+        irregular = self.detector.predict_features(
+            eeg=self.eeg, imu=self.imu, ppg=dataclasses.replace(self.ppg, ppg_confidence=0.3)
+        )
+
+        self.assertNotIn("low_ppg_quality", steady.reason_codes)
+        self.assertIn("low_ppg_quality", irregular.reason_codes)
+        self.assertEqual(irregular.probability, steady.probability)
+        self.assertEqual(irregular.feature_scores, steady.feature_scores)
+        self.assertEqual(irregular.feature_values, steady.feature_values)
+        self.assertEqual(
+            tuple(code for code in irregular.reason_codes if code != "low_ppg_quality"),
+            steady.reason_codes,
+        )
+
+    def test_only_hrv_from_ppg_peaks_and_only_below_the_threshold(self):
+        at_threshold = dataclasses.replace(self.ppg, ppg_confidence=0.4)
+        from_heart_rate = dataclasses.replace(self.ppg, ppg_confidence=0.1, hrv_source="heart_rate")
+        for ppg in (at_threshold, from_heart_rate):
+            with self.subTest(hrv_source=ppg.hrv_source, confidence=ppg.ppg_confidence):
+                prediction = self.detector.predict_features(eeg=self.eeg, imu=self.imu, ppg=ppg)
+                self.assertNotIn("low_ppg_quality", prediction.reason_codes)
+        stricter = HeuristicRemDetector(HeuristicRemConfig(low_ppg_quality_confidence=0.6))
+        self.assertIn(
+            "low_ppg_quality",
+            stricter.predict_features(eeg=self.eeg, imu=self.imu, ppg=at_threshold).reason_codes,
+        )
+        with self.assertRaises(ValueError):
+            HeuristicRemConfig(low_ppg_quality_confidence=1.5).validate()
 
 
 class TestRemPrediction(unittest.TestCase):

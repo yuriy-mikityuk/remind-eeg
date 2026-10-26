@@ -152,6 +152,15 @@ night summary (mean and lowest HR, RMSSD, median trusted breathing, RR-to-ECG ma
 table. A Polar log that cannot be read is reported in that section instead of failing the
 report.
 
+## Against the Muse optics
+
+`muse-tmr analyze-optics-agreement <session>` compares the heart rate the Muse takes
+from its optics with the heart rate from these R-peaks, per epoch and per window of the
+heart-rate series, and scores the arousal guard's sudden heart-rate change rule against
+the ECG. It needs a `p1034` session with ECG on. The H10 is the reference there and feeds
+nothing: the report reads the session, and what the guard reads stays the Muse's own.
+Runbook and how to read it: `docs/optics_agreement.md`.
+
 ## Limitations
 
 - BLE delay and dropouts, especially with two peripherals on one Mac adapter.

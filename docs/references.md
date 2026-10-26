@@ -32,3 +32,9 @@ The papers the protocol and the REM check lean on, with what each one is used fo
 - Allen J. Photoplethysmography and its application in clinical physiological measurement. *Physiological Measurement* 28(3):R1–R39 (2007). https://doi.org/10.1088/0967-3334/28/3/R01. The pulse as a small cardiac part on a large, slowly varying level that breathing, sympathetic activity and thermoregulation move: here a pulse on a DC level with a wandering baseline.
 - Elgendi M. On the analysis of fingertip photoplethysmogram signals. *Current Cardiology Reviews* 8(1):14–25 (2012). https://doi.org/10.2174/157340312801215782. The pulse described by its systolic and diastolic waves.
 - Tang Q, Chen Z, Ward R, Elgendi M. Synthetic photoplethysmogram generation using two Gaussian functions. *Scientific Reports* 10:13883 (2020). https://doi.org/10.1038/s41598-020-69076-x. Synthetic beats as the sum of a systolic and a diastolic Gaussian wave. The generator makes the systolic wave log-normal and adds a narrow dip at the pulse foot for the sharp light maximum the recordings show.
+
+## Agreement of the optics heart rate with an ECG
+
+[`optics_agreement.md`](optics_agreement.md) reports how far the Muse optics heart rate is from a Polar H10 ECG this way.
+
+- Bland JM, Altman DG. Statistical methods for assessing agreement between two methods of clinical measurement. *The Lancet* 327(8476):307–310 (1986). https://doi.org/10.1016/S0140-6736(86)90837-8. Agreement as the mean difference between two measures and the 95 % limits of agreement, the mean plus and minus 1.96 SD of the differences, instead of a correlation.

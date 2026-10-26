@@ -367,6 +367,7 @@ def build_parser() -> argparse.ArgumentParser:
     pilot3_parser.add_argument("--scheduler-cooldown-seconds", type=float, default=120.0)
     pilot3_parser.add_argument("--max-puzzle-cues-per-block", type=int, default=4)
     pilot3_parser.add_argument("--disable-arousal-guard", action="store_true")
+    _add_guard_hr_rule_args(pilot3_parser)
 
     pilot4_parser = subparsers.add_parser(
         "run-pilot4-cueing",
@@ -414,6 +415,7 @@ def build_parser() -> argparse.ArgumentParser:
     pilot4_parser.add_argument("--max-puzzle-cues-per-block", type=int, default=4)
     pilot4_parser.add_argument("--allow-short", action="store_true", help="Allow short smoke-test cueing runs.")
     pilot4_parser.add_argument("--quiet", action="store_true")
+    _add_guard_hr_rule_args(pilot4_parser)
     _add_brainflow_args(pilot4_parser)
     _add_openmuse_lsl_args(pilot4_parser)
     _add_muse_sdk_args(pilot4_parser)
@@ -465,6 +467,7 @@ def build_parser() -> argparse.ArgumentParser:
     pilot5_parser.add_argument("--max-puzzle-cues-per-block", type=int, default=4)
     pilot5_parser.add_argument("--allow-short", action="store_true", help="Allow short smoke-test cueing runs.")
     pilot5_parser.add_argument("--quiet", action="store_true")
+    _add_guard_hr_rule_args(pilot5_parser)
     _add_brainflow_args(pilot5_parser)
     _add_openmuse_lsl_args(pilot5_parser)
     _add_muse_sdk_args(pilot5_parser)
@@ -833,6 +836,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rebuild decoded Polar files from <session_dir>/polar/raw_notifications.jsonl.",
     )
     decode_polar_parser.add_argument("session_dir", type=Path)
+
+    optics_agreement_parser = subparsers.add_parser(
+        "analyze-optics-agreement",
+        help="Agreement of the optics heart rate with the Polar H10 ECG of a p1034 recording.",
+    )
+    optics_agreement_parser.add_argument("recording_dir", type=Path)
+    optics_agreement_parser.add_argument("--epoch-seconds", type=float, default=30.0)
+    optics_agreement_parser.add_argument(
+        "--output-dir", type=Path, help="Defaults to data/reports/optics_agreement/<recording name>/."
+    )
     _add_brainflow_args(record_parser)
     _add_openmuse_lsl_args(record_parser)
     _add_muse_sdk_args(record_parser)
@@ -942,6 +955,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return asyncio.run(_record_polar(args))
     if args.command == "decode-polar":
         return _decode_polar(args)
+    if args.command == "analyze-optics-agreement":
+        return asyncio.run(_analyze_optics_agreement(args))
 
     parser.print_help()
     return 0
@@ -1772,6 +1787,57 @@ def _decode_polar(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _analyze_optics_agreement(args: argparse.Namespace) -> int:
+    from muse_tmr.reports.optics_agreement import (
+        OpticsAgreementConfig,
+        OpticsAgreementInputError,
+        analyze_optics_agreement,
+    )
+    from muse_tmr.testing import SYNTHETIC_NOTE
+
+    recording_dir = _resolve_output_dir(args.recording_dir).resolve()
+    output_dir = (
+        _resolve_output_dir(args.output_dir)
+        if args.output_dir is not None
+        else _default_path_base() / "data" / "reports" / "optics_agreement" / recording_dir.name
+    )
+    try:
+        config = OpticsAgreementConfig(epoch_seconds=args.epoch_seconds)
+        config.validate()
+        started = time.monotonic()
+        report = await analyze_optics_agreement(recording_dir, config)
+    except (OpticsAgreementInputError, FileNotFoundError, ValueError) as exc:
+        print(f"analyze-optics-agreement: {exc}", file=sys.stderr)
+        return 2
+    paths = report.write(output_dir)
+    note = f" ({SYNTHETIC_NOTE})" if report.synthetic else ""
+    print(f"optics agreement written: {paths['json']} ({time.monotonic() - started:.1f} s){note}")
+    print(f"report: {paths['markdown']}")
+    counts = report.counts
+    print(
+        f"epochs={counts['epochs']} compared={counts['compared_epochs']} "
+        f"no_contact_seconds={counts['no_contact_seconds']:.0f}"
+    )
+    for estimator in ("decoder_heart_rate", "ppg_estimated_hr_bpm", "hr_series"):
+        row = report.overall(estimator)
+        if row is None or not row.n:
+            print(f"  {estimator}: no estimate")
+            continue
+        print(
+            f"  {estimator}: n={row.n} coverage={row.coverage:.2f} bias={row.bias_bpm:+.1f} bpm "
+            f"limits={_format_float(row.loa_low_bpm, 1)}..{_format_float(row.loa_high_bpm, 1)} "
+            f"mae={row.mae_bpm:.1f}"
+        )
+    jumps = report.jumps[0]
+    print(
+        f"  sudden HR rule: fired={jumps.fired} false_jumps={jumps.false_jumps} "
+        f"ecg_jumps={jumps.ecg_jumps} missed={jumps.missed}"
+    )
+    if report.limitations:
+        print(f"limitations: {', '.join(report.limitation_codes)}")
+    return 0
+
+
 async def _annotate_template(args: argparse.Namespace) -> int:
     from muse_tmr.annotations import build_rem_annotation_rows, export_rem_annotations
     from muse_tmr.data.replay import ReplayConfig, ReplaySession
@@ -2111,6 +2177,7 @@ async def _replay_cue_report(args: argparse.Namespace):
         arousal_guard_config=ArousalGuardConfig(
             enabled=not args.disable_arousal_guard,
             optics_capable=optics_capable,
+            **_guard_hr_rule_config(args),
         ),
     )
 
@@ -2628,7 +2695,10 @@ async def _run_live_cueing_pilot(
             max_puzzle_cues_per_block=args.max_puzzle_cues_per_block,
             enable_tlr_block=enable_tlr_block,
         ),
-        arousal_guard_config=ArousalGuardConfig(optics_capable=optics_capable),
+        arousal_guard_config=ArousalGuardConfig(
+            optics_capable=optics_capable,
+            **_guard_hr_rule_config(args),
+        ),
         pilot_id=pilot_id,
         summary_filename=summary_filename,
         require_tlr_block=require_tlr_block,
@@ -3129,6 +3199,40 @@ def _build_source(args: argparse.Namespace, duration_seconds: int):
         duration_seconds=duration_seconds,
         verbose=not getattr(args, "quiet", False),
     )
+
+
+def _add_guard_hr_rule_args(parser: argparse.ArgumentParser) -> None:
+    """The arousal guard's quality gates for its HR rules; 0 gates nothing (docs/safety.md)."""
+    parser.add_argument(
+        "--guard-min-ppg-confidence",
+        type=_unit_fraction,
+        default=0.0,
+        help="Skip the guard's HR rules on epochs whose ppg_confidence is below this (default 0: never).",
+    )
+    parser.add_argument(
+        "--guard-min-hr-series-quality",
+        type=_unit_fraction,
+        default=0.0,
+        help="Skip the guard's HR rules on epochs whose heart-rate series has a median quality "
+        "below this (default 0: never).",
+    )
+
+
+def _guard_hr_rule_config(args: argparse.Namespace) -> Dict[str, float]:
+    return {
+        "min_ppg_confidence_for_hr_rule": args.guard_min_ppg_confidence,
+        "min_hr_series_quality_for_hr_rule": args.guard_min_hr_series_quality,
+    }
+
+
+def _unit_fraction(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+    if not 0.0 <= value <= 1.0:
+        raise argparse.ArgumentTypeError(f"{text} is not between 0 and 1")
+    return value
 
 
 def _add_brainflow_args(parser: argparse.ArgumentParser) -> None:
