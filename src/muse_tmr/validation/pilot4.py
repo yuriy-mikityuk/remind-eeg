@@ -6,7 +6,7 @@ import asyncio
 import datetime as dt
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import AsyncIterator, Dict, Iterable, Mapping, Optional, Tuple
 
@@ -23,6 +23,7 @@ from muse_tmr.audio import (
     audio_config_with_calibration,
     resolve_audio_backend,
 )
+from muse_tmr.data.replay import ReplaySession
 from muse_tmr.data.sample_types import MuseFrame
 from muse_tmr.features import (
     EpochBuilder,
@@ -44,8 +45,16 @@ from muse_tmr.protocol.tmr_scheduler import (
 )
 from muse_tmr.protocol.tlr_protocol import TlrBlockPlan
 from muse_tmr.sources.base_source import BaseMuseSource, MuseSourceMetadata
+from muse_tmr.validation.gate_log import (
+    REM_GATE_DECISIONS_FILENAME,
+    gate_decision_record,
+    write_rem_gate_decisions,
+)
 
-PILOT4_SCHEMA_VERSION = 1
+# 2 adds first_epoch_start, rem_gate_decisions_path and cue_arousal (#227).
+PILOT4_SCHEMA_VERSION = 2
+# What the sleeper says about an awakening: did a cue wake them?
+AWAKENING_ATTRIBUTIONS = ("yes", "no", "unsure")
 
 
 @dataclass(frozen=True)
@@ -90,6 +99,8 @@ class Pilot4CueingConfig:
     pilot_id: str = "m8_pilot4_low_volume_rem_gated_cueing"
     summary_filename: str = "pilot4_summary.json"
     require_tlr_block: bool = False
+    # Score the night's cue-locked arousal proxies at its end (reports.cue_arousal).
+    score_cue_arousal: bool = True
 
     def validate(self) -> None:
         if self.duration_seconds <= 0:
@@ -152,6 +163,12 @@ class Pilot4CueingSummary:
     # opened the gate or first played a cue; None when that never happened.
     first_gate_open_seconds: Optional[float] = None
     first_play_seconds: Optional[float] = None
+    # The first epoch's start in the frames' clock (Unix seconds): what the scheduler's
+    # timestamp_seconds count from. None when no epoch was built.
+    first_epoch_start: Optional[float] = None
+    rem_gate_decisions_path: str = ""
+    # The scorer's figures for this night (reports.cue_arousal), or its status.
+    cue_arousal: Mapping[str, object] = field(default_factory=dict)
     generated_at_utc: str = ""
     schema_version: int = PILOT4_SCHEMA_VERSION
     pilot_id: str = "m8_pilot4_low_volume_rem_gated_cueing"
@@ -197,6 +214,9 @@ class Pilot4CueingSummary:
             "stride_seconds": self.stride_seconds,
             "first_gate_open_seconds": self.first_gate_open_seconds,
             "first_play_seconds": self.first_play_seconds,
+            "first_epoch_start": self.first_epoch_start,
+            "rem_gate_decisions_path": self.rem_gate_decisions_path,
+            "cue_arousal": dict(self.cue_arousal),
             "modality_counts": dict(self.modality_counts),
             "scheduler_event_type_counts": dict(self.scheduler_event_type_counts),
             "audio_status_counts": dict(self.audio_status_counts),
@@ -243,22 +263,61 @@ class _Pilot4State:
 
 @dataclass(frozen=True)
 class AwakeningEvent:
+    """A manual awakening marker.
+
+    ``timestamp_seconds`` (optional) places it on the night's time base, seconds from the
+    first epoch's start like the scheduler events; without it the cue arousal scorer
+    places it by ``timestamp_utc``. ``attributed_to_cue`` (optional, ``yes``, ``no`` or
+    ``unsure``) is whether the sleeper thinks a cue woke them. Rows written before both
+    fields existed load as they are.
+    """
+
     event_type: str = "awakening"
     timestamp_utc: str = ""
     notes: str = ""
+    timestamp_seconds: Optional[float] = None
+    attributed_to_cue: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not self.timestamp_utc:
             object.__setattr__(self, "timestamp_utc", _utc_now())
         if not self.event_type.strip():
             raise ValueError("event_type must not be empty")
+        if self.timestamp_seconds is not None:
+            object.__setattr__(self, "timestamp_seconds", float(self.timestamp_seconds))
+            if self.timestamp_seconds < 0:
+                raise ValueError("timestamp_seconds must be non-negative")
+        if self.attributed_to_cue is not None:
+            attribution = str(self.attributed_to_cue).strip().lower()
+            if attribution not in AWAKENING_ATTRIBUTIONS:
+                raise ValueError(
+                    f"attributed_to_cue must be one of: {', '.join(AWAKENING_ATTRIBUTIONS)}"
+                )
+            object.__setattr__(self, "attributed_to_cue", attribution)
 
     def to_dict(self) -> Dict[str, object]:
-        return {
+        payload: Dict[str, object] = {
             "event_type": self.event_type,
             "timestamp_utc": self.timestamp_utc,
             "notes": self.notes,
         }
+        if self.timestamp_seconds is not None:
+            payload["timestamp_seconds"] = self.timestamp_seconds
+        if self.attributed_to_cue is not None:
+            payload["attributed_to_cue"] = self.attributed_to_cue
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> "AwakeningEvent":
+        seconds = payload.get("timestamp_seconds")
+        attribution = payload.get("attributed_to_cue")
+        return cls(
+            event_type=str(payload.get("event_type", "awakening")),
+            timestamp_utc=str(payload.get("timestamp_utc", "")),
+            notes=str(payload.get("notes", "")),
+            timestamp_seconds=None if seconds is None else float(seconds),
+            attributed_to_cue=None if attribution in (None, "") else str(attribution),
+        )
 
 
 async def run_pilot4_cueing_night(
@@ -296,6 +355,7 @@ async def run_pilot4_cueing_night(
     arousal_guard_events_path = output_dir / "arousal_guard_events.jsonl"
     audio_log_path = output_dir / "audio_playback.jsonl"
     awakening_events_path = output_dir / "awakening_events.jsonl"
+    rem_gate_decisions_path = output_dir / REM_GATE_DECISIONS_FILENAME
     summary_path = output_dir / config.summary_filename
     emergency_stop_path = (
         config.emergency_stop_path.expanduser()
@@ -306,6 +366,7 @@ async def run_pilot4_cueing_night(
     arousal_guard_events_path.touch(exist_ok=True)
     audio_log_path.touch(exist_ok=True)
     awakening_events_path.touch(exist_ok=True)
+    rem_gate_decisions_path.touch(exist_ok=True)
 
     state = _Pilot4State()
     started_at_dt = dt.datetime.now(dt.timezone.utc)
@@ -388,6 +449,20 @@ async def run_pilot4_cueing_night(
                 ),
             )
             state.previous_epoch_start = epoch.start_time
+            # The decision is dropped once the scheduler has it; the log keeps it for the
+            # cue arousal scorer's REM periods and controls.
+            write_rem_gate_decisions(
+                (
+                    gate_decision_record(
+                        index=epoch.index,
+                        timestamp_seconds=timestamp_seconds,
+                        duration_seconds=epoch.duration_seconds,
+                        decision=gate_decision,
+                    ),
+                ),
+                rem_gate_decisions_path,
+                append=True,
+            )
             decision_seconds = epoch.end_time - state.first_epoch_start
             if gate_decision.gate_open and state.first_gate_open_seconds is None:
                 state.first_gate_open_seconds = decision_seconds
@@ -443,6 +518,7 @@ async def run_pilot4_cueing_night(
         arousal_guard_events_path=arousal_guard_events_path,
         audio_log_path=audio_log_path,
         awakening_events_path=awakening_events_path,
+        rem_gate_decisions_path=rem_gate_decisions_path,
         summary_path=summary_path,
         emergency_stop_path=emergency_stop_path,
         started_at=started_at_dt,
@@ -454,12 +530,63 @@ async def run_pilot4_cueing_night(
         assignment=assignment,
     )
     summary.save(summary_path)
+    if config.score_cue_arousal:
+        # A replayed source has its own clock in its raw file; this night's raw file
+        # holds the same frames clamped to when it was opened.
+        replay_input = source.raw_path if isinstance(source, ReplaySession) else raw_path
+        block = await _score_own_night(
+            output_dir,
+            summary_path=summary_path,
+            replay_input=replay_input,
+            optics_capable=config.gate_config.optics_capable,
+        )
+        summary = replace(summary, cue_arousal=block)
+        summary.save(summary_path)
     return summary
 
 
 def append_awakening_event(output_path: Path, event: AwakeningEvent) -> Path:
     _append_jsonl(output_path, event.to_dict())
     return output_path.expanduser()
+
+
+def load_awakening_events(input_path: Path) -> Tuple[AwakeningEvent, ...]:
+    """The markers of an ``awakening_events.jsonl``; none when the file is missing."""
+    input_path = Path(input_path).expanduser()
+    if not input_path.exists():
+        return ()
+    return tuple(
+        AwakeningEvent.from_dict(json.loads(line))
+        for line in input_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    )
+
+
+async def _score_own_night(
+    output_dir: Path,
+    *,
+    summary_path: Path,
+    replay_input: Path,
+    optics_capable: bool,
+) -> Dict[str, object]:
+    """Score the night's cue-locked arousal proxies and return the summary block.
+
+    The scorer reads only files this night already wrote. When it fails, the summary
+    keeps the night and records why there are no figures.
+    """
+    try:
+        # Here, not at the top: the scorer imports this package's gate log.
+        from muse_tmr.reports.cue_arousal import score_cue_arousal
+
+        report = await score_cue_arousal(
+            output_dir,
+            summary_path=summary_path,
+            replay_input=replay_input,
+            optics_capable=optics_capable,
+        )
+        return report.summary_block(report.save_outputs(output_dir))
+    except Exception as exc:  # noqa: BLE001 - the night's summary must outlive the scorer
+        return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
 
 
 async def _recording_frame_stream(
@@ -552,6 +679,7 @@ def _build_summary(
     arousal_guard_events_path: Path,
     audio_log_path: Path,
     awakening_events_path: Path,
+    rem_gate_decisions_path: Path,
     summary_path: Path,
     emergency_stop_path: Path,
     started_at: dt.datetime,
@@ -638,6 +766,8 @@ def _build_summary(
         stride_seconds=config.epoch_config.stride_seconds,
         first_gate_open_seconds=state.first_gate_open_seconds,
         first_play_seconds=state.first_play_seconds,
+        first_epoch_start=state.first_epoch_start,
+        rem_gate_decisions_path=str(rem_gate_decisions_path),
         pilot_id=config.pilot_id,
     )
 

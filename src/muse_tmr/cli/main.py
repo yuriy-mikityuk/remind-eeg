@@ -370,6 +370,14 @@ def build_parser() -> argparse.ArgumentParser:
     pilot3_parser.add_argument("--scheduler-cooldown-seconds", type=float, default=120.0)
     pilot3_parser.add_argument("--max-puzzle-cues-per-block", type=int, default=4)
     pilot3_parser.add_argument("--disable-arousal-guard", action="store_true")
+    pilot3_parser.add_argument(
+        "--inject-cues-every-seconds",
+        type=_positive_float,
+        default=None,
+        metavar="N",
+        help="Also add a synthetic_cue play event to gate-open epochs every N seconds (mock "
+        "audio, outside the scheduler) to check where score-cue-arousal puts its windows.",
+    )
     _add_guard_hr_rule_args(pilot3_parser)
 
     pilot4_parser = subparsers.add_parser(
@@ -483,6 +491,56 @@ def build_parser() -> argparse.ArgumentParser:
     awakening_parser.add_argument("--event-type", default="awakening")
     awakening_parser.add_argument("--notes", default="")
     awakening_parser.add_argument("--timestamp-utc", default="")
+    awakening_parser.add_argument(
+        "--timestamp-seconds",
+        type=_non_negative_float,
+        default=None,
+        help="When it happened in seconds from the night's first epoch, the time base of "
+        "scheduler_events.jsonl. Without it score-cue-arousal uses --timestamp-utc.",
+    )
+    awakening_parser.add_argument(
+        "--attributed-to-cue",
+        choices=("yes", "no", "unsure"),
+        default=None,
+        help="Whether you think a cue woke you.",
+    )
+
+    cue_arousal_parser = subparsers.add_parser(
+        "score-cue-arousal",
+        help="Score cue-locked arousal proxies against paired quiet controls for a cueing night.",
+    )
+    cue_arousal_parser.add_argument(
+        "recording_dir",
+        type=Path,
+        help="Pilot 4/5 output directory, or with --pilot3-report the recording it replayed.",
+    )
+    cue_arousal_parser.add_argument(
+        "--pilot3-report",
+        type=Path,
+        help="Score this Pilot 3 report's planned and injected cues instead of a night's logs.",
+    )
+    cue_arousal_parser.add_argument("--summary", type=Path, help="pilot4_summary.json or pilot5_summary.json path.")
+    cue_arousal_parser.add_argument("--scheduler-events", type=Path, help="scheduler_events.jsonl path.")
+    cue_arousal_parser.add_argument("--audio-log", type=Path, help="audio_playback.jsonl path.")
+    cue_arousal_parser.add_argument("--gate-log", type=Path, help="rem_gate_decisions.jsonl path.")
+    cue_arousal_parser.add_argument("--awakening-events", type=Path, help="awakening_events.jsonl path.")
+    cue_arousal_parser.add_argument(
+        "--replay-input",
+        type=Path,
+        help="Raw file or recording to cut the windows from. Defaults to the recording directory.",
+    )
+    cue_arousal_parser.add_argument(
+        "--preset",
+        default=None,
+        help="Recording preset (p21, p1034); says whether optics are expected. Defaults to "
+        "the preset in the recording's metadata.json.",
+    )
+    cue_arousal_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Where cue_arousal_events.jsonl and cue_arousal_report.json/.md go. Defaults to "
+        "the recording directory, or the Pilot 3 report's directory.",
+    )
 
     list_cues_parser = subparsers.add_parser("list-cues", help="List cues from a cue metadata library.")
     list_cues_parser.add_argument("input", type=Path, help="Input cue library .json path.")
@@ -916,6 +974,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return asyncio.run(_run_pilot5_full_night(args))
     if args.command == "log-pilot4-awakening":
         return _log_pilot4_awakening(args)
+    if args.command == "score-cue-arousal":
+        return asyncio.run(_score_cue_arousal(args))
     if args.command == "list-cues":
         return _list_cues(args)
     if args.command == "create-tlr-cue":
@@ -2126,6 +2186,7 @@ async def _simulate_replay_cues(args: argparse.Namespace) -> int:
         f"first_gate_open_seconds={report.metrics.get('first_gate_open_seconds')} "
         f"cue_plan={report.metrics.get('cue_plan_count', 0)} "
         f"first_play_seconds={report.metrics.get('first_play_seconds')} "
+        f"injected_cues={report.metrics.get('injected_cue_count', 0)} "
         f"audio_playback_executed={report.audio_playback_executed} "
         f"output={output_path}{note}"
     )
@@ -2182,6 +2243,7 @@ async def _replay_cue_report(args: argparse.Namespace):
             optics_capable=optics_capable,
             **_guard_hr_rule_config(args),
         ),
+        inject_cues_every_seconds=getattr(args, "inject_cues_every_seconds", None),
     )
 
 
@@ -2737,6 +2799,7 @@ async def _run_live_cueing_pilot(
         f"resolved_backend={summary.resolved_audio_backend_name} "
         f"max_effective_volume={summary.max_effective_volume} "
         f"emergency_stop={summary.emergency_stop_path} "
+        f"cue_arousal={summary.cue_arousal.get('status')} "
         f"summary={summary.summary_path}"
     )
     return 0 if summary.passed else 1
@@ -2751,10 +2814,61 @@ def _log_pilot4_awakening(args: argparse.Namespace) -> int:
             event_type=args.event_type,
             timestamp_utc=args.timestamp_utc,
             notes=args.notes,
+            timestamp_seconds=getattr(args, "timestamp_seconds", None),
+            attributed_to_cue=getattr(args, "attributed_to_cue", None),
         ),
     )
     print(f"awakening event logged output={output_path}")
     return 0
+
+
+async def _score_cue_arousal(args: argparse.Namespace) -> int:
+    """Score a night's or a Pilot 3 report's cues and write the three outputs."""
+    from muse_tmr.presets import preset_provides_optics
+    from muse_tmr.reports.cue_arousal import SYNTHETIC_NOTE, score_cue_arousal
+
+    recording_dir = _resolve_output_path(args.recording_dir)
+    pilot3_report = _optional_path(args.pilot3_report)
+    try:
+        report = await score_cue_arousal(
+            recording_dir,
+            pilot3_report=pilot3_report,
+            summary_path=_optional_path(args.summary),
+            scheduler_events_path=_optional_path(args.scheduler_events),
+            audio_log_path=_optional_path(args.audio_log),
+            gate_log_path=_optional_path(args.gate_log),
+            awakening_events_path=_optional_path(args.awakening_events),
+            replay_input=_optional_path(args.replay_input),
+            optics_capable=preset_provides_optics(args.preset) if args.preset else None,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"score-cue-arousal: {exc}", file=sys.stderr)
+        return 2
+    if args.output_dir is not None:
+        output_dir = _resolve_output_dir(args.output_dir)
+    elif pilot3_report is not None:
+        output_dir = pilot3_report.parent
+    else:
+        output_dir = recording_dir
+    paths = report.save_outputs(output_dir)
+    outcomes = report.outcomes
+    per_cue = dict(outcomes.get("arousal_proxy_per_cue", {}) or {})
+    per_control = dict(outcomes.get("arousal_proxy_per_control", {}) or {})
+    note = f" ({SYNTHETIC_NOTE})" if report.synthetic else ""
+    print(
+        "cue arousal proxies scored "
+        f"cues={outcomes.get('played_cue_count', 0)} "
+        f"controls={outcomes.get('control_count', 0)} "
+        f"any_per_cue={_format_float(per_cue.get('any'), 3)} "
+        f"any_per_control={_format_float(per_control.get('any'), 3)} "
+        f"limitations={','.join(report.limitation_codes)} "
+        f"report={paths['report_path']}{note}"
+    )
+    return 0
+
+
+def _optional_path(value: Optional[Path]) -> Optional[Path]:
+    return None if value is None else _resolve_output_path(value)
 
 
 def _list_cues(args: argparse.Namespace) -> int:
@@ -3235,6 +3349,26 @@ def _unit_fraction(text: str) -> float:
         raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
     if not 0.0 <= value <= 1.0:
         raise argparse.ArgumentTypeError(f"{text} is not between 0 and 1")
+    return value
+
+
+def _positive_float(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+    if not (math.isfinite(value) and value > 0):
+        raise argparse.ArgumentTypeError(f"{text} is not a positive number")
+    return value
+
+
+def _non_negative_float(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+    if not (math.isfinite(value) and value >= 0):
+        raise argparse.ArgumentTypeError(f"{text} is negative")
     return value
 
 
