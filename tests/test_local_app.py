@@ -1566,7 +1566,10 @@ class TestLocalMuseAppRecordingGate(unittest.TestCase):
     def post(self, path, body=None):
         request = urllib.request.Request(
             f"{self.base_url}{path}",
-            data=json.dumps(body or {}).encode("utf-8"),
+            # No body unless the test gives one, as the page posts. The endpoints that
+            # take none leave it unread, the server then resets the connection on
+            # close, and on a Windows runner the reset once dropped the response.
+            data=json.dumps(body).encode("utf-8") if body is not None else b"",
             headers={"Content-Type": "application/json"},
             method="POST",
         )
