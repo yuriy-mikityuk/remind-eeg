@@ -25,7 +25,7 @@ python scripts/check_forbidden_files.py
 git diff --check
 ```
 
-`python -m pytest tests/` is what CI runs, on Linux, macOS and Windows. `python run_tests.py` runs a faster subset; add a new test module to its fast list. Tests use synthetic fixtures or replays and mock or dry-run audio, never a headband or a speaker. A change to the app's page (`src/muse_tmr/app/static/`) also needs the page check: start `muse-tmr app --source mock --port 8799` and run `node scripts/check_page.mjs http://127.0.0.1:8799/` (Node 22, or Node 20 with `--experimental-websocket`).
+`python -m pytest tests/` is what CI runs, on Linux, macOS and Windows. `python run_tests.py` runs a faster subset, the modules in its fast list. Add a new test module there if it is quick; a slow one stays out, with a comment in the list saying why. Tests use synthetic fixtures or replays and mock or dry-run audio, never a headband or a speaker. A change to the app's page (`src/muse_tmr/app/static/`) also needs the page check: start `muse-tmr app --source mock --port 8799` and run `node scripts/check_page.mjs http://127.0.0.1:8799/` (Node 22, or Node 20 with `--experimental-websocket`).
 
 ## Pull requests
 
