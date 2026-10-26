@@ -70,7 +70,8 @@ ECG), its SD, the 95 % limits of agreement (bias ± 1.96 SD, Bland and Altman 19
 estimators by the epoch's `ppg_signal_quality`, its `ppg_confidence` (bins of 0.2) and
 the median quality of its series values (`hr_series_median_quality`); each channel by
 its own estimate's quality, confidence and periodicity (the autocorrelation peak the
-series picks its channel by); the series by each value's own quality.
+series picks its channel by); the series by its epoch's `ppg_signal_quality` and
+`ppg_confidence`, the fields the guard's gates read, and by each value's own quality.
 
 ## The sudden heart-rate change rule against the ECG
 
@@ -146,7 +147,9 @@ Three guard settings wait for them; all of them default to doing nothing:
   rows show how many ECG jumps fell in such epochs before `hr_rule_blind_action` is set
   to `lower_volume` or `pause`.
 - The series rows by quality show how far the values the series uses, from quality 0.5,
-  are from the ECG at each level, for `PPGFeatureConfig.hr_series_min_quality`.
+  are from the ECG at each level, for `PPGFeatureConfig.hr_series_min_quality`. By
+  `ppg_confidence` and `ppg_signal_quality` they show the same for the epochs a gate on
+  those fields would hold back.
 
 The detector adds the reason code `low_ppg_quality` when its HRV comes from PPG peaks
 with `ppg_confidence` below 0.4; its scores and `P_REM` do not change.

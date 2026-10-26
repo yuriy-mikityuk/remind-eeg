@@ -153,6 +153,15 @@ class SteadyHeartTest(unittest.TestCase):
         qualities = {row.level for row in self.report.rows("channel", channel=NOISY, stratum="ppg_signal_quality")}
         self.assertNotIn("Poor", qualities)
 
+    def test_the_series_is_split_by_its_epochs_quality_fields(self):
+        overall = self.report.overall("hr_series")
+        for stratum in ("ppg_signal_quality", "ppg_confidence", "series_quality"):
+            with self.subTest(stratum=stratum):
+                rows = self.report.rows("hr_series", stratum=stratum)
+                self.assertTrue(rows)
+                self.assertEqual(sum(row.n_reference for row in rows), overall.n_reference)
+                self.assertEqual(sum(row.n for row in rows), overall.n)
+
     def test_the_primary_channel_is_never_the_noisy_one(self):
         for epoch in self.epochs:
             self.assertNotEqual(extract_ppg_features(epoch).primary_ppg_channel, NOISY)

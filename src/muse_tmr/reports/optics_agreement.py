@@ -55,8 +55,8 @@ JSON_FILENAME = "optics_agreement.json"
 MARKDOWN_FILENAME = "optics_agreement.md"
 
 # The strata of the agreement rows. The decoder and ppg_estimated_hr_bpm are split by
-# the epoch's quality fields, each channel by its own estimate's, the series by each
-# value's quality.
+# the epoch's quality fields, each channel by its own estimate's, the series by its
+# epoch's ppg_signal_quality and ppg_confidence and by each value's own quality.
 STRATA = ("all", "ppg_signal_quality", "ppg_confidence", "series_quality", "periodicity")
 # The quality fields a gate on the HR rule can key on, as the arousal guard reads them.
 GATE_FIELDS = ("ppg_confidence", "hr_series_median_quality")
@@ -867,10 +867,16 @@ def _agreement_rows(records: Sequence[_EpochRecord], config: OpticsAgreementConf
 
     used_pairs, skipped_pairs = [], []
     for record in records:
+        # A series value by its epoch's quality fields, which the guard's gates read, and
+        # by its own quality.
+        epoch = {
+            "ppg_signal_quality": record.ppg_signal_quality,
+            "ppg_confidence": _bin_label(record.ppg_confidence, config.confidence_bins),
+        }
         for point, reference in zip(record.points, record.point_ecg_bpm):
             if not math.isfinite(reference):
                 continue
-            levels = {"series_quality": _bin_label(point.quality, config.series_quality_bins)}
+            levels = {**epoch, "series_quality": _bin_label(point.quality, config.series_quality_bins)}
             used_pairs.append((point.bpm if point.used else math.nan, reference, levels))
             skipped_pairs.append((math.nan if point.used else point.bpm, reference, levels))
     rows += _stratified("hr_series", "", used_pairs, config)
