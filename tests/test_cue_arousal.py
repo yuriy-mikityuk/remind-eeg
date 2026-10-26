@@ -11,6 +11,7 @@ import csv
 import io
 import json
 import re
+import shutil
 import tempfile
 import unittest
 from dataclasses import replace
@@ -20,10 +21,11 @@ import numpy as np
 
 from muse_tmr.audio import MockAudioBackend, VolumeCalibration
 from muse_tmr.cli.main import main as cli_main
+from muse_tmr.data.replay import ReplayConfig, ReplaySession
 from muse_tmr.data.sample_types import EEGSample, IMUSample, MuseFrame, PPGSample
 from muse_tmr.features import EpochBuilder, EpochConfig
 from muse_tmr.models import RemGateConfig
-from muse_tmr.protocol import TmrSchedulerConfig
+from muse_tmr.protocol import TmrSchedulerConfig, default_tlr_cue, plan_tlr_block
 from muse_tmr.reports.cue_arousal import (
     AROUSAL_FLAGS,
     CueArousalConfig,
@@ -40,6 +42,7 @@ from muse_tmr.testing.synthetic import START_EPOCH_SECONDS, pink_noise
 from muse_tmr.validation import (
     REM_GATE_DECISIONS_FILENAME,
     GateDecisionRecord,
+    Pilot4CueingConfig,
     gate_open_runs,
     load_gate_open_runs,
     load_rem_gate_decisions,
@@ -479,6 +482,21 @@ class InjectedCueTest(unittest.TestCase):
 PLACEMENT_STAGES = ("N2",) * 8 + ("R",) * 18
 
 
+def placement_night(output_dir):
+    return generate_night(
+        replace(
+            SyntheticNightConfig(),
+            preset="p21",
+            scenario="placement",
+            hours=len(PLACEMENT_STAGES) * 30 / 3600,
+            stages=PLACEMENT_STAGES,
+            arousals_per_hour=0.0,
+            ble_gaps_per_hour=0.0,
+        ),
+        output_dir,
+    )
+
+
 class WindowPlacementTest(unittest.TestCase):
     """Cues injected by Pilot 3 into a replayed night land where the scorer cuts them."""
 
@@ -486,18 +504,7 @@ class WindowPlacementTest(unittest.TestCase):
     def setUpClass(cls):
         cls._tmp = tempfile.TemporaryDirectory()
         root = Path(cls._tmp.name)
-        cls.night = generate_night(
-            replace(
-                SyntheticNightConfig(),
-                preset="p21",
-                scenario="placement",
-                hours=len(PLACEMENT_STAGES) * 30 / 3600,
-                stages=PLACEMENT_STAGES,
-                arousals_per_hour=0.0,
-                ble_gaps_per_hour=0.0,
-            ),
-            root / "night",
-        )
+        cls.night = placement_night(root / "night")
         catalog, session, assignment, cue_library = protocol_fixture()
         for name, item in (("catalog", catalog), ("session", session), ("assignment", assignment), ("cues", cue_library)):
             item.save(root / f"{name}.json")
@@ -604,6 +611,91 @@ class WindowPlacementTest(unittest.TestCase):
             [round(window.time, 3) for window in report.windows],
             [round(window.time, 3) for window in self.report.windows],
         )
+
+
+class ScheduledPlayPlacementTest(unittest.TestCase):
+    """Pilot 5 replays the placement night with the default TLR plan (3 cues 8 s apart).
+    The scheduler logs a TLR cue at its planned time and a puzzle cue at its epoch's
+    start; each is scored at the end of the epoch whose decision played it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name)
+        cls.night = placement_night(root / "night")
+        catalog, session, assignment, cue_library = protocol_fixture(include_tlr=True)
+        cls.summary = asyncio.run(
+            run_pilot4_cueing_night(
+                ReplaySession(ReplayConfig(input_path=cls.night.recording_dir, speed=0.0)),
+                config=Pilot4CueingConfig(
+                    output_dir=root / "pilot5",
+                    duration_seconds=3600.0,
+                    allow_short=True,
+                    audio_backend_name="mock",
+                    gate_config=RemGateConfig(enter_threshold=0.7, exit_threshold=0.6, optics_capable=False),
+                    scheduler_config=TmrSchedulerConfig(enable_tlr_block=True),
+                    pilot_id="m8_pilot5_full_night_tlr_puzzle_cueing",
+                    summary_filename="pilot5_summary.json",
+                    require_tlr_block=True,
+                ),
+                catalog=catalog,
+                session=session,
+                assignment=assignment,
+                cue_library=cue_library,
+                calibration=VolumeCalibration("Sleep Headphones", 0.01, 0.02, 0.06),
+                backend=MockAudioBackend(),
+                tlr_block_plan=plan_tlr_block(default_tlr_cue()),
+            )
+        )
+        cls.night_dir = Path(cls.summary.summary_path).parent
+        cls.report = load_cue_arousal_report(Path(cls.summary.cue_arousal["report_path"]))
+        cls.gate = load_rem_gate_decisions(cls.night_dir)
+
+        # The same night without its gate log, as a night from before #227 has none.
+        cls.no_gate_dir = root / "no_gate_log"
+        cls.no_gate_dir.mkdir()
+        for name in ("scheduler_events.jsonl", "audio_playback.jsonl", "awakening_events.jsonl", "pilot5_summary.json"):
+            shutil.copy(cls.night_dir / name, cls.no_gate_dir / name)
+        cls.no_gate = asyncio.run(score_cue_arousal(cls.no_gate_dir, replay_input=cls.night.recording_dir))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_each_play_is_scored_at_the_end_of_the_epoch_that_played_it(self):
+        cues = self.report.cues
+        self.assertEqual(
+            [(window.cue["protocol"], window.cue["scheduler_timestamp_seconds"]) for window in cues],
+            [("tlr", 270.0), ("tlr", 278.0), ("tlr", 286.0), ("puzzle", 330.0), ("puzzle", 360.0)],
+        )
+        # The epoch from 270 to 300 plays the first TLR cue; the next one, decided at 330,
+        # plays the two that came due during it, then a puzzle cue every epoch.
+        self.assertEqual([window.offset_seconds for window in cues], [300.0, 330.0, 330.0, 360.0, 390.0])
+        self.assertEqual(cues[0].offset_seconds, self.summary.first_play_seconds)
+        decisions = {record.decision_seconds: record for record in self.gate}
+        first_epoch_start = self.summary.first_epoch_start
+        for window in cues:
+            self.assertTrue(decisions[window.offset_seconds].gate_open, window.offset_seconds)
+            self.assertAlmostEqual(window.time, first_epoch_start + window.offset_seconds, places=6)
+        self.assertEqual(
+            [window.cue["tlr_event_index"] for window in cues[:3]] + [window.cue["puzzle_cue_index"] for window in cues[3:]],
+            [1, 2, 3, 1, 2],
+        )
+
+    def test_without_a_gate_log_each_play_is_placed_30_s_after_its_scheduler_time(self):
+        codes = self.no_gate.limitation_codes
+        self.assertIn("gate_log_missing", codes)
+        self.assertNotIn("time_base_inferred", codes)
+        self.assertEqual(
+            [window.offset_seconds for window in self.no_gate.cues],
+            [window.cue["scheduler_timestamp_seconds"] + 30.0 for window in self.no_gate.cues],
+        )
+        self.assertEqual([window.offset_seconds for window in self.no_gate.cues], [300.0, 308.0, 316.0, 360.0, 390.0])
+        self.assertEqual(self.no_gate.controls, ())
+        self.assertIsNone(self.no_gate.outcomes["rem_period_count"])
+        for window in self.no_gate.cues:
+            self.assertIsNone(window.gate_open)
+            self.assertIsNone(window.rem_period_index)
 
 
 class CleanNightCorpusTest(unittest.TestCase):
