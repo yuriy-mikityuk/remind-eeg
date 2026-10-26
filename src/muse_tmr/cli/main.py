@@ -19,17 +19,20 @@ from muse_tmr import __version__
 # Commands that can play a cue; main() checks their --backend before anything else runs.
 AUDIO_COMMANDS = ("play-test-cue", "train-tlr-cue", "run-pilot4-cueing", "run-pilot5-full-night")
 ALLOW_DRY_RUN_HELP = "Run silently on dry-run when afplay is missing, instead of exiting with code 2."
+# `muse-tmr status` prints it and `muse-tmr --help` ends with it (#232).
+BANNER = f"REMind {__version__}: n = 1 research software, not a medical device"
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="muse-tmr",
         description="Muse S Athena REM-TMR/TLR research tooling.",
+        epilog=BANNER,
     )
     parser.add_argument("--version", action="version", version=f"muse-tmr {__version__}")
 
     subparsers = parser.add_subparsers(dest="command")
-    subparsers.add_parser("status", help="Show project status and configured components.")
+    subparsers.add_parser("status", help="Print the version and what REMind is.")
 
     app_parser = subparsers.add_parser("app", help="Run the REMind app, a local web page.")
     app_parser.add_argument("--source", choices=("mock", "amused"), default="mock")
@@ -869,7 +872,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 2
 
     if args.command == "status":
-        print("Muse REM-TMR project scaffold is installed.")
+        print(BANNER)
         return 0
     if args.command == "app":
         return _run_app(args)

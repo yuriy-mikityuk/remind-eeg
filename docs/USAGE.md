@@ -47,7 +47,7 @@ muse-tmr status
 python scripts/check_forbidden_files.py
 ```
 
-`muse-tmr status` only prints a line confirming the package is installed.
+`muse-tmr status` prints `REMind <version>: n = 1 research software, not a medical device`, and `muse-tmr --help` ends with the same line. `muse-tmr --version` prints only `muse-tmr <version>`.
 
 A venv set up before the rename has the checkout installed as `athena-tmr-lucid`. Run `pip uninstall athena-tmr-lucid` before installing again, so that two distributions do not both own the `muse-tmr` command.
 
