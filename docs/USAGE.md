@@ -31,6 +31,7 @@ Complete command and code reference for `muse-tmr`, organized by workflow stage.
 - [Cued-vs-uncued analysis](#cued-vs-uncued-analysis)
 - [Meditation complexity analysis](#meditation-complexity-analysis)
 - [Polar H10 companion recording](#polar-h10-companion-recording)
+- [Optics heart rate against the H10](#optics-heart-rate-against-the-h10)
 - [Local app](#local-app)
 - [Validation plan and pilots](#validation-plan-and-pilots)
 
@@ -245,7 +246,7 @@ rows = extract_ppg_feature_rows(epochs)
 export_ppg_feature_rows(rows, Path("data/reports/ppg_features.csv"))
 ```
 
-PPG rows include PPG-derived heart-rate estimates when raw optics are available, mean/min/max HR from `HeartRateSample`, HR trend, HRV proxy metrics, the sudden HR-change logs the arousal guard reads with the heart-rate series they come from (`hr_series_json`, one value a second from the epoch's optics; see `docs/data_model.md`), and missing-modality flags. CSV export is always available; Parquet export uses the installed pandas Parquet engine when available.
+PPG rows include PPG-derived heart-rate estimates when raw optics are available, mean/min/max HR from `HeartRateSample`, HR trend, HRV proxy metrics, the sudden HR-change logs the arousal guard reads with the heart-rate series they come from (`hr_series_json`, one value a second from the epoch's optics; see `docs/data_model.md`), and missing-modality flags. CSV export is always available; Parquet export uses the installed pandas Parquet engine when available. `estimate_channel_heart_rates(epoch)` gives the peak-interval estimate of every optics channel, with its confidence, quality and periodicity.
 
 ## Heuristic REM baseline
 
@@ -258,7 +259,7 @@ for epoch, prediction in zip(epochs, detector.predict_epochs(epochs)):
     print(epoch.index, prediction.probability, prediction.reason_codes)
 ```
 
-`prediction.probability` is `P_REM` in the 0-1 range. The heuristic detector is a non-ML baseline over EEG, IMU, and PPG/HR feature rows. It returns reason codes and feature scores only; it does not play audio or make cue decisions. Its weights are `DEFAULT_REM_WEIGHTS` in `muse_tmr.models.heuristic_rem_detector`; the eye-movement proxy is still scored but weighted 0, because it is saturated on real nights (#116, #225). Its replacement, `rem_event_density`, is scored and exported with the reason codes `eeg_rem_events_support`/`eeg_rem_events_low`, also at weight 0 until it is fitted on real nights. `predict_epochs()` runs one REM-event tracker over all its epochs; when you call `predict_epoch()` per epoch, pass `rem_tracker=` the same `new_rem_event_tracker()` each time. The weights and why: `docs/data_model.md`. To see how each feature separates REM on a recorded night, and what other weights would do, use the REM check below with `--weights`.
+`prediction.probability` is `P_REM` in the 0-1 range. The heuristic detector is a non-ML baseline over EEG, IMU, and PPG/HR feature rows. It returns reason codes and feature scores only; it does not play audio or make cue decisions. Its weights are `DEFAULT_REM_WEIGHTS` in `muse_tmr.models.heuristic_rem_detector`; the eye-movement proxy is still scored but weighted 0, because it is saturated on real nights (#116, #225). Its replacement, `rem_event_density`, is scored and exported with the reason codes `eeg_rem_events_support`/`eeg_rem_events_low`, also at weight 0 until it is fitted on real nights. `predict_epochs()` runs one REM-event tracker over all its epochs; when you call `predict_epoch()` per epoch, pass `rem_tracker=` the same `new_rem_event_tracker()` each time. HRV from PPG peaks with `ppg_confidence` under 0.4 adds the reason code `low_ppg_quality` without changing any score. The weights and why: `docs/data_model.md`. To see how each feature separates REM on a recorded night, and what other weights would do, use the REM check below with `--weights`.
 
 ## Manual REM annotation templates
 
@@ -524,6 +525,15 @@ muse-tmr decode-polar data/recordings/session/<name>
 
 Records HR/RR, 130 Hz ECG and chest ACC from a Polar H10 into `<session>/polar/` in a separate process, so a strap problem never touches the Muse recording. Raw BLE payloads are kept and `decode-polar` rebuilds everything from them. `muse_tmr.data.polar_session.load_polar_session` maps the data onto the Muse wall-clock time base; `muse_tmr.features.cardio_resp_features` gives RR/HRV, breathing rate and RSA per window. Details and limitations: `docs/polar_h10.md`.
 
+## Optics heart rate against the H10
+
+```bash
+muse-tmr analyze-optics-agreement data/recordings/session/<name> \
+  [--epoch-seconds 30] [--output-dir data/reports/optics_agreement/<name>/]
+```
+
+Compares the heart rate the Muse takes from its optics with the H10's ECG R-peaks in a `p1034` session recorded with `--with-polar`: the decoder's `heart_rate` stream, `ppg_estimated_hr_bpm` and each optics channel per epoch, and the heart-rate series the sudden-change rule reads per 10 s window. It writes `optics_agreement.json` and `optics_agreement.md` with bias, SD, 95 % limits of agreement and MAE by quality level, the rule's false and missed jumps against the ECG change, and what a gate on `ppg_confidence` or on the series' quality would keep. Without `polar/`, without ECG or on `p21` it exits with code 2. In code, `analyze_optics_agreement(recording_dir)` is async; `optics_agreement_from_epochs(epochs, polar_session)` takes epochs you built yourself. Agreement with a chest ECG, a proxy; how to record and read it: `docs/optics_agreement.md`.
+
 ## Local app
 
 ```bash
@@ -578,6 +588,8 @@ See `docs/pilot3_replay_cue_simulation.md` for the replay-only runbook. The simu
 
 `--stride-seconds` (default 30) sets how far apart the 30 s epochs start; the gate counts the time between epoch starts, so its stable window and cooldown run in real time at any stride. The report's `metrics` carry `stride_seconds`, `first_gate_open_seconds` and `first_play_seconds`, counted from the first epoch's start to the end of the epoch whose decision first opened the gate or first planned a cue (`null` when it never happened). How they come out at strides of 30, 10 and 5 s on synthetic input: `docs/pilot3_replay_cue_simulation.md`.
 
+`--guard-min-ppg-confidence` and `--guard-min-hr-series-quality` (both 0 to 1, default 0: off) turn the arousal guard's two HR rules off on epochs whose `ppg_confidence`, or the median quality of whose heart-rate series, is below the value; each such decision logs `hr_rule_skipped_by` (`docs/safety.md`). Set one only from an `analyze-optics-agreement` table.
+
 ### Pilot 4: low-volume REM-gated cueing
 
 ```bash
@@ -596,7 +608,7 @@ muse-tmr run-pilot4-cueing \
   --default-volume 0.02
 ```
 
-See `docs/pilot4_low_volume_cueing.md` before using `--backend system`. Pilot 4 requires volume calibration, enforces the comfortable-volume cap, logs scheduler, arousal, audio, awakening, and emergency-stop artifacts, and only sends playback requests for scheduler `play` events after stable REM. With `--backend system` and no `afplay` on PATH it exits with code 2 before it reads an input, connects the headband or writes a file. `--allow-dry-run` runs the night silently instead; `metadata.json` and the summary record the requested and the resolved backend. `--preset` (default `p1034`) is the headband preset for the night and also picks the gate thresholds, as above. `--stride-seconds` works as in Pilot 3, and `pilot4_summary.json` has the same `stride_seconds`, `first_gate_open_seconds` and `first_play_seconds`. Mark an awakening with:
+See `docs/pilot4_low_volume_cueing.md` before using `--backend system`. Pilot 4 requires volume calibration, enforces the comfortable-volume cap, logs scheduler, arousal, audio, awakening, and emergency-stop artifacts, and only sends playback requests for scheduler `play` events after stable REM. With `--backend system` and no `afplay` on PATH it exits with code 2 before it reads an input, connects the headband or writes a file. `--allow-dry-run` runs the night silently instead; `metadata.json` and the summary record the requested and the resolved backend. `--preset` (default `p1034`) is the headband preset for the night and also picks the gate thresholds, as above. `--stride-seconds`, `--guard-min-ppg-confidence` and `--guard-min-hr-series-quality` work as in Pilot 3, and `pilot4_summary.json` has the same `stride_seconds`, `first_gate_open_seconds` and `first_play_seconds`. Mark an awakening with:
 
 ```bash
 muse-tmr log-pilot4-awakening data/recordings/pilot4_low_volume_<timestamp>/awakening_events.jsonl \
@@ -622,4 +634,4 @@ muse-tmr run-pilot5-full-night \
   --default-volume 0.02
 ```
 
-See `docs/pilot5_full_night.md` for the full runbook. Pilot 5 requires the Pilot 4 safety setup plus a TLR block plan, writes `pilot5_summary.json`, and expects the morning dream report, blind puzzle retest, and cued-vs-uncued analysis before any behavioral interpretation. `--preset` and `--allow-dry-run` work as in Pilot 4.
+See `docs/pilot5_full_night.md` for the full runbook. Pilot 5 requires the Pilot 4 safety setup plus a TLR block plan, writes `pilot5_summary.json`, and expects the morning dream report, blind puzzle retest, and cued-vs-uncued analysis before any behavioral interpretation. `--preset`, `--allow-dry-run` and the `--guard-min-*` gates work as in Pilot 4.

@@ -47,9 +47,22 @@ under 10 bpm between the compared windows. A surge of 15 to 40 bpm held 5 s paus
 or 20 of 21 places inside an epoch but rarely when it straddles an epoch boundary with
 under 4 s on either side; held 10 s it pauses everywhere (`docs/numbers.md`). A still
 stretch too noisy for the series has no HR rule: no artifact flag covers noisy optics, so
-only the motion, EEG and coverage rules act there, and its `allow` decisions carry the
-skipped count. There is no paired optics and ECG recording of sleep yet to say how the
-series behaves asleep.
+only the motion, EEG and coverage rules act there. An optics epoch whose series skipped
+more than half of its values is logged as `hr_rule_blind`, `allow` decisions included;
+`ArousalGuardConfig.hr_rule_blind_action` can make it lower the volume or pause, and stays
+`allow` until a paired optics and ECG night says which (#234). There is no paired optics
+and ECG recording of sleep yet to say how the series behaves asleep.
+
+The HR rules can also be gated on the quality of the epoch's heart rate:
+`min_ppg_confidence_for_hr_rule` (`--guard-min-ppg-confidence`), `ppg_quality_for_hr_rule`
+and `min_hr_series_quality_for_hr_rule` (`--guard-min-hr-series-quality`). An epoch below
+the gate raises neither `sudden_heart_rate_change` nor `heart_rate_out_of_range` and does
+not feed the next epoch's comparison; its decision logs `hr_rule_skipped_by` and the
+quality fields. A gate makes the guard pause less, so the defaults gate nothing. On
+synthetic input a held step lowers `ppg_confidence` (0.89 on the step's epochs, 0.99 on
+the others) while the series' quality stays at 0.98 or more, so a gate on `ppg_confidence`
+holds back true jumps first. `muse-tmr analyze-optics-agreement` measures what either gate
+keeps against a Polar H10 ECG (`docs/optics_agreement.md`).
 
 On a preset without optics (`p21`) the guard is built with `optics_capable=False`,
 like the REM gate. Missing PPG and heart rate is then not an artifact, so it does not

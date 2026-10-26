@@ -59,7 +59,14 @@ changed (#247). A pause for it records in the guard metadata how many of the epo
 values were used and skipped (`hr_series_used_count`, `hr_series_skipped_count`) and the
 largest change from the previous epoch's values into this one's
 (`sudden_hr_change_across_epochs_bpm`); an `allow` decision records the two counts when
-a value was skipped. `docs/data_model.md` has the details.
+a value was skipped, and `hr_rule_blind` when more than half of them were (#234).
+`docs/data_model.md` has the details.
+
+`--guard-min-ppg-confidence` and `--guard-min-hr-series-quality` (default 0, off) turn
+the guard's HR rules off on epochs whose `ppg_confidence` or series median quality is
+below the value, with `hr_rule_skipped_by` in the decision. Replaying a night with and
+without one shows what it would change in the cue plan; which value to use, if any, is
+for a paired optics and ECG table to say (`docs/optics_agreement.md`).
 
 Optional replay and gate tuning flags:
 

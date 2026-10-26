@@ -333,6 +333,47 @@ Current PPG/HR features include:
 Raw PPG and heart-rate samples are optional. Missing modalities must produce flags and
 `NaN` feature values where needed, not exceptions.
 
+### Optics channels and the heart-rate estimates
+
+On `p1034` the decoder names the eight optics channels after `OPTICS_CHANNELS_8` in
+`muse_athena_protocol.py` (other channel counts become `opt0`, `opt1`, ...). Side, depth
+and wavelength below are what the comments there say; no vendor document in the
+repository confirms them, so all of it is vendor-unverified.
+
+| Channel | Side | Depth | Wavelength (comment) |
+|---|---|---|---|
+| `LO_NIR` | left | outer | about 850 nm |
+| `RO_NIR` | right | outer | about 850 nm |
+| `LO_IR` | left | outer | about 735 nm |
+| `RO_IR` | right | outer | about 735 nm |
+| `LI_NIR` | left | inner | about 850 nm |
+| `RI_NIR` | right | inner | about 850 nm |
+| `LI_IR` | left | inner | about 735 nm |
+| `RI_IR` | right | inner | about 735 nm |
+
+The decoder's `HeartRateSample` stream comes from the first channel only (`LO_NIR` on
+`p1034`): on every optics notification it takes the last 2 to 5 s of it (128 to 320
+samples), finds peaks at least 40 samples apart, so never above 96 bpm, and keeps 60 over
+their mean interval when that lies between 40 and 200 bpm. `mean_hr_bpm` and the other
+summary fields, the HR trend and `heart_rate_out_of_range` come from that stream.
+
+`ppg_estimated_hr_bpm` is a second estimate: peak intervals on the channel with the
+largest variance over the epoch (`primary_ppg_channel`), band-passed to 0.5 to 4 Hz.
+`ppg_confidence` is 1 minus the SD of its beat intervals over their mean, clamped to 0..1,
+so it falls when the heart rate changes inside the epoch, and band-passed noise reaches
+0.6 to 0.8. `ppg_signal_quality` names it: `Excellent` above 0.8, `Good` above 0.6, `Fair`
+above 0.4, else `Poor`; `Irregular rhythm`, `Too few peaks detected`, `Flatline`,
+`Insufficient data` or `Missing` when there is no estimate
+(`muse_tmr.features.ppg_features.PPG_SIGNAL_QUALITIES`).
+`estimate_channel_heart_rates(epoch)` gives the same estimate for every channel as
+`ChannelHeartRate` records (`channel`, `estimated_hr_bpm`, `confidence`, `peak_count`,
+`signal_quality`) plus `periodicity`, the highest autocorrelation peak of the channel's
+band-passed epoch in the heart-rate range, by which the series below picks its channel
+(0 for a flat channel or one shorter than a series window). The primary channel's entry
+carries the row's own values. `PPGFeatureRow.hr_series_median_quality` is the median
+quality of the series values, skipped ones included, the `hr_series_median_quality`
+column.
+
 ### Heart-rate series for the sudden-change rule
 
 The arousal guard's sudden heart-rate change rule reads a series that
@@ -426,6 +467,11 @@ with the reason codes `eeg_rem_events_support` and `eeg_rem_events_low`, and exp
 are UNFITTED starting values, so it does not move `P_REM` until it has been fitted on
 real nights; it is never fitted on synthetic data. An epoch whose REM-event fields are
 NaN gets no score and no reason code for it.
+
+When the HRV comes from PPG peaks (`hrv_source` `ppg`) and `ppg_confidence` is below
+`HeuristicRemConfig.low_ppg_quality_confidence` (0.4), the prediction adds the reason code
+`low_ppg_quality`. The HRV score, every other score and `P_REM` stay as they are, and the
+gate does not read the code (#234).
 
 The REM detector does not play audio and does not return `CueDecision`. Stable gates,
 cooldowns, arousal guards, and cue scheduling remain separate downstream layers.
@@ -675,7 +721,8 @@ flags `ppg_missing`, `missing_ppg`, `heart_rate_missing`, `missing_heart_rate`,
 decision, `allow` included, carries `metadata.ppg_absent_by_design`. On optics presets
 an `allow` decision keeps an empty `metadata` unless the epoch's heart-rate series
 skipped values; then it carries `hr_series_used_count` and `hr_series_skipped_count`,
-since the pilots keep the decisions but not the PPG rows.
+since the pilots keep the decisions but not the PPG rows, and `hr_rule_blind` or a quality
+gate's `hr_rule_skipped_by` with the quality fields when they apply (below).
 
 On optics presets the HR rule pauses when it finds at least
 `sudden_hr_change_pause_count` (1) heart-rate changes of `sudden_hr_change_pause_bpm`
@@ -691,8 +738,27 @@ nothing. The row logs changes from `PPGFeatureConfig.sudden_hr_change_bpm` less 
 epochs. A row built with the counts but without the changes counts all of them when the
 largest reaches the bpm. Non-`allow` decisions on optics presets add
 `sudden_hr_change_source`, `hr_series_used_count`, `hr_series_skipped_count`,
-`sudden_hr_change_pause_steps` (the changes counted) and, when there was a previous series
-to compare with, `sudden_hr_change_across_epochs_bpm`.
+`ppg_confidence`, `ppg_signal_quality`, `hr_series_median_quality` (when the row has series
+values), `sudden_hr_change_pause_steps` (the changes counted) and, when there was a
+previous series to compare with, `sudden_hr_change_across_epochs_bpm`.
+
+Three quality gates can turn the two HR rules off for an epoch on optics presets (#234):
+`min_ppg_confidence_for_hr_rule` (0.0), `ppg_quality_for_hr_rule` (the
+`ppg_signal_quality` levels the rules run on; empty, all of them) and
+`min_hr_series_quality_for_hr_rule` (0.0; a row without series values fails it). A row
+that fails one raises neither `sudden_heart_rate_change` nor `heart_rate_out_of_range`,
+its series does not feed the next row's comparison across the boundary, and the decision,
+`allow` included, logs `hr_rule_skipped_by` (the config fields it failed) with
+`ppg_confidence`, `ppg_signal_quality` and `hr_series_median_quality`. Its PPG artifact
+flags still count. The defaults gate nothing; `docs/optics_agreement.md` has the tables
+to set one from.
+
+An optics row whose series skipped more than `hr_rule_blind_skipped_share` (0.5) of its
+values is `hr_rule_blind`: the HR rule could not see that epoch, which no artifact flag
+covers. Every decision then logs `hr_rule_blind: true`, `allow` included.
+`hr_rule_blind_action` says what else happens: `allow` (the default) nothing,
+`lower_volume` or `pause` add the reason code `hr_rule_blind`. A row without series
+values is not counted; its coverage and flatline flags act.
 
 Decisions can be appended to JSONL with `append_arousal_guard_decisions()` and read
 with `load_arousal_guard_decisions()`. The scheduler can consume a decision directly;
@@ -746,3 +812,26 @@ limitations such as `small_n`, `missing_scheduler_events`, or `uncued_cue_play_o
 
 Puzzle protocol files may contain private puzzle content, responses, and night/session
 metadata, so `data/protocol/` is gitignored.
+
+## Optics Agreement Reports
+
+`muse-tmr analyze-optics-agreement` (`muse_tmr.reports.optics_agreement`) writes
+`optics_agreement.json` and `optics_agreement.md`, by default into
+`data/reports/optics_agreement/<recording name>/` (gitignored). The JSON, version 1
+(`OpticsAgreementReport`, `load_optics_agreement_report()` reads it back):
+
+| Field | Content |
+|---|---|
+| `schema_version`, `report`, `recording`, `generated_at_utc` | 1, `optics_agreement`, the recording directory's name, the time it was written. |
+| `synthetic`, `note` | `true` and "synthetic input, not sleep" when the recording's `metadata.json` says `synthetic: true`. |
+| `config` | `OpticsAgreementConfig`, the PPG feature and cardio configs inside it. |
+| `counts` | `epochs`, `optics_epochs`, `ecg_reference_epochs`, `compared_epochs`, `series_values`, `series_values_with_reference`, `blind_epochs`, `r_peaks`, `ecg_intervals`, `ecg_intervals_corrected`, `duration_seconds`, `no_contact_seconds`. |
+| `agreement` | One row per estimator (`decoder_heart_rate`, `ppg_estimated_hr_bpm`, `channel`, `hr_series`, `hr_series_skipped`), `channel`, `stratum` (`all`, `ppg_signal_quality`, `ppg_confidence`, `series_quality`, `periodicity`) and `level`: `n_reference`, `n`, `coverage`, `bias_bpm`, `sd_bpm`, `loa_low_bpm`, `loa_high_bpm`, `mae_bpm` (estimate minus ECG; `null` without enough values). |
+| `jumps` | The sudden heart-rate change rule against the ECG per `stratum` (`all`, the three quality fields, `hr_rule_blind`) and `level`: `epochs`, `fired`, `false_jumps`, `false_jump_rate`, `ecg_jumps`, `missed`, `miss_rate`. |
+| `gates` | The rule with a gate `field` (`none`, `ppg_confidence`, `hr_series_median_quality`) at `threshold`: `gated_epochs`, `fired`, `false_jumps`, `false_jump_rate`, `ecg_jumps`, `caught`, `miss_rate`. |
+| `separation` | Per gate field over the fired epochs: `true_fires`, `false_fires`, `median_true`, `median_false`, `auc`. |
+| `events` | Each change the rule counted: `epoch_index`, `kind` (`row` or `across` the boundary), `start_seconds` and `end_seconds` from the first epoch, `optics_delta_bpm`, `ecg_delta_bpm` between the same windows. |
+| `limitations` | `code`, `message`, `metadata`: `synthetic_input`, `no_contact_seconds`, `n_epochs_small` (fewer than `min_epochs`, 60, compared epochs), `few_jump_events` (fewer than `min_jump_events`, 10, fired epochs and ECG jumps together). |
+| `metadata` | `preset`, and `polar`: the H10 session's R-peak count, no-contact seconds, ECG noise spans, clock segments, drift, median BLE delay, NTP step and RR matched to the ECG. No device name or address. |
+
+How each figure is computed and read: `docs/optics_agreement.md`.
