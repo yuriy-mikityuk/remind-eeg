@@ -1,0 +1,57 @@
+name: Bug report
+description: A command, the app or a report does not do what its docs say.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        REMind is n = 1 research software, not a medical device.
+
+        Do not attach or paste raw recordings (`raw_amused.bin`, `decoded_frames.jsonl`, `events.jsonl`, `polar/`), dream reports or dream text, calibration files, puzzle content, or the name, BLE address or serial of a device. Paste the lines that show the problem, with those taken out. [CONTRIBUTING.md](https://github.com/yuriy-mikityuk/remind-eeg/blob/main/CONTRIBUTING.md#sharing-numbers-from-a-night) says which fields of `summary.json` and `metadata.json` are safe to share.
+
+        If a cue played outside an open REM gate, above a volume cap or after an emergency stop, put "safety" in the title.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: What `muse-tmr status` prints.
+      placeholder: "REMind 0.3.0: n = 1 research software, not a medical device"
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System and Python
+      description: For a recording problem, also the source (`amused`, `openmuse`, `brainflow`) and the preset.
+      placeholder: "macOS 15.1, Python 3.12.3, amused, p21"
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: What you ran
+      description: The command with its flags, or what you did in the app.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: The error or the output that shows it, without identifiers.
+      render: text
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Before you submit
+      options:
+        - label: Nothing here is a raw recording, dream text, a calibration file, puzzle content, or a device name, address or serial.
+          required: true

@@ -1,0 +1,25 @@
+name: Feature request
+description: Something REMind should do that it does not do yet.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        REMind is n = 1 research software, not a medical device. Clinical or efficacy claims, network upload, telemetry, cloud sync and proprietary Muse SDK files are out of scope ([AGENTS.md](https://github.com/yuriy-mikityuk/remind-eeg/blob/main/AGENTS.md)), and [ROADMAP.md](https://github.com/yuriy-mikityuk/remind-eeg/blob/main/ROADMAP.md) says what is planned. A fix to the BLE layer or a decoder goes upstream first ([docs/dependency_strategy.md](https://github.com/yuriy-mikityuk/remind-eeg/blob/main/docs/dependency_strategy.md)).
+  - type: textarea
+    id: need
+    attributes:
+      label: What you want to do
+      description: The task or the question, and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: The commands, file formats or modules involved, if you know them.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Papers, other projects or measurements behind it. A change to sleep-time audio also says why it stays safe with low volume, fades, cooldowns and the arousal guard.

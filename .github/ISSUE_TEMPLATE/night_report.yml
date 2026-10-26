@@ -1,0 +1,55 @@
+name: Night report
+description: How a recorded or cued night went, in aggregate numbers only.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Aggregate numbers only. Do not attach raw recordings (`raw_amused.bin`, `decoded_frames.jsonl`, `events.jsonl`, `polar/`), epoch tables or reports of the night, dream reports or dream text, calibration files, puzzle content, or device names and BLE addresses, and do not paste them either. [CONTRIBUTING.md](https://github.com/yuriy-mikityuk/remind-eeg/blob/main/CONTRIBUTING.md#sharing-numbers-from-a-night) lists the fields that are safe to share.
+
+        REMind is n = 1 research software, not a medical device. Report what was measured, not what it means for health, memory or lucid dreaming.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: What `muse-tmr status` prints.
+      placeholder: "REMind 0.3.0: n = 1 research software, not a medical device"
+    validations:
+      required: true
+  - type: dropdown
+    id: night
+    attributes:
+      label: Kind of night
+      options:
+        - Pilot 1, recording without audio
+        - Pilot 4, low-volume REM-gated cueing
+        - Pilot 5, full night with TLR and puzzle cues
+        - Another recording
+    validations:
+      required: true
+  - type: input
+    id: setup
+    attributes:
+      label: Source, preset and system
+      placeholder: "amused, p21, macOS 15.1"
+    validations:
+      required: true
+  - type: textarea
+    id: numbers
+    attributes:
+      label: Numbers
+      description: From `summary.json`, the validator or the pilot summary. Duration, stop reason, frames per modality, reconnects and downtime, lost and repeated subpackets if you have them; for a cued night the gate openings, plays, skips, pauses, stops and awakenings. No paths, clock times or device fields.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: What you noticed
+      description: Problems, odd numbers, what you would change. No dream content.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Before you submit
+      options:
+        - label: This report holds aggregate numbers only, no raw recording, dream text, calibration file, puzzle content, or device name or address.
+          required: true
