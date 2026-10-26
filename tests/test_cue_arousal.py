@@ -30,8 +30,16 @@ from muse_tmr.reports.cue_arousal import (
     AROUSAL_FLAGS,
     CueArousalConfig,
     CueArousalReport,
+    CueArousalWindow,
+    _awakening_offsets,
     _control_targets,
+    _cue_targets,
+    _dose_tables,
+    _limitations,
+    _NightInputs,
+    _outcomes,
     _Target,
+    _with_night_context,
     load_cue_arousal_report,
     score_cue_arousal,
     score_frame_windows,
@@ -355,6 +363,137 @@ class ControlSelectionTest(unittest.TestCase):
             for index, offset in enumerate((60.0, 120.0, 180.0, 240.0))
         ]
         self.assertEqual(_control_targets(cues, gate, T0, CueArousalConfig()), [])
+
+
+def hand_built_night():
+    """A night of logs without frames: the gate open from 90 to 330 s, puzzle cues decided
+    at 120, 180, 270 and 300 s, the one at 270 blocked by the player, and an awakening at
+    200 s that the sleeper puts down to a cue."""
+    from muse_tmr.validation import AwakeningEvent
+
+    gate = records([False, False] + [True] * 8 + [False] * 3)
+    logged = (
+        # scheduler time, cue, audio status, effective volume, guard action and multiplier
+        (90.0, "cue-p1", "played", 0.015, "lower_volume", 0.5),
+        (150.0, "cue-p3", "played", 0.03, "allow", 1.0),
+        (240.0, "cue-p1", "blocked", 0.07, "allow", 1.0),
+        (270.0, "cue-p3", "played", 0.07, "allow", 1.0),
+    )
+    plays, audio = [], []
+    for number, (seconds, cue_id, status, volume, action, multiplier) in enumerate(logged, start=1):
+        plays.append({
+            "event_type": "play",
+            "timestamp_seconds": seconds,
+            "cue_id": cue_id,
+            "protocol": "puzzle",
+            "metadata": {"puzzle_cue_index": number, "arousal_guard_action": action, "volume_multiplier": multiplier},
+        })
+        audio.append({
+            "cue_id": cue_id,
+            "status": status,
+            "backend_name": "afplay",
+            "requested_volume": volume / multiplier,
+            "volume_multiplier": multiplier,
+            "effective_volume": volume,
+        })
+    return _NightInputs(
+        plays=tuple(plays),
+        audio=tuple(audio),
+        audio_log_found=True,
+        audio_log_mismatch=False,
+        gate_records=gate,
+        awakenings=(AwakeningEvent(timestamp_seconds=200.0, attributed_to_cue="yes"),),
+        first_epoch_start=T0,
+        pilot3=False,
+        sources={},
+    )
+
+
+class NightOutcomesTest(unittest.TestCase):
+    """The night-level outcomes and dose tables of the hand-built night, with the cue at
+    180 s raising alpha and the blocked one at 270 s too."""
+
+    @classmethod
+    def setUpClass(cls):
+        config = CueArousalConfig()
+        inputs = hand_built_night()
+        cls.targets = _cue_targets(inputs, T0, config)
+        flagged = {180.0, 270.0}
+        windows = []
+        for target in cls.targets:
+            flag = target.offset_seconds in flagged
+            flags = {name: False for name in AROUSAL_FLAGS}
+            flags.update({"alpha": flag, "any": flag})
+            windows.append(
+                CueArousalWindow(
+                    kind="cue",
+                    index=target.index,
+                    time=target.time,
+                    flags=flags,
+                    offset_seconds=target.offset_seconds,
+                    gate_open=target.gate_open,
+                    cue=target.cue,
+                )
+            )
+        runs = gate_open_runs(inputs.gate_records)
+        awakenings, notes = _awakening_offsets(inputs.awakenings, T0)
+        cls.windows = [_with_night_context(window, runs, awakenings, config) for window in windows]
+        cls.outcomes = _outcomes(cls.windows, runs, awakenings, inputs, config)
+        cls.tables = _dose_tables(cls.windows, config)
+        cls.limitations = _limitations(
+            cls.windows,
+            inputs=inputs,
+            runs=runs,
+            config=config,
+            optics_capable=False,
+            synthetic=False,
+            time_base_inferred=False,
+            awakening_notes=notes,
+        )
+
+    def test_each_cue_knows_its_gate_open_run_and_the_awakening_after_it(self):
+        self.assertEqual([window.offset_seconds for window in self.windows], [120.0, 180.0, 270.0, 300.0])
+        self.assertEqual([window.played for window in self.windows], [True, True, False, True])
+        self.assertEqual([window.rem_period_index for window in self.windows], [0, 0, 0, 0])
+        self.assertEqual([window.seconds_since_gate_open for window in self.windows], [30.0, 90.0, 180.0, 210.0])
+        self.assertEqual([window.rem_period_ends_in_seconds for window in self.windows], [210.0, 150.0, 60.0, 30.0])
+        self.assertEqual([window.awakening_in_seconds for window in self.windows], [80.0, 20.0, None, None])
+        first = self.windows[0].cue
+        self.assertEqual((first["guard_action"], first["guard_volume_multiplier"]), ("lower_volume", 0.5))
+        self.assertEqual((first["effective_volume"], first["volume_source"]), (0.015, "audio_playback.jsonl"))
+        self.assertEqual(
+            [window.cue["inter_cue_interval_seconds"] for window in self.windows],
+            [None, 60.0, 90.0, 120.0],
+        )
+
+    def test_the_outcomes_count_played_cues_only(self):
+        outcomes = self.outcomes
+        self.assertEqual((outcomes["cue_count"], outcomes["played_cue_count"]), (4, 3))
+        self.assertEqual((outcomes["scored_cue_count"], outcomes["audible_cue_count"]), (3, 3))
+        self.assertAlmostEqual(outcomes["arousal_proxy_per_cue"]["any"], 1 / 3)
+        self.assertAlmostEqual(outcomes["arousal_proxy_per_cue"]["alpha"], 1 / 3)
+        self.assertEqual(outcomes["arousal_proxy_per_cue"]["beta"], 0.0)
+        self.assertIsNone(outcomes["arousal_proxy_per_control"]["any"])
+        self.assertAlmostEqual(outcomes["cue_attributed_awakening_rate"], 2 / 3)
+        self.assertEqual(outcomes["awakening_attribution_counts"], {"yes": 1})
+        self.assertEqual(outcomes["awakening_count"], 1)
+        self.assertEqual((outcomes["rem_period_count"], outcomes["cued_rem_period_count"]), (1, 1))
+        self.assertEqual(outcomes["rem_periods_with_disruption_fraction"], 1.0)
+        # Only the cue at 300 s is followed by the run's end within 60 s; the blocked one
+        # at 270 s, 60 s before it, does not count.
+        self.assertAlmostEqual(outcomes["rem_termination_within_60s_of_cue_rate"], 1 / 3)
+        self.assertIsNone(outcomes["rem_termination_within_60s_of_control_rate"])
+        codes = {item.code: item for item in self.limitations}
+        self.assertEqual(codes["cue_not_played"].metadata["cue_indexes"], [2])
+        self.assertIn("small_n", codes)
+
+    def test_the_dose_tables_bin_each_played_cue(self):
+        def rows(name):
+            return [(row["bin"], row["cues"], row["any_flagged"]) for row in self.tables[name]]
+
+        self.assertEqual(rows("effective_volume"), [("0.01-0.02", 1, 0), ("0.02-0.05", 1, 1), ("0.05-0.1", 1, 0)])
+        self.assertEqual(rows("inter_cue_interval"), [("first", 1, 0), ("60-120 s", 1, 1), ("120-300 s", 1, 0)])
+        self.assertEqual(rows("cue_index"), [("puzzle 1", 1, 0), ("puzzle 2", 1, 1), ("puzzle 4", 1, 0)])
 
 
 def nrem_frames(index):
