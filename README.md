@@ -4,7 +4,7 @@
 
 Repository and pip distribution `remind-eeg` (not on PyPI yet), Python package `muse_tmr`, command `muse-tmr`.
 
-[![Python 3.9 to 3.13](https://img.shields.io/badge/python-3.9--3.13-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11 to 3.13](https://img.shields.io/badge/python-3.11--3.13-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/yuriy-mikityuk/remind-eeg/actions/workflows/guardrails.yml/badge.svg)](https://github.com/yuriy-mikityuk/remind-eeg/actions)
 
@@ -45,7 +45,7 @@ The pictures show the app on example data.
 
 ## Quick start
 
-You need Python 3.9 to 3.13, and a Muse S Athena to record. CI runs the tests on Linux, macOS and Windows; the app launcher is for macOS.
+You need Python 3.11 to 3.13, and a Muse S Athena to record. CI runs the tests on Linux, macOS and Windows; the app launcher is for macOS.
 
 ```bash
 git clone https://github.com/yuriy-mikityuk/remind-eeg.git
