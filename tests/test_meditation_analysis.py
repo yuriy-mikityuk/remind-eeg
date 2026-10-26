@@ -261,7 +261,7 @@ class MeditationAnalysisEndToEndTest(unittest.TestCase):
             self.assertEqual(written["primary_metric"]["metric"], "lzc")
             self.assertIn("lyapunov_enabled", written["config"]["complexity"])
             self.assertTrue(paths["epochs"].exists() and paths["blocks"].exists())
-            page = paths["report"].read_text()
+            page = paths["report"].read_text(encoding="utf-8")
             self.assertIn("Primary result", page)
             self.assertIn("Muscle (EMG) check", page)
             self.assertIn("<svg", page)

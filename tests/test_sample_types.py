@@ -9,6 +9,10 @@ from muse_tmr.data.sample_types import (
     frame_from_decoded,
 )
 
+# A recent time rather than one in the first day of 1970: on Windows,
+# datetime.timestamp() of a naive time that early raises OSError.
+DECODED_AT = 1_760_000_000.0
+
 
 class TestSampleTypes(unittest.TestCase):
     def test_frame_reports_present_modalities(self):
@@ -28,7 +32,7 @@ class TestSampleTypes(unittest.TestCase):
         self.assertEqual(restored.raw_packet, b"\x01\x02")
 
     def test_decoded_data_conversion_preserves_units_and_source(self):
-        timestamp = dt.datetime.fromtimestamp(2.0)
+        timestamp = dt.datetime.fromtimestamp(DECODED_AT + 2.0)
         decoded = DecodedData(
             timestamp=timestamp,
             packet_type="MULTI",
@@ -42,7 +46,7 @@ class TestSampleTypes(unittest.TestCase):
 
         frame = frame_from_decoded(decoded, source="amused")
 
-        self.assertEqual(frame.timestamp, 2.0)
+        self.assertEqual(frame.timestamp, DECODED_AT + 2.0)
         self.assertEqual(frame.source, "amused")
         self.assertEqual(frame.eeg.channels_uv["TP9"], (1.0, 2.0))
         self.assertEqual(frame.imu.accelerometer_g[0]["x"], 0.1)
@@ -52,7 +56,7 @@ class TestSampleTypes(unittest.TestCase):
 
     def test_gaps_reach_the_frame_and_survive_json(self):
         decoded = DecodedData(
-            timestamp=dt.datetime.fromtimestamp(3.0),
+            timestamp=dt.datetime.fromtimestamp(DECODED_AT + 3.0),
             packet_type="MULTI",
             eeg={"TP9": [1.0] * 8},
             ppg={"LO_NIR": [10.0] * 2},

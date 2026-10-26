@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,13 @@ from muse_tmr.data.recorder import OvernightRecorder, RecordingConfig
 from muse_tmr.data.sample_types import EEGSample, MuseFrame
 from muse_tmr.data.watchdog import RecordingWatchdog
 from muse_tmr.sources.base_source import BaseMuseSource, MuseDeviceInfo, MuseSourceMetadata
+
+COARSE_CLOCK = sys.platform == "win32" and sys.version_info < (3, 13)
+COARSE_CLOCK_REASON = (
+    "on Windows before Python 3.13 time.monotonic() ticks every 15.6 ms and asyncio runs a timer up to one "
+    "tick early, so after the last wait the deadline can read as not reached: the recorder logs a no-data "
+    "timeout and reconnects, and the 0.6 s recording takes 2 s"
+)
 
 
 class RecordingFakeSource(BaseMuseSource):
@@ -144,7 +152,10 @@ class TestOvernightRecorder(unittest.IsolatedAsyncioTestCase):
             recorder = OvernightRecorder(
                 RecordingConfig(
                     output_dir=Path(tmp),
-                    duration_seconds=0.01,
+                    # The source ends after its one frame. A 10 ms recording could end
+                    # before that frame where the clock ticks every 15.6 ms (Windows
+                    # before Python 3.13).
+                    duration_seconds=1.0,
                     allow_short=True,
                 )
             )
@@ -276,7 +287,8 @@ class TestOvernightRecorder(unittest.IsolatedAsyncioTestCase):
     async def test_failing_source_diagnostics_do_not_break_recording(self):
         with tempfile.TemporaryDirectory() as tmp:
             recorder = OvernightRecorder(
-                RecordingConfig(output_dir=Path(tmp), duration_seconds=0.01, allow_short=True)
+                # The source ends after its one frame, see test_record_writes_expected_outputs.
+                RecordingConfig(output_dir=Path(tmp), duration_seconds=1.0, allow_short=True)
             )
 
             summary = await recorder.record(BrokenDiagnosticsFakeSource())
@@ -354,6 +366,7 @@ class TestOvernightRecorder(unittest.IsolatedAsyncioTestCase):
             summary = await asyncio.wait_for(task, timeout=5)
             self.assertEqual(summary.stop_reason, "user_stopped")
 
+    @unittest.skipIf(COARSE_CLOCK, COARSE_CLOCK_REASON)
     async def test_duration_can_count_from_the_first_frame(self):
         class SlowConnect(EndlessFakeSource):
             async def connect(self, device=None):
