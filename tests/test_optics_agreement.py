@@ -53,11 +53,15 @@ def beat_phase(beats_s, times):
     return index + (times - beats_s[index]) / (beats_s[index + 1] - beats_s[index])
 
 
-def optics_frames(beats_s, seconds, rng, *, wall0, noisy=NOISY, frame_seconds=0.5):
+def optics_frames(beats_s, seconds, rng, *, wall0, noisy=NOISY, frame_seconds=0.5, no_pulse=None, dropped=None):
     """Frames of 8 optics channels at 64 Hz from wall0: a pulse after each beat on every
-    channel but ``noisy``."""
+    channel but ``noisy``. Between the seconds ``no_pulse`` = (start, end) no channel has a
+    pulse, only its noise; the frames that start between ``dropped`` = (start, end) are
+    left out, as BLE loses them."""
     times = np.arange(int(seconds * FS)) / FS
     volume = beat_volume(beat_phase(np.asarray(beats_s, dtype=float), times))
+    if no_pulse is not None:
+        volume[(times >= no_pulse[0]) & (times < no_pulse[1])] = float(np.mean(volume))
     channels = {}
     for name in OPTICS_CHANNELS:
         if name == noisy:
@@ -68,6 +72,8 @@ def optics_frames(beats_s, seconds, rng, *, wall0, noisy=NOISY, frame_seconds=0.
     rows = int(frame_seconds * FS)
     frames = []
     for first in range(0, times.size - rows + 1, rows):
+        if dropped is not None and dropped[0] <= first / FS < dropped[1]:
+            continue
         stamp = wall0 + first / FS
         values = {name: column[first:first + rows].tolist() for name, column in channels.items()}
         frames.append(MuseFrame(timestamp=stamp, ppg=PPGSample(stamp, values, source="test"), source="test"))
@@ -85,13 +91,13 @@ def epochs_of(frames):
     return asyncio.run(build())
 
 
-def frames_report(beats_s, seconds, seed, tmp, *, config=None, no_contact=None):
+def frames_report(beats_s, seconds, seed, tmp, *, config=None, no_contact=None, **optics):
     """Polar session and Muse frames from the same beats, and their report. The H10 has
-    no skin contact between the seconds ``no_contact``."""
+    no skin contact between the seconds ``no_contact``; ``optics`` go to optics_frames()."""
     rng = np.random.default_rng(seed)
     truth = write_raw_session(tmp, seconds, rng, beats_s=beats_s, no_contact=no_contact)
     session = load_polar_session(Path(tmp))
-    epochs = epochs_of(optics_frames(beats_s, seconds, rng, wall0=truth["wall0"]))
+    epochs = epochs_of(optics_frames(beats_s, seconds, rng, wall0=truth["wall0"], **optics))
     return optics_agreement_from_epochs(epochs, session, config), epochs
 
 
@@ -309,6 +315,56 @@ class StepScoringTest(unittest.TestCase):
         self.assertEqual(paused, {5})
         self.assertEqual(counts, (1, 0, 0, 0))
         self.assertIn("no_contact_seconds", report.limitation_codes)
+
+
+class RoughStretchTest(unittest.TestCase):
+    """Ten minutes around 60 bpm with a premature beat every 15 beats. No channel has a
+    pulse from 200 to 320 s, BLE loses the optics frames from 545 to 555 s and the H10 has
+    no skin contact from 435 to 450 s."""
+
+    @classmethod
+    def setUpClass(cls):
+        beats = held_beats(600.0, 31)
+        beats[15::15] -= 0.35  # premature, and the pause after it
+        with tempfile.TemporaryDirectory() as tmp:
+            cls.report, cls.epochs = frames_report(
+                beats, 600.0, 32, tmp, no_contact=(435.0, 450.0), no_pulse=(200.0, 320.0), dropped=(545.0, 555.0)
+            )
+            session = load_polar_session(Path(tmp))
+        cls.around_no_contact = optics_agreement_from_epochs(cls.epochs[13:17], session)
+        cls.paused, cls.blind = guard_pauses(cls.epochs)
+
+    def test_blind_epochs_are_the_ones_the_guard_logs(self):
+        self.assertEqual(self.report.counts["blind_epochs"], len(self.blind))
+        self.assertTrue({7, 8, 9} <= self.blind, self.blind)
+        rows = {row.level: row for row in self.report.jumps if row.stratum == "hr_rule_blind"}
+        self.assertEqual(rows["blind"].epochs, len(self.blind))
+        self.assertEqual(self.paused, {event.epoch_index for event in self.report.events})
+
+    def test_used_and_skipped_series_values_are_apart(self):
+        used, skipped = self.report.overall("hr_series"), self.report.overall("hr_series_skipped")
+        self.assertEqual(used.n_reference, self.report.counts["series_values_with_reference"])
+        self.assertEqual(skipped.n_reference, used.n_reference)
+        self.assertGreater(skipped.n, 50)
+        self.assertLessEqual(used.n + skipped.n, used.n_reference)
+        self.assertLess(abs(used.bias_bpm), 1.0)
+        self.assertGreater(used.loa_low_bpm, -3.0)
+        self.assertLess(used.loa_high_bpm, 3.0)
+        self.assertGreater(skipped.mae_bpm, 5.0)
+
+    def test_no_reference_without_contact_and_no_comparison_without_optics(self):
+        counts = self.report.counts
+        self.assertIn("no_contact_seconds", self.report.limitation_codes)
+        self.assertGreater(counts["no_contact_seconds"], 30.0)
+        # PolarSession pads the span (15 s before, 15 s after), so epochs 14 and 15 have no
+        # ECG reference, and 13 and 16 have one. Epoch 18 lost a third of its optics.
+        self.assertEqual(self.around_no_contact.counts["ecg_reference_epochs"], 2)
+        self.assertEqual(counts["ecg_reference_epochs"], 18)
+        self.assertEqual(counts["compared_epochs"], 17)
+        self.assertEqual(self.report.overall("ppg_estimated_hr_bpm").n_reference, 17)
+
+    def test_premature_beats_are_corrected_on_the_ecg(self):
+        self.assertGreater(self.report.counts["ecg_intervals_corrected"], 0)
 
 
 class GeneratedNightCliTest(unittest.TestCase):
