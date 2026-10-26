@@ -367,6 +367,7 @@ def build_parser() -> argparse.ArgumentParser:
     pilot3_parser.add_argument("--scheduler-cooldown-seconds", type=float, default=120.0)
     pilot3_parser.add_argument("--max-puzzle-cues-per-block", type=int, default=4)
     pilot3_parser.add_argument("--disable-arousal-guard", action="store_true")
+    _add_guard_hr_rule_args(pilot3_parser)
 
     pilot4_parser = subparsers.add_parser(
         "run-pilot4-cueing",
@@ -414,6 +415,7 @@ def build_parser() -> argparse.ArgumentParser:
     pilot4_parser.add_argument("--max-puzzle-cues-per-block", type=int, default=4)
     pilot4_parser.add_argument("--allow-short", action="store_true", help="Allow short smoke-test cueing runs.")
     pilot4_parser.add_argument("--quiet", action="store_true")
+    _add_guard_hr_rule_args(pilot4_parser)
     _add_brainflow_args(pilot4_parser)
     _add_openmuse_lsl_args(pilot4_parser)
     _add_muse_sdk_args(pilot4_parser)
@@ -465,6 +467,7 @@ def build_parser() -> argparse.ArgumentParser:
     pilot5_parser.add_argument("--max-puzzle-cues-per-block", type=int, default=4)
     pilot5_parser.add_argument("--allow-short", action="store_true", help="Allow short smoke-test cueing runs.")
     pilot5_parser.add_argument("--quiet", action="store_true")
+    _add_guard_hr_rule_args(pilot5_parser)
     _add_brainflow_args(pilot5_parser)
     _add_openmuse_lsl_args(pilot5_parser)
     _add_muse_sdk_args(pilot5_parser)
@@ -2111,6 +2114,7 @@ async def _replay_cue_report(args: argparse.Namespace):
         arousal_guard_config=ArousalGuardConfig(
             enabled=not args.disable_arousal_guard,
             optics_capable=optics_capable,
+            **_guard_hr_rule_config(args),
         ),
     )
 
@@ -2628,7 +2632,10 @@ async def _run_live_cueing_pilot(
             max_puzzle_cues_per_block=args.max_puzzle_cues_per_block,
             enable_tlr_block=enable_tlr_block,
         ),
-        arousal_guard_config=ArousalGuardConfig(optics_capable=optics_capable),
+        arousal_guard_config=ArousalGuardConfig(
+            optics_capable=optics_capable,
+            **_guard_hr_rule_config(args),
+        ),
         pilot_id=pilot_id,
         summary_filename=summary_filename,
         require_tlr_block=require_tlr_block,
@@ -3129,6 +3136,40 @@ def _build_source(args: argparse.Namespace, duration_seconds: int):
         duration_seconds=duration_seconds,
         verbose=not getattr(args, "quiet", False),
     )
+
+
+def _add_guard_hr_rule_args(parser: argparse.ArgumentParser) -> None:
+    """The arousal guard's quality gates for its HR rules; 0 gates nothing (docs/safety.md)."""
+    parser.add_argument(
+        "--guard-min-ppg-confidence",
+        type=_unit_fraction,
+        default=0.0,
+        help="Skip the guard's HR rules on epochs whose ppg_confidence is below this (default 0: never).",
+    )
+    parser.add_argument(
+        "--guard-min-hr-series-quality",
+        type=_unit_fraction,
+        default=0.0,
+        help="Skip the guard's HR rules on epochs whose heart-rate series has a median quality "
+        "below this (default 0: never).",
+    )
+
+
+def _guard_hr_rule_config(args: argparse.Namespace) -> Dict[str, float]:
+    return {
+        "min_ppg_confidence_for_hr_rule": args.guard_min_ppg_confidence,
+        "min_hr_series_quality_for_hr_rule": args.guard_min_hr_series_quality,
+    }
+
+
+def _unit_fraction(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+    if not 0.0 <= value <= 1.0:
+        raise argparse.ArgumentTypeError(f"{text} is not between 0 and 1")
+    return value
 
 
 def _add_brainflow_args(parser: argparse.ArgumentParser) -> None:

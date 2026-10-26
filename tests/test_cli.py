@@ -856,7 +856,7 @@ class TestPilot3OpticsWiring(unittest.IsolatedAsyncioTestCase):
     because the missing-PPG reason code pins confidence at the 0.55 cap.
     """
 
-    async def _capture_gate_config(self, preset):
+    async def _capture_gate_config(self, preset, *extra_args):
         captured = {}
 
         async def fake_simulate(*args, gate_config, arousal_guard_config, **kwargs):
@@ -877,6 +877,7 @@ class TestPilot3OpticsWiring(unittest.IsolatedAsyncioTestCase):
             "--cue-library", "cues.json",
             "--output", "out.json",
             "--preset", preset,
+            *extra_args,
         ])
         with patch("muse_tmr.validation.simulate_replay_cue_plan", new=fake_simulate), \
                 patch("muse_tmr.audio.load_cue_library", return_value=MagicMock()), \
@@ -904,6 +905,17 @@ class TestPilot3OpticsWiring(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             (gate_config.enter_threshold, gate_config.exit_threshold), (0.80, 0.70)
         )
+
+    async def test_hr_rule_gates_reach_the_guard(self):
+        await self._capture_gate_config("p1034")
+        self.assertEqual(self.guard_config.min_ppg_confidence_for_hr_rule, 0.0)
+        self.assertEqual(self.guard_config.min_hr_series_quality_for_hr_rule, 0.0)
+        await self._capture_gate_config(
+            "p1034", "--guard-min-ppg-confidence", "0.6", "--guard-min-hr-series-quality", "0.8"
+        )
+        self.assertEqual(self.guard_config.min_ppg_confidence_for_hr_rule, 0.6)
+        self.assertEqual(self.guard_config.min_hr_series_quality_for_hr_rule, 0.8)
+        self.assertTrue(self.guard_config.optics_capable)
 
 
 class TestPilot4OpticsWiring(unittest.IsolatedAsyncioTestCase):
@@ -959,6 +971,33 @@ class TestPilot4OpticsWiring(unittest.IsolatedAsyncioTestCase):
         config = await self._capture_config("p1034", "--backend", "system", "--allow-dry-run")
         self.assertEqual(config.audio_backend_name, "system")
         self.assertTrue(config.allow_dry_run_fallback)
+
+    async def test_hr_rule_gates_reach_the_night_guard(self):
+        guard = (await self._capture_config("p1034")).arousal_guard_config
+        self.assertEqual(
+            (guard.min_ppg_confidence_for_hr_rule, guard.min_hr_series_quality_for_hr_rule), (0.0, 0.0)
+        )
+        config = await self._capture_config(
+            "p1034", "--guard-min-ppg-confidence", "0.4", "--guard-min-hr-series-quality", "0.7"
+        )
+        guard = config.arousal_guard_config
+        self.assertEqual(
+            (guard.min_ppg_confidence_for_hr_rule, guard.min_hr_series_quality_for_hr_rule), (0.4, 0.7)
+        )
+
+    def test_pilot5_takes_the_hr_rule_gates_and_refuses_values_outside_0_1(self):
+        required = [
+            "run-pilot5-full-night", "--output-dir", "out", "--catalog", "c.json", "--session", "s.json",
+            "--assignment", "a.json", "--cue-library", "l.json", "--tlr-block", "t.json",
+            "--calibration", "v.json",
+        ]
+        args = build_parser().parse_args(required + ["--guard-min-ppg-confidence", "0.5"])
+        self.assertEqual(args.guard_min_ppg_confidence, 0.5)
+        self.assertEqual(args.guard_min_hr_series_quality, 0.0)
+        for value in ("1.5", "-0.1", "high"):
+            with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    build_parser().parse_args(required + ["--guard-min-ppg-confidence", value])
 
 
 class TestAudioPreflightCli(unittest.TestCase):

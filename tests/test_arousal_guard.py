@@ -391,7 +391,11 @@ class TestSuddenHeartRateRule(unittest.TestCase):
         self.assertEqual(clean.action, "allow")
         self.assertEqual(clean.metadata, {})
         self.assertEqual(blind.action, "allow")
-        self.assertEqual(blind.metadata, {"hr_series_used_count": 0, "hr_series_skipped_count": 21})
+        # Every value skipped: more than hr_rule_blind_skipped_share, so also hr_rule_blind.
+        self.assertEqual(
+            blind.metadata,
+            {"hr_series_used_count": 0, "hr_series_skipped_count": 21, "hr_rule_blind": True},
+        )
 
     def test_the_margin_counts_a_change_just_under_the_bpm(self):
         self.assertEqual(ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=_ppg_with_changes(9.5)).action, "pause")
@@ -430,6 +434,138 @@ class TestSuddenHeartRateRule(unittest.TestCase):
         for margin in (-1.0, 10.0):
             with self.subTest(margin=margin), self.assertRaises(ValueError):
                 ArousalGuardConfig(sudden_hr_change_margin_bpm=margin).validate()
+
+
+class TestHrRuleQualityGates(unittest.TestCase):
+    """Quality gates for the HR rules and the hr_rule_blind flag (#234)."""
+
+    def test_a_jump_under_the_confidence_threshold_does_not_pause(self):
+        jump = replace(_ppg_with_changes(15.0), ppg_confidence=0.2, ppg_signal_quality="Poor")
+        self.assertEqual(ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=jump).action, "pause")
+
+        gated = ArousalGuard(ArousalGuardConfig(min_ppg_confidence_for_hr_rule=0.6))
+        decision = gated.evaluate(timestamp_seconds=0.0, ppg=jump)
+
+        self.assertEqual(decision.action, "allow")
+        self.assertNotIn("sudden_heart_rate_change", decision.reason_codes)
+        self.assertEqual(
+            decision.metadata,
+            {
+                "hr_rule_skipped_by": ["min_ppg_confidence_for_hr_rule"],
+                "ppg_confidence": 0.2,
+                "ppg_signal_quality": "Poor",
+            },
+        )
+        above = replace(jump, ppg_confidence=0.7, ppg_signal_quality="Good")
+        self.assertEqual(gated.evaluate(timestamp_seconds=30.0, ppg=above).action, "pause")
+
+    def test_the_quality_list_gates_both_hr_rules(self):
+        gated = ArousalGuard(ArousalGuardConfig(ppg_quality_for_hr_rule=("Excellent", "Good")))
+        fair_jump = replace(_ppg_with_changes(15.0), ppg_signal_quality="Fair")
+        fair_out_of_range = replace(
+            _ppg(artifact_flags=("heart_rate_out_of_range",)), ppg_signal_quality="Fair"
+        )
+
+        jump = gated.evaluate(timestamp_seconds=0.0, ppg=fair_jump)
+        out_of_range = gated.evaluate(timestamp_seconds=30.0, ppg=fair_out_of_range)
+
+        self.assertEqual(jump.action, "allow")
+        self.assertEqual(jump.metadata["hr_rule_skipped_by"], ["ppg_quality_for_hr_rule"])
+        # The artifact flag still lowers the volume; only the HR pause is gone.
+        self.assertEqual(out_of_range.action, "lower_volume")
+        self.assertNotIn("heart_rate_out_of_range", out_of_range.reason_codes)
+        self.assertIn("ppg_artifact_flags", out_of_range.reason_codes)
+        self.assertEqual(out_of_range.metadata["ppg_signal_quality"], "Fair")
+        good = replace(fair_jump, ppg_signal_quality="Good")
+        self.assertEqual(gated.evaluate(timestamp_seconds=60.0, ppg=good).action, "pause")
+
+    def test_the_series_quality_gates_the_hr_rule(self):
+        step = _ppg_with_step_series(start=0.0, step_time=12.0, before_bpm=60.0, after_bpm=75.0)
+        points = tuple(replace(point, quality=0.6) for point in step.hr_series)
+        mediocre = replace(step, hr_series=points)
+
+        self.assertEqual(ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=mediocre).action, "pause")
+        gated = ArousalGuard(ArousalGuardConfig(min_hr_series_quality_for_hr_rule=0.8))
+        decision = gated.evaluate(timestamp_seconds=0.0, ppg=mediocre)
+        self.assertEqual(decision.action, "allow")
+        self.assertEqual(decision.metadata["hr_rule_skipped_by"], ["min_hr_series_quality_for_hr_rule"])
+        self.assertAlmostEqual(decision.metadata["hr_series_median_quality"], 0.6)
+        no_series = replace(_ppg_with_changes(15.0), hr_series=())
+        self.assertEqual(gated.evaluate(timestamp_seconds=30.0, ppg=no_series).action, "allow")
+
+    def test_a_gated_row_does_not_feed_the_next_comparison(self):
+        # The 15 bpm step at the boundary pauses the second row unless the first is gated.
+        before = replace(_ppg_with_series(60.0, start=0.0), ppg_confidence=0.3)
+        after = _ppg_with_series(75.0, start=30.0)
+        ungated = ArousalGuard(ArousalGuardConfig(min_ppg_confidence_for_hr_rule=0.2))
+        gated = ArousalGuard(ArousalGuardConfig(min_ppg_confidence_for_hr_rule=0.6))
+
+        ungated.evaluate(timestamp_seconds=0.0, ppg=before)
+        self.assertEqual(ungated.evaluate(timestamp_seconds=30.0, ppg=after).action, "pause")
+        self.assertEqual(gated.evaluate(timestamp_seconds=0.0, ppg=before).action, "allow")
+        self.assertEqual(gated.evaluate(timestamp_seconds=30.0, ppg=after).action, "allow")
+
+    def test_defaults_gate_nothing(self):
+        config = ArousalGuardConfig()
+        self.assertEqual(config.min_ppg_confidence_for_hr_rule, 0.0)
+        self.assertEqual(config.ppg_quality_for_hr_rule, ())
+        self.assertEqual(config.min_hr_series_quality_for_hr_rule, 0.0)
+        self.assertEqual(config.hr_rule_blind_action, "allow")
+        missing = replace(_ppg_with_changes(15.0), ppg_confidence=0.0, ppg_signal_quality="Missing")
+        decision = ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=missing)
+        self.assertEqual(decision.action, "pause")
+        self.assertNotIn("hr_rule_skipped_by", decision.metadata)
+        self.assertEqual(decision.metadata["ppg_confidence"], 0.0)
+        self.assertEqual(decision.metadata["ppg_signal_quality"], "Missing")
+
+    def test_a_blind_epoch_is_logged_and_acted_on_only_when_asked(self):
+        blind = _ppg_with_series(60.0, start=0.0, used=False)
+        half = replace(
+            blind,
+            hr_series=tuple(
+                replace(point, used=True, bpm=60.0, peak_bpm=60.0, quality=0.9) if index % 2 else point
+                for index, point in enumerate(blind.hr_series)
+            ),
+        )
+
+        logged = ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=blind)
+        self.assertEqual(logged.action, "allow")
+        self.assertEqual(logged.reason_codes, ())
+        self.assertIs(logged.metadata["hr_rule_blind"], True)
+        # 11 of 21 skipped is more than half; 10 of 21 is not.
+        self.assertIn("hr_rule_blind", ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=half).metadata)
+        fewer = replace(half, hr_series=half.hr_series[:-1])
+        self.assertNotIn("hr_rule_blind", ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=fewer).metadata)
+
+        lowered = ArousalGuard(ArousalGuardConfig(hr_rule_blind_action="lower_volume"))
+        paused = ArousalGuard(ArousalGuardConfig(hr_rule_blind_action="pause"))
+        self.assertEqual(lowered.evaluate(timestamp_seconds=0.0, ppg=blind).reason_codes, ("hr_rule_blind",))
+        self.assertEqual(lowered.evaluate(timestamp_seconds=30.0, ppg=blind).action, "lower_volume")
+        pause = paused.evaluate(timestamp_seconds=0.0, ppg=blind)
+        self.assertEqual((pause.action, pause.reason_codes), ("pause", ("hr_rule_blind",)))
+        stricter = ArousalGuard(ArousalGuardConfig(hr_rule_blind_skipped_share=1.0))
+        self.assertNotIn("hr_rule_blind", stricter.evaluate(timestamp_seconds=0.0, ppg=blind).metadata)
+
+    def test_no_blind_flag_without_optics_or_without_a_series(self):
+        eeg_only = _eeg_only_ppg()
+        self.assertNotIn("hr_rule_blind", ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=eeg_only).metadata)
+        p21 = ArousalGuard(ArousalGuardConfig(optics_capable=False))
+        blind = _ppg_with_series(60.0, start=0.0, used=False)
+        self.assertEqual(
+            p21.evaluate(timestamp_seconds=0.0, ppg=blind).metadata, {"ppg_absent_by_design": True}
+        )
+
+    def test_config_rejects_bad_gates(self):
+        for kwargs in (
+            {"min_ppg_confidence_for_hr_rule": 1.5},
+            {"min_ppg_confidence_for_hr_rule": -0.1},
+            {"ppg_quality_for_hr_rule": ("Great",)},
+            {"min_hr_series_quality_for_hr_rule": 2.0},
+            {"hr_rule_blind_skipped_share": -0.5},
+            {"hr_rule_blind_action": "stop"},
+        ):
+            with self.subTest(**{key: str(value) for key, value in kwargs.items()}), self.assertRaises(ValueError):
+                ArousalGuardConfig(**kwargs).validate()
 
 
 def _ppg_with_changes(*deltas):

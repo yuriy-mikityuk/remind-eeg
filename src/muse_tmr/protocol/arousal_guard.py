@@ -11,6 +11,7 @@ from typing import Dict, Iterable, Mapping, Optional, Tuple
 from muse_tmr.features.eeg_features import EEGFeatureRow
 from muse_tmr.features.imu_features import IMUFeatureRow
 from muse_tmr.features.ppg_features import (
+    PPG_SIGNAL_QUALITIES,
     HeartRatePoint,
     PPGFeatureRow,
     SuddenHeartRateChange,
@@ -19,6 +20,13 @@ from muse_tmr.features.ppg_features import (
 
 AROUSAL_GUARD_ACTIONS = ("allow", "lower_volume", "pause", "stop")
 REPEATED_ARTIFACT_ACTIONS = ("pause", "stop")
+
+# An optics epoch whose heart-rate series skipped more than
+# ArousalGuardConfig.hr_rule_blind_skipped_share of its values: the HR rule could not see
+# it. Logged as metadata["hr_rule_blind"]; a reason code only when hr_rule_blind_action
+# lowers the volume or pauses.
+HR_RULE_BLIND_REASON = "hr_rule_blind"
+HR_RULE_BLIND_ACTIONS = ("allow", "lower_volume", "pause")
 
 PAUSE_IMU_REASON_CODES = (
     "motion_arousal_proxy",
@@ -69,6 +77,23 @@ class ArousalGuardConfig:
     # artifacts, the HR rules are skipped and decisions carry
     # metadata["ppg_absent_by_design"]. Defaults True for optics presets.
     optics_capable: bool = True
+    # Quality gates for the two HR rules (#234). On optics presets a row whose
+    # ppg_confidence is below min_ppg_confidence_for_hr_rule, whose ppg_signal_quality is
+    # not in ppg_quality_for_hr_rule (when that is not empty), or whose heart-rate series
+    # has a median quality below min_hr_series_quality_for_hr_rule (a row without series
+    # values too) raises neither sudden_heart_rate_change nor heart_rate_out_of_range, and
+    # its series does not feed the next row's comparison across the boundary. Decisions
+    # log metadata["hr_rule_skipped_by"] and the quality fields, allow included. The
+    # defaults gate nothing; which one to set is for the agreement tables to say
+    # (docs/optics_agreement.md).
+    min_ppg_confidence_for_hr_rule: float = 0.0
+    ppg_quality_for_hr_rule: Tuple[str, ...] = ()
+    min_hr_series_quality_for_hr_rule: float = 0.0
+    # An optics row whose heart-rate series skipped more than this share of its values is
+    # hr_rule_blind, logged in metadata on every decision; hr_rule_blind_action allow
+    # leaves the decision as it is, lower_volume or pause adds the reason code.
+    hr_rule_blind_skipped_share: float = 0.5
+    hr_rule_blind_action: str = "allow"
 
     def validate(self) -> None:
         if not 0.0 < self.lower_volume_multiplier <= 1.0:
@@ -104,6 +129,22 @@ class ArousalGuardConfig:
             raise ValueError("sudden_hr_change_margin_bpm must be in [0, sudden_hr_change_pause_bpm)")
         if self.sudden_hr_change_link_seconds < 0:
             raise ValueError("sudden_hr_change_link_seconds must be non-negative")
+        if not 0.0 <= self.min_ppg_confidence_for_hr_rule <= 1.0:
+            raise ValueError("min_ppg_confidence_for_hr_rule must be between 0 and 1")
+        unknown = sorted(set(self.ppg_quality_for_hr_rule) - set(PPG_SIGNAL_QUALITIES))
+        if unknown:
+            raise ValueError(
+                f"ppg_quality_for_hr_rule holds unknown qualities {unknown}; "
+                f"use: {', '.join(PPG_SIGNAL_QUALITIES)}"
+            )
+        if not 0.0 <= self.min_hr_series_quality_for_hr_rule <= 1.0:
+            raise ValueError("min_hr_series_quality_for_hr_rule must be between 0 and 1")
+        if not 0.0 <= self.hr_rule_blind_skipped_share <= 1.0:
+            raise ValueError("hr_rule_blind_skipped_share must be between 0 and 1")
+        if self.hr_rule_blind_action not in HR_RULE_BLIND_ACTIONS:
+            raise ValueError(
+                f"hr_rule_blind_action must be one of: {', '.join(HR_RULE_BLIND_ACTIONS)}"
+            )
 
 
 @dataclass(frozen=True)
@@ -310,6 +351,13 @@ class ArousalGuard:
             # The HR rule did not see the skipped values: say so in the log of every epoch.
             allow_metadata["hr_series_used_count"] = metadata["hr_series_used_count"]
             allow_metadata["hr_series_skipped_count"] = metadata["hr_series_skipped_count"]
+        if metadata.get("hr_rule_blind"):
+            allow_metadata["hr_rule_blind"] = True
+        if metadata.get("hr_rule_skipped_by"):
+            # A quality gate turned the HR rules off for this epoch.
+            for key in _HR_RULE_GATE_METADATA:
+                if key in metadata:
+                    allow_metadata[key] = metadata[key]
         return self._record(
             ArousalGuardDecision(
                 action="allow",
@@ -419,17 +467,50 @@ class ArousalGuard:
             metadata["sudden_hr_change_source"] = ppg.sudden_hr_change_source
             metadata["hr_series_used_count"] = len(ppg.hr_series_used)
             metadata["hr_series_skipped_count"] = ppg.hr_series_skipped_count
-            steps = self._sudden_hr_steps(ppg, metadata)
-            metadata["sudden_hr_change_pause_steps"] = steps
-            if steps >= self.config.sudden_hr_change_pause_count:
-                pause_reasons.append("sudden_heart_rate_change")
-            if "heart_rate_out_of_range" in artifact_flags:
-                pause_reasons.append("heart_rate_out_of_range")
+            metadata["ppg_confidence"] = ppg.ppg_confidence
+            metadata["ppg_signal_quality"] = ppg.ppg_signal_quality
+            if ppg.hr_series:
+                metadata["hr_series_median_quality"] = ppg.hr_series_median_quality
+            skipped_by = self._hr_rule_gates(ppg)
+            if skipped_by:
+                # The rules do not trust this row's heart rate, nor its series for the
+                # next row's comparison across the boundary.
+                metadata["hr_rule_skipped_by"] = list(skipped_by)
+                self._previous_hr_points = ()
+            else:
+                steps = self._sudden_hr_steps(ppg, metadata)
+                metadata["sudden_hr_change_pause_steps"] = steps
+                if steps >= self.config.sudden_hr_change_pause_count:
+                    pause_reasons.append("sudden_heart_rate_change")
+                if "heart_rate_out_of_range" in artifact_flags:
+                    pause_reasons.append("heart_rate_out_of_range")
+            if _hr_rule_blind(ppg, self.config.hr_rule_blind_skipped_share):
+                metadata["hr_rule_blind"] = True
+                if self.config.hr_rule_blind_action == "lower_volume":
+                    lower_reasons.append(HR_RULE_BLIND_REASON)
+                elif self.config.hr_rule_blind_action == "pause":
+                    pause_reasons.append(HR_RULE_BLIND_REASON)
         if artifact_flags:
             artifact_reasons.append("ppg_artifact_flags")
             metadata["ppg_artifact_flags"] = list(artifact_flags)
         if "low_ppg_coverage" in artifact_flags or "low_heart_rate_coverage" in artifact_flags:
             lower_reasons.append("low_ppg_hr_coverage")
+
+    def _hr_rule_gates(self, ppg: PPGFeatureRow) -> Tuple[str, ...]:
+        """The config fields whose quality gate this row fails; empty when the HR rules run."""
+        config = self.config
+        failed = []
+        if config.min_ppg_confidence_for_hr_rule > 0 and not (
+            ppg.ppg_confidence >= config.min_ppg_confidence_for_hr_rule
+        ):
+            failed.append("min_ppg_confidence_for_hr_rule")
+        if config.ppg_quality_for_hr_rule and ppg.ppg_signal_quality not in config.ppg_quality_for_hr_rule:
+            failed.append("ppg_quality_for_hr_rule")
+        if config.min_hr_series_quality_for_hr_rule > 0 and not (
+            ppg.hr_series_median_quality >= config.min_hr_series_quality_for_hr_rule
+        ):
+            failed.append("min_hr_series_quality_for_hr_rule")
+        return tuple(failed)
 
     def _sudden_hr_steps(self, ppg: PPGFeatureRow, metadata: Dict[str, object]) -> int:
         """Heart-rate changes of sudden_hr_change_pause_bpm less the margin or more: the
@@ -492,6 +573,23 @@ def load_arousal_guard_decisions(input_path: Path) -> Tuple[ArousalGuardDecision
 
 def _unique(reason_codes: Iterable[str]) -> Tuple[str, ...]:
     return tuple(dict.fromkeys(code for code in reason_codes if code))
+
+
+# What an allow decision keeps from the metadata when a quality gate skipped the HR rules.
+_HR_RULE_GATE_METADATA = (
+    "hr_rule_skipped_by",
+    "ppg_confidence",
+    "ppg_signal_quality",
+    "hr_series_median_quality",
+)
+
+
+def _hr_rule_blind(ppg: PPGFeatureRow, skipped_share: float) -> bool:
+    """An optics row whose series skipped more than ``skipped_share`` of its values. A
+    row without series values is not counted: its coverage and flatline flags act."""
+    if ppg.sudden_hr_change_source != "optics" or not ppg.hr_series:
+        return False
+    return ppg.hr_series_skipped_count / len(ppg.hr_series) > skipped_share
 
 
 def _same_step(first: SuddenHeartRateChange, second: SuddenHeartRateChange) -> bool:
