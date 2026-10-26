@@ -251,7 +251,9 @@ class PolarRecorderTest(unittest.IsolatedAsyncioTestCase):
     async def test_disconnect_mid_session_reconnects_and_files_are_complete(self):
         with tempfile.TemporaryDirectory() as tmp:
             client = MockPolarClient(frames_before_disconnect=(5, None))
-            summary = await self.recorder(tmp, 0.6).record(client)
+            # The five frames take about 50 ms, but a Windows runner once spent all of a
+            # 0.6 s recording on them and its new files, so the drop came after the end.
+            summary = await self.recorder(tmp, 2.0).record(client)
 
             self.assertEqual(summary["stop_reason"], "duration_complete")
             self.assertEqual(summary["reconnects"], 1)
