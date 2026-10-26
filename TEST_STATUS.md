@@ -1,13 +1,16 @@
 # Test Status
 
 ## Current Test Results
-- **985 tests passing**, 6 skipped, 0 failing on Ubuntu and macOS with Python 3.11, 3.12 and 3.13
-- On Windows **971 passing**, 20 skipped with Python 3.11 and 3.12, **974 passing**, 17 skipped with 3.13, 0 failing
-- **90 % line coverage** on the `muse_tmr` package (14,299 of 15,894 lines) on Ubuntu with Python 3.11
+- **1003 tests passing**, 6 skipped, 0 failing on Ubuntu and macOS with Python 3.11, 3.12 and 3.13
+- On Windows **989 passing**, 20 skipped with Python 3.11 and 3.12, **992 passing**, 17 skipped with 3.13, 0 failing
+- **82 % line coverage** on the `muse_tmr` package (15,481 of 18,964 lines) on Ubuntu with Python 3.11
 
-Measured in CI run [40281779150](https://github.com/yuriy-mikityuk/remind-eeg/actions/runs/40281779150)
-on 2026-10-26 (commit `1391b0f`). The line counts come from the `coverage.xml` artifact of
-that cell, `coverage-ubuntu-latest-py3.11`; the nine cells range from 89.8 to 90.0 %.
+Measured in CI run [40352898510](https://github.com/yuriy-mikityuk/remind-eeg/actions/runs/40352898510)
+on 2026-10-26 (commit `1ab3824`). The line counts come from the `coverage.xml` artifact of
+that cell, `coverage-ubuntu-latest-py3.11`; the nine cells range from 81.5 to 81.7 %.
+The package includes the BLE layer since #232 moved it into `muse_tmr.ble`, and that
+layer has 1,138 of its 3,029 lines covered (37.6 %); the rest of the package is at 90.0 %
+(14,343 of 15,935 lines), as before the move.
 Six tests are skipped on every cell: three require an optional pandas Parquet engine
 (`pyarrow` or `fastparquet`) for the Parquet export paths, two cross-check the complexity
 metrics against `antropy` and `neurokit2` and run only when those are installed, and one
@@ -34,8 +37,8 @@ Lower coverage worth improving:
 - `data/watchdog.py` no-data timeout / reconnect logic (78%)
 - `app/auto_update.py` (79%), `reports/source_diagnostics.py` (80%) and
   `sources/polar_h10.py` (81%)
-- Legacy root-level modules (`muse_sleep_parser`, `muse_integrated_parser`,
-  `muse_stream_client`, `muse_discovery`) if they remain on the live path
+- The BLE layer in `muse_tmr.ble` (`muse_sleep_parser`, `muse_integrated_parser`,
+  `muse_stream_client`, `muse_discovery`) if those modules remain on the live path
 
 ## Running Tests
 
