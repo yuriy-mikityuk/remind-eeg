@@ -125,6 +125,66 @@ class TestPilot4Cueing(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(event["effective_volume"] <= 0.04 for event in audio_events))
         self.assertTrue(all(event["backend_name"] == "mock" for event in audio_events))
 
+    async def test_the_night_logs_its_gate_decisions_and_scores_its_cues(self):
+        catalog, session, assignment, cue_library = protocol_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary = await run_pilot4_cueing_night(
+                FakeMuseSource(rem_frames(4)),
+                config=pilot4_config(Path(tmpdir), duration_seconds=60.0),
+                catalog=catalog,
+                session=session,
+                assignment=assignment,
+                cue_library=cue_library,
+                calibration=VolumeCalibration("Sleep Headphones", 0.01, 0.02, 0.04),
+                backend=MockAudioBackend(),
+            )
+            payload = json.loads(Path(summary.summary_path).read_text(encoding="utf-8"))
+            gate_log = [
+                json.loads(line)
+                for line in Path(summary.rem_gate_decisions_path).read_text(encoding="utf-8").splitlines()
+            ]
+            written = sorted(path.name for path in Path(tmpdir).glob("cue_arousal*"))
+
+        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["first_epoch_start"], 1000.0)
+        self.assertEqual([row["index"] for row in gate_log], [0, 1, 2, 3])
+        self.assertEqual([row["gate_open"] for row in gate_log], [False, True, True, True])
+        self.assertEqual([row["decision_seconds"] for row in gate_log], [30.0, 60.0, 90.0, 120.0])
+        block = payload["cue_arousal"]
+        self.assertEqual(block["status"], "scored")
+        self.assertEqual((block["cue_count"], block["played_cue_count"]), (2, 2))
+        # The frames of this night carry no decodable packets, so its own raw file gives
+        # the windows nothing to score; the scorer says so instead of guessing.
+        self.assertIsNone(block["arousal_proxy_per_cue"]["any"])
+        self.assertIn("eeg_gap", block["limitations"])
+        self.assertEqual(written, ["cue_arousal_events.jsonl", "cue_arousal_report.json", "cue_arousal_report.md"])
+        self.assertEqual(Path(block["report_path"]).name, "cue_arousal_report.json")
+
+    async def test_a_failing_scorer_leaves_the_summary_and_says_why(self):
+        catalog, session, assignment, cue_library = protocol_fixture()
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("scorer broke")
+
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch(
+            "muse_tmr.reports.cue_arousal.score_cue_arousal", broken
+        ):
+            summary = await run_pilot4_cueing_night(
+                FakeMuseSource(rem_frames(4)),
+                config=pilot4_config(Path(tmpdir), duration_seconds=60.0),
+                catalog=catalog,
+                session=session,
+                assignment=assignment,
+                cue_library=cue_library,
+                calibration=VolumeCalibration("Sleep Headphones", 0.01, 0.02, 0.04),
+                backend=MockAudioBackend(),
+            )
+            payload = json.loads(Path(summary.summary_path).read_text(encoding="utf-8"))
+
+        self.assertTrue(summary.passed)
+        self.assertEqual(payload["cue_arousal"], {"status": "failed", "error": "RuntimeError: scorer broke"})
+        self.assertEqual(payload["cue_play_count"], 2)
+
     async def test_summary_reports_stride_and_first_cue_times(self):
         catalog, session, assignment, cue_library = protocol_fixture()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -303,6 +363,8 @@ class TestPilot4Cueing(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(event["event_type"], "awakening")
         self.assertEqual(event["notes"], "woke briefly")
+        # Without the two fields of #227 a marker is written as before.
+        self.assertEqual(set(event), {"event_type", "timestamp_utc", "notes"})
 
     @unittest.skipIf(COARSE_CLOCK, COARSE_CLOCK_REASON)
     async def test_deadline_timeout_reports_duration_complete(self):
@@ -540,6 +602,42 @@ class TestBlindOpticsLowerTheVolume(unittest.TestCase):
             [0.5 * event["effective_volume"] for event in normal],
         )
         self.assertEqual([_volumes(event) for event in normal], [_volumes(play["metadata"]) for play in allowed])
+
+    def test_the_scorer_reads_each_cues_volume_and_guard_action(self):
+        # Pilot 5 replayed a synthetic night, so the scorer cut its windows from that
+        # night's own raw file; the dose tables read audio_playback.jsonl (#256) and the
+        # guard action from the play events.
+        for logs, action, volumes in (
+            (self.lowered, "lower_volume", [0.025, 0.025, 0.03, 0.01]),
+            (self.allowed, "allow", [0.05, 0.05, 0.06, 0.02]),
+        ):
+            with self.subTest(action=action):
+                block = logs["summary"].cue_arousal
+                report = json.loads(Path(block["report_path"]).read_text(encoding="utf-8"))
+                cues = [window for window in report["windows"] if window["kind"] == "cue"]
+                self.assertEqual(block["status"], "scored")
+                self.assertEqual(block["played_cue_count"], 4)
+                self.assertEqual([cue["cue"]["effective_volume"] for cue in cues], volumes)
+                self.assertEqual(
+                    [cue["cue"]["effective_volume"] for cue in cues],
+                    [event["effective_volume"] for event in logs["audio"] if event["status"] == "played"],
+                )
+                self.assertEqual({cue["cue"]["guard_action"] for cue in cues}, {action})
+                self.assertEqual(
+                    {cue["cue"]["guard_volume_multiplier"] for cue in cues},
+                    {0.5 if action == "lower_volume" else 1.0},
+                )
+                self.assertEqual({cue["cue"]["volume_source"] for cue in cues}, {"audio_playback.jsonl"})
+                self.assertEqual(
+                    [row["bin"] for row in report["dose_tables"]["cue_index"]],
+                    ["tlr 1", "tlr 2", "puzzle 1", "puzzle 2"],
+                )
+                self.assertEqual(sum(row["cues"] for row in report["dose_tables"]["effective_volume"]), 4)
+                for code in ("synthetic_input", "no_audio_played", "thresholds_unfitted", "small_n"):
+                    self.assertIn(code, block["limitations"])
+                self.assertIs(report["synthetic"], True)
+                # Every cue sits in a gate-open run; the guard decisions are the same in both.
+                self.assertTrue(all(cue["rem_period_index"] is not None for cue in cues))
 
     def test_allow_logs_what_it_logged_before(self):
         # The volume fields of the allow plays in audio_playback.jsonl as main wrote them
