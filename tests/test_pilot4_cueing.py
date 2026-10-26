@@ -529,6 +529,7 @@ class TestBlindOpticsLowerTheVolume(unittest.TestCase):
             ),
             root / "night",
         )
+        cls.night_dir = night.recording_dir
         cls.lowered = asyncio.run(_replayed_pilot5(night.recording_dir, root / "default"))
         cls.allowed = asyncio.run(
             _replayed_pilot5(
@@ -638,6 +639,34 @@ class TestBlindOpticsLowerTheVolume(unittest.TestCase):
                 self.assertIs(report["synthetic"], True)
                 # Every cue sits in a gate-open run; the guard decisions are the same in both.
                 self.assertTrue(all(cue["rem_period_index"] is not None for cue in cues))
+
+    def test_a_schema_1_summary_still_scores(self):
+        # A summary from before #227 has no first_epoch_start: the scorer takes the first
+        # frame, where the first epoch of a whole replay starts, and says so.
+        from muse_tmr.reports.cue_arousal import score_cue_arousal
+
+        summary_path = Path(self.lowered["summary"].summary_path)
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        old = {
+            key: value
+            for key, value in payload.items()
+            if key not in ("first_epoch_start", "rem_gate_decisions_path", "cue_arousal")
+        }
+        old["schema_version"] = 1
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_path = Path(tmpdir) / "pilot5_summary.json"
+            old_path.write_text(json.dumps(old), encoding="utf-8")
+            report = asyncio.run(
+                score_cue_arousal(summary_path.parent, summary_path=old_path, replay_input=self.night_dir)
+            )
+        logged = json.loads(Path(payload["cue_arousal"]["report_path"]).read_text(encoding="utf-8"))
+        self.assertIn("time_base_inferred", report.limitation_codes)
+        self.assertEqual(logged["metadata"]["time_base"], "logged")
+        self.assertEqual(report.metadata["time_base"], "inferred_from_first_frame")
+        self.assertEqual(
+            [round(window.time, 3) for window in report.windows],
+            [round(window["time"], 3) for window in logged["windows"]],
+        )
 
     def test_allow_logs_what_it_logged_before(self):
         # The volume fields of the allow plays in audio_playback.jsonl as main wrote them
