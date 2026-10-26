@@ -1,13 +1,21 @@
 import math
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from muse_tmr.data.sample_types import EEGSample, MuseFrame
 from muse_tmr.features import EpochBuilder, EpochConfig
 from muse_tmr.features.eeg_features import EEGFeatureRow
 from muse_tmr.features.imu_features import IMUFeatureRow
-from muse_tmr.features.ppg_features import PPGFeatureRow, extract_ppg_features
+from muse_tmr.features.ppg_features import (
+    HeartRatePoint,
+    PPGFeatureConfig,
+    PPGFeatureRow,
+    SuddenHeartRateChange,
+    _series_hr_changes,
+    extract_ppg_features,
+)
 from muse_tmr.protocol import (
     ArousalGuard,
     ArousalGuardConfig,
@@ -304,6 +312,188 @@ class TestArousalGuard(unittest.TestCase):
         self.assertNotEqual(out_of_range.action, "pause")
         self.assertNotIn("heart_rate_out_of_range", out_of_range.reason_codes)
         self.assertNotIn("sudden_heart_rate_change", out_of_range.reason_codes)
+
+
+class TestSuddenHeartRateRule(unittest.TestCase):
+    """The HR rule over the heart-rate series of the PPG rows (#247)."""
+
+    def test_pause_counts_only_changes_at_or_above_its_bpm(self):
+        self.assertEqual(ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=_ppg_with_changes(15.0)).action, "pause")
+
+        raised = ArousalGuard(ArousalGuardConfig(sudden_hr_change_pause_bpm=20.0))
+        below = raised.evaluate(timestamp_seconds=0.0, ppg=_ppg_with_changes(15.0))
+        above = raised.evaluate(timestamp_seconds=30.0, ppg=_ppg_with_changes(15.0, -25.0))
+        self.assertEqual(below.action, "allow")
+        self.assertEqual(above.action, "pause")
+        self.assertIn("sudden_heart_rate_change", above.reason_codes)
+        self.assertEqual(above.metadata["sudden_hr_change_pause_steps"], 1)
+
+        twice = ArousalGuard(ArousalGuardConfig(sudden_hr_change_pause_count=2))
+        once = twice.evaluate(timestamp_seconds=0.0, ppg=_ppg_with_changes(15.0))
+        two = twice.evaluate(timestamp_seconds=30.0, ppg=_ppg_with_changes(15.0, -12.0))
+        self.assertEqual(once.action, "allow")
+        self.assertEqual(two.action, "pause")
+
+    def test_a_step_at_the_epoch_boundary_pauses_the_next_epoch(self):
+        before = _ppg_with_series(60.0, start=0.0)
+        after = _ppg_with_series(75.0, start=30.0)
+        guard = ArousalGuard()
+
+        first = guard.evaluate(timestamp_seconds=0.0, ppg=before)
+        second = guard.evaluate(timestamp_seconds=30.0, ppg=after)
+
+        self.assertEqual(first.action, "allow")
+        self.assertEqual(second.action, "pause")
+        self.assertIn("sudden_heart_rate_change", second.reason_codes)
+        self.assertAlmostEqual(second.metadata["sudden_hr_change_across_epochs_bpm"], 15.0)
+        self.assertEqual(second.metadata["sudden_hr_change_pause_steps"], 1)
+        self.assertEqual(second.metadata["sudden_hr_change_source"], "optics")
+        self.assertEqual(second.metadata["hr_series_used_count"], 21)
+
+        # On its own the second row holds no change; nor after a reset, without the
+        # link, or more than sudden_hr_change_link_seconds after the first.
+        self.assertEqual(ArousalGuard().evaluate(timestamp_seconds=30.0, ppg=after).action, "allow")
+        reset = ArousalGuard()
+        reset.evaluate(timestamp_seconds=0.0, ppg=before)
+        reset.reset()
+        self.assertEqual(reset.evaluate(timestamp_seconds=30.0, ppg=after).action, "allow")
+        unlinked = ArousalGuard(ArousalGuardConfig(sudden_hr_change_link_seconds=0.0))
+        unlinked.evaluate(timestamp_seconds=0.0, ppg=before)
+        self.assertEqual(unlinked.evaluate(timestamp_seconds=30.0, ppg=after).action, "allow")
+        later = ArousalGuard()
+        later.evaluate(timestamp_seconds=0.0, ppg=before)
+        self.assertEqual(
+            later.evaluate(timestamp_seconds=60.0, ppg=_ppg_with_series(75.0, start=60.0)).action,
+            "allow",
+        )
+
+    def test_skipped_hr_values_are_logged_and_never_compared(self):
+        guard = ArousalGuard()
+        skipped = guard.evaluate(
+            timestamp_seconds=0.0,
+            eeg=_eeg(alpha=0.50),
+            ppg=_ppg_with_series(60.0, start=0.0, used=False),
+        )
+        after = guard.evaluate(timestamp_seconds=30.0, ppg=_ppg_with_series(75.0, start=30.0))
+
+        self.assertEqual(skipped.action, "pause")
+        self.assertNotIn("sudden_heart_rate_change", skipped.reason_codes)
+        self.assertEqual(skipped.metadata["hr_series_used_count"], 0)
+        self.assertEqual(skipped.metadata["hr_series_skipped_count"], 21)
+        self.assertEqual(after.action, "allow")
+
+    def test_allow_decisions_log_skipped_hr_values(self):
+        clean = ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=_ppg_with_series(60.0, start=0.0))
+        blind = ArousalGuard().evaluate(
+            timestamp_seconds=0.0, ppg=_ppg_with_series(60.0, start=0.0, used=False)
+        )
+
+        self.assertEqual(clean.action, "allow")
+        self.assertEqual(clean.metadata, {})
+        self.assertEqual(blind.action, "allow")
+        self.assertEqual(blind.metadata, {"hr_series_used_count": 0, "hr_series_skipped_count": 21})
+
+    def test_the_margin_counts_a_change_just_under_the_bpm(self):
+        self.assertEqual(ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=_ppg_with_changes(9.5)).action, "pause")
+        self.assertEqual(ArousalGuard().evaluate(timestamp_seconds=0.0, ppg=_ppg_with_changes(8.5)).action, "allow")
+        exact = ArousalGuard(ArousalGuardConfig(sudden_hr_change_margin_bpm=0.0))
+        self.assertEqual(exact.evaluate(timestamp_seconds=0.0, ppg=_ppg_with_changes(9.5)).action, "allow")
+
+        across = ArousalGuard()
+        across.evaluate(timestamp_seconds=0.0, ppg=_ppg_with_series(60.0, start=0.0))
+        second = across.evaluate(timestamp_seconds=30.0, ppg=_ppg_with_series(69.5, start=30.0))
+        self.assertEqual(second.action, "pause")
+        self.assertAlmostEqual(second.metadata["sudden_hr_change_across_epochs_bpm"], 9.5)
+
+    def test_one_step_seen_from_both_sides_of_a_boundary_counts_once(self):
+        # A 15 bpm step 8 s into the second epoch shows in that row's own comparison and in
+        # the one from the first epoch's values: one step, not two.
+        before = _ppg_with_series(60.0, start=0.0)
+        after = _ppg_with_step_series(start=30.0, step_time=38.0, before_bpm=60.0, after_bpm=75.0)
+
+        once = ArousalGuard()
+        once.evaluate(timestamp_seconds=0.0, ppg=before)
+        single = once.evaluate(timestamp_seconds=30.0, ppg=after)
+        twice = ArousalGuard(ArousalGuardConfig(sudden_hr_change_pause_count=2))
+        twice.evaluate(timestamp_seconds=0.0, ppg=before)
+
+        self.assertEqual(single.action, "pause")
+        self.assertAlmostEqual(single.metadata["sudden_hr_change_across_epochs_bpm"], 15.0)
+        self.assertEqual(single.metadata["sudden_hr_change_pause_steps"], 1)
+        self.assertEqual(twice.evaluate(timestamp_seconds=30.0, ppg=after).action, "allow")
+
+    def test_config_rejects_a_negative_link(self):
+        with self.assertRaises(ValueError):
+            ArousalGuardConfig(sudden_hr_change_link_seconds=-1.0).validate()
+
+    def test_config_rejects_a_margin_outside_the_bpm(self):
+        for margin in (-1.0, 10.0):
+            with self.subTest(margin=margin), self.assertRaises(ValueError):
+                ArousalGuardConfig(sudden_hr_change_margin_bpm=margin).validate()
+
+
+def _ppg_with_changes(*deltas):
+    changes = tuple(
+        SuddenHeartRateChange(
+            start_time=10.0 + index,
+            end_time=20.0 + index,
+            before_bpm=60.0,
+            after_bpm=60.0 + delta,
+            delta_bpm=delta,
+        )
+        for index, delta in enumerate(deltas)
+    )
+    return replace(
+        _ppg(len(changes), max(abs(delta) for delta in deltas)),
+        sudden_hr_changes=changes,
+        sudden_hr_change_source="optics",
+    )
+
+
+def _ppg_with_series(bpm, *, start, used=True):
+    points = tuple(
+        HeartRatePoint(
+            time=start + 5.0 + second,
+            bpm=bpm if used else math.nan,
+            peak_bpm=bpm if used else math.nan,
+            quality=0.95 if used else 0.0,
+            used=used,
+        )
+        for second in range(21)
+    )
+    return replace(
+        _ppg(),
+        start_time=start,
+        end_time=start + 30.0,
+        sudden_hr_change_source="optics",
+        hr_series_channel="LO_NIR",
+        hr_series=points,
+    )
+
+
+def _ppg_with_step_series(*, start, step_time, before_bpm, after_bpm):
+    """A row whose series steps from before_bpm to after_bpm at step_time, with the
+    changes extract_ppg_features would log for it."""
+    points = tuple(
+        HeartRatePoint(
+            time=start + 5.0 + second,
+            bpm=before_bpm if start + 5.0 + second < step_time else after_bpm,
+            peak_bpm=before_bpm if start + 5.0 + second < step_time else after_bpm,
+            quality=0.95,
+            used=True,
+        )
+        for second in range(21)
+    )
+    changes = _series_hr_changes(points, PPGFeatureConfig())
+    return replace(
+        _ppg(len(changes), max((abs(change.delta_bpm) for change in changes), default=math.nan)),
+        start_time=start,
+        end_time=start + 30.0,
+        sudden_hr_changes=changes,
+        sudden_hr_change_source="optics",
+        hr_series_channel="LO_NIR",
+        hr_series=points,
+    )
 
 
 def _eeg_only_ppg():

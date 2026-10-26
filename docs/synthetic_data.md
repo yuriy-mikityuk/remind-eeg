@@ -92,7 +92,9 @@ in `src/muse_tmr/testing/synthetic.py`, with a row in [`numbers.md`](numbers.md#
   between 0.1 and 0.5 Hz, by default with 0.85 of the RMS of the pulse's 0.7 to 3 Hz band
   (`optics_wander_ratio`); white sensor noise sits on top, and a movement adds a burst
   many times the pulse. `heartbeat_onsets()` gives the scripted beat times, which the
-  recording does not hold.
+  recording does not hold. `heart_rate_steps` adds sharp steps to the scripted heart
+  rate, each (onset s, seconds, bpm), with no ramp and no movement; the default has none,
+  and tests use it to check the arousal guard's heart-rate rule (#247).
 - Battery: falling at the preset's measured drain until it is empty; the stream ends there.
 - BLE: notifications of at most 244 bytes, each carrying the subpackets made since the one
   before, one, two or three ACCGYRO subpackets read out together, subpackets lost and
@@ -140,10 +142,13 @@ still epoch; on synthetic `no_rem_nap` nights the same measurement reads 0.49 at
 `optics_wander_ratio` 0.5, 0.83 at 0.85 and 0.98 at 1.0. The recordings hold most of
 that band's power between 0.10 and 0.133 Hz (81 and 91 % of it, medians), where the
 synthetic wander, flat from 0.1 to 0.5 Hz, holds 7 %, so at the same RMS a synthetic night
-has about six times the recordings' wander between 0.3 and 0.5 Hz. The guard's heart-rate
-rule fires more often as the wander grows against the pulse: on the 120 epochs of
-`no_rem_nap` on none at `optics_wander_ratio` 0.5, on 7 at 0.85, on 20 at 1.0 and on 116
-at 2.0.
+has about six times the recordings' wander between 0.3 and 0.5 Hz. Before #247 the
+guard's heart-rate rule, which compared the decoder's heart rates, fired more often as
+the wander grew against the pulse: on the 120 epochs of `no_rem_nap` on none at
+`optics_wander_ratio` 0.5, on 7 at 0.85, on 20 at 1.0 and on 116 at 2.0. On the
+band-passed series it fires on the same 2 at all four, the two epochs where the scripted
+heart rate changes by 10 bpm or more, while the values it skips grow from 2 to 331 of
+2,509.
 
 The stage signals are textbook shapes, set by hand: an assumption, not a measurement.
 The eye-movement deflections share their shape with the fixture of
@@ -209,16 +214,20 @@ renews the baseline in the same commit: run the command without `--baseline` and
 ## Current limitations
 
 - On the four `p1034` scenarios, at the default wander, the arousal guard pauses for
-  `sudden_heart_rate_change` on 7 of 120 epochs of `no_rem_nap`, 27 of 298 of
-  `battery_death_2h29`, 22 of 240 of `optics_line` and 0 of 20 of `short_allow_short`;
-  14 of those 56 have a movement in them or in the 5 s before, the other 42 do not.
-  Until #248 the pulse had a flat top with narrow dips, the decoder's beat detection
-  wandered on it, and every epoch of all four paused. What is left is the rule itself
-  ([#247](https://github.com/yuriy-mikityuk/remind-eeg/issues/247)): it compares heart
-  rates the decoder gives 36 to 77 ms apart, so one beat its 5 s window misses or adds,
-  under a movement or under the wander, pauses the epoch. Both cued puzzles of
-  `no_rem_nap` and of `optics_line` play on N1 epochs at sleep onset, as on
-  `clean_night`, and the gate never opens on the other two. The scripted heart rate
+  `sudden_heart_rate_change` on 2 of 120 epochs of `no_rem_nap`, 10 of 298 of
+  `battery_death_2h29`, 12 of 240 of `optics_line` and 0 of 20 of `short_allow_short`.
+  18 of those 24 come where the scripted heart rate itself changes by 10 bpm or more and
+  23 where it changes by 9 or more, in the response to an arousal: the largest difference
+  of 10 s means of the scripted rate, the later window centred 5 to 25 s into the epoch and
+  the earlier 10 to 20 s before it, as the rule pairs its values. The rule catches 18 of
+  the 20 epochs with a change of 10 bpm or more. Before
+  [#247](https://github.com/yuriy-mikityuk/remind-eeg/issues/247) the rule compared heart
+  rates the decoder gives 36 to 77 ms apart, so one beat its 5 s window missed or added,
+  under a movement or under the wander, paused the epoch: 7, 27, 22 and 0 epochs, 10 of
+  the 56 on a scripted change. Until #248 the pulse had a flat top with narrow dips and every
+  epoch of all four paused. Both cued puzzles of `no_rem_nap` and of `optics_line` play
+  on N1 epochs at sleep onset, as on `clean_night`, before and after #247, and the gate
+  never opens on the other two. The scripted heart rate
   barely varies, so the detector's PPG heart-rate-variability score is low in every
   stage; with the old pulse the decoder's jumps had scored as high variability and put
   the median P_REM of every stage 0.07 to 0.12 higher.

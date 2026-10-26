@@ -245,7 +245,7 @@ rows = extract_ppg_feature_rows(epochs)
 export_ppg_feature_rows(rows, Path("data/reports/ppg_features.csv"))
 ```
 
-PPG rows include PPG-derived heart-rate estimates when raw optics are available, mean/min/max HR from `HeartRateSample`, HR trend, HRV proxy metrics, sudden HR-change logs, and missing-modality flags. CSV export is always available; Parquet export uses the installed pandas Parquet engine when available.
+PPG rows include PPG-derived heart-rate estimates when raw optics are available, mean/min/max HR from `HeartRateSample`, HR trend, HRV proxy metrics, the sudden HR-change logs the arousal guard reads with the heart-rate series they come from (`hr_series_json`, one value a second from the epoch's optics; see `docs/data_model.md`), and missing-modality flags. CSV export is always available; Parquet export uses the installed pandas Parquet engine when available.
 
 ## Heuristic REM baseline
 

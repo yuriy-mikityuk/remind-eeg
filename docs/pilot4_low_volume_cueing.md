@@ -88,6 +88,16 @@ nor leads to a `repeated_artifact_quality` pause, the HR rules are skipped, and
 `arousal_guard_events.jsonl` records `ppg_absent_by_design` on each decision. Motion,
 alpha and EEG artifact rules still apply. Pilot 5 uses the same wiring.
 
+On `p1034` the HR rule (`sudden_heart_rate_change`) compares heart rates from each
+epoch's optics, one value a second from 10 s windows, 10 to 20 s apart, and the last
+values of the previous epoch with the first of this one (#247). Each decision in
+`arousal_guard_events.jsonl`, an `allow` too once a value was skipped, says how many
+values were used and how many were too noisy to use (`hr_series_used_count`,
+`hr_series_skipped_count`). Skipped values never pause for heart rate. Under a movement
+the motion rules still pause, but on a still stretch with poor optical contact no PPG
+rule acts: no artifact flag covers noisy optics, so only the skipped count shows that
+the HR rule was blind there.
+
 ## Emergency Stop
 
 The summary prints an `emergency_stop` path. Creating that file blocks future playback
