@@ -252,6 +252,11 @@ class TestPilot3ReplaySimulation(unittest.TestCase):
         self.assertFalse(saved["audio_playback_executed"])
         self.assertGreaterEqual(len(saved["scheduler_events"]), 2)
         self.assertGreaterEqual(len(event_lines), 2)
+        # The time base of every timestamp_seconds, and no injected cue without the flag (#227).
+        self.assertEqual(saved["metrics"]["first_epoch_start"], 1000.0)
+        self.assertEqual(saved["injected_cues"], [])
+        self.assertEqual(saved["metrics"]["injected_cue_count"], 0)
+        self.assertIsNone(saved["metrics"]["inject_cues_every_seconds"])
 
     def test_one_rem_event_tracker_for_the_whole_replay(self):
         catalog, session, assignment, cue_library = protocol_fixture()

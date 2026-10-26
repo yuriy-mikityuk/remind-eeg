@@ -571,11 +571,13 @@ async def _score_own_night(
 ) -> Dict[str, object]:
     """Score the night's cue-locked arousal proxies and return the summary block.
 
-    The scorer reads only files this night already wrote. When it fails, the summary
-    keeps the night and records why there are no figures.
+    The scorer reads the logs this night wrote and replays its recording, or the
+    recording a replayed source came from. When it fails, the summary keeps the night
+    and records why there are no figures.
     """
     try:
-        # Here, not at the top: the scorer imports this package's gate log.
+        # Imported here: the scorer imports muse_tmr.validation, whose __init__ imports
+        # this module.
         from muse_tmr.reports.cue_arousal import score_cue_arousal
 
         report = await score_cue_arousal(

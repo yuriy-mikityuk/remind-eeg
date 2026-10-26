@@ -532,6 +532,61 @@ class TestCli(unittest.TestCase):
         self.assertEqual(args.notes, "woke briefly after tone")
         self.assertEqual(args.timestamp_utc, "2026-05-13T22:00:00+00:00")
 
+    def test_pilot4_awakening_log_takes_its_time_and_attribution(self):
+        args = build_parser().parse_args([
+            "log-pilot4-awakening",
+            "awakening_events.jsonl",
+            "--timestamp-seconds",
+            "1250.5",
+            "--attributed-to-cue",
+            "unsure",
+        ])
+        self.assertEqual((args.timestamp_seconds, args.attributed_to_cue), (1250.5, "unsure"))
+        args = build_parser().parse_args(["log-pilot4-awakening", "awakening_events.jsonl"])
+        self.assertEqual((args.timestamp_seconds, args.attributed_to_cue), (None, None))
+        for flags in (["--timestamp-seconds", "-1"], ["--attributed-to-cue", "maybe"]):
+            with self.subTest(flags=flags), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    build_parser().parse_args(["log-pilot4-awakening", "awakening_events.jsonl", *flags])
+
+    def test_score_cue_arousal_command_parses_its_inputs(self):
+        args = build_parser().parse_args(["score-cue-arousal", "data/recordings/pilot4-night"])
+        self.assertEqual(args.command, "score-cue-arousal")
+        self.assertEqual(args.recording_dir, Path("data/recordings/pilot4-night"))
+        for name in (
+            "pilot3_report", "summary", "scheduler_events", "audio_log", "gate_log",
+            "awakening_events", "replay_input", "preset", "output_dir",
+        ):
+            self.assertIsNone(getattr(args, name), name)
+        args = build_parser().parse_args([
+            "score-cue-arousal", "data/recordings/night-001",
+            "--pilot3-report", "data/reports/pilot3.json",
+            "--summary", "s.json",
+            "--scheduler-events", "e.jsonl",
+            "--audio-log", "a.jsonl",
+            "--gate-log", "g.jsonl",
+            "--awakening-events", "w.jsonl",
+            "--replay-input", "raw_amused.bin",
+            "--preset", "p21",
+            "--output-dir", "out",
+        ])
+        self.assertEqual(args.pilot3_report, Path("data/reports/pilot3.json"))
+        self.assertEqual((args.gate_log, args.audio_log), (Path("g.jsonl"), Path("a.jsonl")))
+        self.assertEqual((args.preset, args.output_dir), ("p21", Path("out")))
+
+    def test_simulate_replay_cues_takes_a_positive_injection_interval(self):
+        required = [
+            "simulate-replay-cues", "night", "--catalog", "c.json", "--session", "s.json",
+            "--assignment", "a.json", "--cue-library", "l.json", "--output", "o.json",
+        ]
+        self.assertIsNone(build_parser().parse_args(required).inject_cues_every_seconds)
+        args = build_parser().parse_args(required + ["--inject-cues-every-seconds", "180"])
+        self.assertEqual(args.inject_cues_every_seconds, 180.0)
+        for value in ("0", "-30", "soon"):
+            with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    build_parser().parse_args(required + ["--inject-cues-every-seconds", value])
+
     def test_tlr_protocol_commands_parse_paths(self):
         create_args = build_parser().parse_args([
             "create-tlr-cue",

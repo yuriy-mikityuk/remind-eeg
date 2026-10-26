@@ -3368,7 +3368,7 @@ def _non_negative_float(text: str) -> float:
     except ValueError:
         raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
     if not (math.isfinite(value) and value >= 0):
-        raise argparse.ArgumentTypeError(f"{text} is negative")
+        raise argparse.ArgumentTypeError(f"{text} is not a number of zero or more")
     return value
 
 
