@@ -1,12 +1,12 @@
 # Test Status
 
 ## Current Test Results
-- **1003 tests passing**, 6 skipped, 0 failing on Ubuntu and macOS with Python 3.11, 3.12 and 3.13
-- On Windows **989 passing**, 20 skipped with Python 3.11 and 3.12, **992 passing**, 17 skipped with 3.13, 0 failing
+- **1004 tests passing**, 6 skipped, 0 failing on Ubuntu and macOS with Python 3.11, 3.12 and 3.13
+- On Windows **990 passing**, 20 skipped with Python 3.11 and 3.12, **993 passing**, 17 skipped with 3.13, 0 failing
 - **82 % line coverage** on the `muse_tmr` package (15,481 of 18,964 lines) on Ubuntu with Python 3.11
 
-Measured in CI run [40352898510](https://github.com/yuriy-mikityuk/remind-eeg/actions/runs/40352898510)
-on 2026-10-26 (commit `1ab3824`). The line counts come from the `coverage.xml` artifact of
+Measured in CI run [40366821742](https://github.com/yuriy-mikityuk/remind-eeg/actions/runs/40366821742)
+on 2026-10-26 (commit `5887d2a`). The line counts come from the `coverage.xml` artifact of
 that cell, `coverage-ubuntu-latest-py3.11`; the nine cells range from 81.5 to 81.7 %.
 The package includes the BLE layer since #232 moved it into `muse_tmr.ble`, and that
 layer has 1,138 of its 3,029 lines covered (37.6 %); the rest of the package is at 90.0 %
