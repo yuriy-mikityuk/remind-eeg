@@ -122,7 +122,7 @@ cd /path/to/remind-eeg
 .venv/bin/python -m pip install -e .
 
 PYAPP=/opt/homebrew/Cellar/python@3.12/3.12.3/Frameworks/Python.framework/Versions/3.12/Resources/Python.app
-PYTHONPATH="$PWD:$PWD/src:$PWD/.venv/lib/python3.12/site-packages"
+PYTHONPATH="$PWD/src:$PWD/.venv/lib/python3.12/site-packages"
 
 open -W -n \
   --stdout /tmp/muse-discover.out \
