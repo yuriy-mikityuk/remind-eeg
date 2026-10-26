@@ -836,6 +836,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rebuild decoded Polar files from <session_dir>/polar/raw_notifications.jsonl.",
     )
     decode_polar_parser.add_argument("session_dir", type=Path)
+
+    optics_agreement_parser = subparsers.add_parser(
+        "analyze-optics-agreement",
+        help="Agreement of the optics heart rate with the Polar H10 ECG of a p1034 recording.",
+    )
+    optics_agreement_parser.add_argument("recording_dir", type=Path)
+    optics_agreement_parser.add_argument("--epoch-seconds", type=float, default=30.0)
+    optics_agreement_parser.add_argument(
+        "--output-dir", type=Path, help="Defaults to data/reports/optics_agreement/<recording name>/."
+    )
     _add_brainflow_args(record_parser)
     _add_openmuse_lsl_args(record_parser)
     _add_muse_sdk_args(record_parser)
@@ -945,6 +955,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return asyncio.run(_record_polar(args))
     if args.command == "decode-polar":
         return _decode_polar(args)
+    if args.command == "analyze-optics-agreement":
+        return asyncio.run(_analyze_optics_agreement(args))
 
     parser.print_help()
     return 0
@@ -1772,6 +1784,57 @@ def _decode_polar(args: argparse.Namespace) -> int:
     print(f"decoded {session_dir / 'polar'}: {json.dumps(result['counts'], sort_keys=True)}")
     if result["errors"]:
         print(f"decode errors: {json.dumps(result['errors'], sort_keys=True)}")
+    return 0
+
+
+async def _analyze_optics_agreement(args: argparse.Namespace) -> int:
+    from muse_tmr.reports.optics_agreement import (
+        OpticsAgreementConfig,
+        OpticsAgreementInputError,
+        analyze_optics_agreement,
+    )
+    from muse_tmr.testing import SYNTHETIC_NOTE
+
+    recording_dir = _resolve_output_dir(args.recording_dir).resolve()
+    output_dir = (
+        _resolve_output_dir(args.output_dir)
+        if args.output_dir is not None
+        else _default_path_base() / "data" / "reports" / "optics_agreement" / recording_dir.name
+    )
+    try:
+        config = OpticsAgreementConfig(epoch_seconds=args.epoch_seconds)
+        config.validate()
+        started = time.monotonic()
+        report = await analyze_optics_agreement(recording_dir, config)
+    except (OpticsAgreementInputError, FileNotFoundError, ValueError) as exc:
+        print(f"analyze-optics-agreement: {exc}", file=sys.stderr)
+        return 2
+    paths = report.write(output_dir)
+    note = f" ({SYNTHETIC_NOTE})" if report.synthetic else ""
+    print(f"optics agreement written: {paths['json']} ({time.monotonic() - started:.1f} s){note}")
+    print(f"report: {paths['markdown']}")
+    counts = report.counts
+    print(
+        f"epochs={counts['epochs']} compared={counts['compared_epochs']} "
+        f"no_contact_seconds={counts['no_contact_seconds']:.0f}"
+    )
+    for estimator in ("decoder_heart_rate", "ppg_estimated_hr_bpm", "hr_series"):
+        row = report.overall(estimator)
+        if row is None or not row.n:
+            print(f"  {estimator}: no estimate")
+            continue
+        print(
+            f"  {estimator}: n={row.n} coverage={row.coverage:.2f} bias={row.bias_bpm:+.1f} bpm "
+            f"limits={_format_float(row.loa_low_bpm, 1)}..{_format_float(row.loa_high_bpm, 1)} "
+            f"mae={row.mae_bpm:.1f}"
+        )
+    jumps = report.jumps[0]
+    print(
+        f"  sudden HR rule: fired={jumps.fired} false_jumps={jumps.false_jumps} "
+        f"ecg_jumps={jumps.ecg_jumps} missed={jumps.missed}"
+    )
+    if report.limitations:
+        print(f"limitations: {', '.join(report.limitation_codes)}")
     return 0
 
 
