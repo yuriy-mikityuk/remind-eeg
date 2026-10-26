@@ -24,11 +24,24 @@ Pinned upstream baseline:
 4. Port small protocol fixes intentionally with tests.
 5. Avoid broad upstream merges during active feature work.
 
+## Upstream paths here
+
+Upstream keeps its `muse_*.py` modules at the repository root. Here they are in `src/muse_tmr/ble/` since [#232](https://github.com/yuriy-mikityuk/remind-eeg/issues/232), under the same file names, and only their imports of each other differ: upstream's `import muse_athena_protocol as proto` is `from muse_tmr.ble import muse_athena_protocol as proto` here, and `from muse_raw_stream import MuseRawStream` is `from muse_tmr.ble.muse_raw_stream import MuseRawStream`. The top-level `muse_*.py` and `amused.py` of this repository are deprecation shims until 0.5, not upstream code. The examples keep upstream's paths in `examples/`, with the same import rewrite.
+
+Port an upstream commit as a patch under the new directory:
+
+```bash
+git fetch upstream --prune
+git format-patch -1 <commit> --stdout -- 'muse_*.py' | git am -3 --directory=src/muse_tmr/ble
+```
+
+A `git cherry-pick` of the commit does not follow the move while the shims sit at the old paths: git sees each old file as changed into a shim rather than renamed, so the cherry-pick lands on the shim and conflicts. A hunk on one of the import lines needs the rewrite above by hand. For a fix sent upstream, `git format-patch --relative=src/muse_tmr/ble` writes the paths upstream has.
+
 ## Contribution Policy
 
 Upstream first. A fix to how the Muse is connected to or decoded goes to the project that owns that code before, or at the same time as, it lands here:
 
-- the BLE and packet decoding in the top-level `amused.py` and `muse_*.py` modules: [amused-py](https://github.com/Amused-EEG/amused-py)
+- the BLE and packet decoding in `muse_tmr.ble` (`src/muse_tmr/ble/`): [amused-py](https://github.com/Amused-EEG/amused-py)
 - the BrainFlow board code behind `muse_tmr.sources.brainflow_source`: [BrainFlow](https://github.com/brainflow-dev/brainflow)
 - the OpenMuse decoder behind `muse_tmr.sources.openmuse_lsl_source`: [OpenMuse](https://github.com/DominiqueMakowski/OpenMuse)
 

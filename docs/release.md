@@ -22,10 +22,11 @@ Run by hand with `dry_run` (the default), and on a pull request that changes
 `release.yml`, it builds, checks and uploads the files as the `dist` artifact of the run
 and publishes nothing.
 
-The wheel holds `muse_tmr` and the top-level `muse_*` modules of the BLE layer. It does
-not hold `amused.py`, and an editable install does not map it either: `amused` is the
-name of the upstream package on PyPI, and the shim only serves `import amused` with the
-repository root on `sys.path`.
+The wheel holds `muse_tmr`, the BLE layer included as `muse_tmr.ble`, and until 0.5 the
+deprecated top-level `muse_*` shims that re-export it. It does not hold `amused.py`, and
+an editable install does not map it either: `amused` is the name of the upstream package
+on PyPI, and the shim only serves `import amused` with the repository root on
+`sys.path`. `scripts/check_wheel.py` fails a wheel that ships a top-level `amused*`.
 
 ## Once, before the first release
 

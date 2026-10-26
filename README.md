@@ -122,7 +122,7 @@ audio player ··········· calibrated volume cap, fade, JSONL logs
 morning ················ dream report · blind retest · cued-vs-uncued analysis
 ```
 
-The engine lives under `src/muse_tmr/`; the top-level `muse_*.py` modules are the forked BLE/data-source layer (see [Attribution](#data-source-layer--attribution)).
+The engine and the forked BLE/data-source layer, `muse_tmr.ble`, live under `src/muse_tmr/` (see [Attribution](#data-source-layer--attribution)).
 
 ## The experiment
 

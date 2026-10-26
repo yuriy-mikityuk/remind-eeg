@@ -12,7 +12,7 @@ The project keeps the existing amused-py BLE implementation as the low-level Mus
 6. Protocol layer: puzzle assignment, TLR cues, TMR scheduler, and session state.
 7. Report layer: dream report, puzzle retest, and cued-vs-uncued analysis.
 
-The M0 scaffold intentionally avoids moving the existing top-level `muse_*.py` modules. Later issues can introduce adapters one component at a time.
+The forked amused-py BLE layer is the package `muse_tmr.ble` in `src/muse_tmr/ble/`. The M0 scaffold had left its `muse_*.py` modules at the repository root, and [#232](https://github.com/yuriy-mikityuk/remind-eeg/issues/232) moved them; the top-level names stay as deprecated shims until 0.5. [`dependency_strategy.md`](dependency_strategy.md) says how upstream patches map onto the new paths.
 
 ## M1 Source And Recording Flow
 
