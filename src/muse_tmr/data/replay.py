@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Mapping, Optional, Sequence
 
-from muse_raw_stream import MuseRawStream
-from muse_realtime_decoder import MuseRealtimeDecoder
+from muse_tmr.ble.muse_raw_stream import MuseRawStream
+from muse_tmr.ble.muse_realtime_decoder import MuseRealtimeDecoder
 
 from muse_tmr.data.sample_types import MuseFrame, frame_from_decoded
 from muse_tmr.sources.base_source import BaseMuseSource, MuseDeviceInfo, MuseSourceMetadata

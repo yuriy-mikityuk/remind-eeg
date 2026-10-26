@@ -58,6 +58,8 @@ class MacosLauncherTest(unittest.TestCase):
                 self.assertIn('RUNNER="$SCRIPT_DIR/../Resources/run-local-app.command"', launcher_text)
                 self.assertIn("--source mock", runner_text)
                 self.assertNotIn("--address", runner_text)
+                # The BLE layer is in src/muse_tmr/ble, so src is all the app needs.
+                self.assertIn('export PYTHONPATH="$REPO_ROOT/src:${PYTHONPATH:-}"', runner_text)
                 # The alerts and the log carry the app's own name.
                 self.assertIn('display alert "REMind"', runner_text)
                 self.assertIn("REMind.log", runner_text)

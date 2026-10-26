@@ -66,10 +66,12 @@ Repeat the same preflight before every commit and before every push.
   `features`, `models`, `protocol`, `audio`, `reports`, `validation`, `annotations`,
   the synthetic nights in `testing`, the local app in `app` (page files in
   `app/static/`), and the `muse-tmr` CLI in `cli/main.py`.
-- The top-level `amused.py` and `muse_*.py` modules are the forked amused-py BLE
-  layer, wrapped by `muse_tmr.sources.amused_source`. Change them only for BLE or
-  protocol fixes; see `docs/dependency_strategy.md`. `examples/` holds the amused-py
-  examples.
+- `src/muse_tmr/ble/` (`muse_tmr.ble`) is the forked amused-py BLE layer, wrapped by
+  `muse_tmr.sources.amused_source`. Change it only for BLE or protocol fixes, so that
+  upstream patches keep applying; `docs/dependency_strategy.md` says how upstream's
+  paths map onto it. The top-level `muse_*.py` and `amused.py` are deprecated shims
+  that re-export it until 0.5: import `muse_tmr.ble` in new code and add nothing to
+  them. `examples/` holds the amused-py examples.
 - `scripts/` holds the wrapper that runs the nightly REM report (the report itself is
   `muse_tmr.reports.nightly_report`, so `muse-tmr demo` can build it from the wheel), the
   REM detector check against a reference stager, the macOS launcher installer, the
@@ -78,9 +80,9 @@ Repeat the same preflight before every commit and before every push.
 - Tests live in `tests/`. CI runs `python -m pytest tests/`; `run_tests.py` runs a
   fast unittest subset, and `run_tests.py --all` everything.
 - `pyproject.toml` finds the `muse_tmr` packages under `src/` and ships every file in
-  `app/static/`; the top-level BLE modules are listed in `py-modules`. CI builds the
+  `app/static/`; until 0.5 the top-level shims are listed in `py-modules`. CI builds the
   wheel, and `scripts/check_wheel.py` fails if any file under `src/muse_tmr` is not in
-  it, which an editable install would hide.
+  it, which an editable install would hide, or if it ships a top-level `amused*`.
 
 Put new engine code in the matching `muse_tmr` subpackage and new commands in
 `muse_tmr.cli.main`.

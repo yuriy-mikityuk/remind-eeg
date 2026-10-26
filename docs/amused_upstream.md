@@ -1,6 +1,6 @@
 # Upstream documentation: amused-py (BLE data-source layer)
 
-> **Attribution.** The BLE protocol layer of this repository is based on [amused-py](https://github.com/Amused-EEG/amused-py) by **Adrian Tadeusz Belmans** — the first open-source BLE protocol implementation for Muse S Athena headsets. This project uses a forked-source strategy pinned to upstream commit `bce20f98ddc7fa2efe3219d1b5d2f7554a55eb97`; the sync and contribution policy is recorded in [`dependency_strategy.md`](dependency_strategy.md) and `pyproject.toml`. The top-level `muse_*.py` modules are this forked layer. The original upstream README is preserved below for reference — protocol details, presets, and packet formats apply to the data-source layer as vendored here.
+> **Attribution.** The BLE protocol layer of this repository is based on [amused-py](https://github.com/Amused-EEG/amused-py) by **Adrian Tadeusz Belmans** — the first open-source BLE protocol implementation for Muse S Athena headsets. This project uses a forked-source strategy pinned to upstream commit `bce20f98ddc7fa2efe3219d1b5d2f7554a55eb97`; the sync and contribution policy is recorded in [`dependency_strategy.md`](dependency_strategy.md) and `pyproject.toml`. The package `muse_tmr.ble` (`src/muse_tmr/ble/`) is this forked layer, and the imports below use its paths. The original upstream README is preserved below for reference — protocol details, presets, and packet formats apply to the data-source layer as vendored here.
 
 ---
 
@@ -57,8 +57,8 @@ pip install -r requirements-viz.txt
 
 ```python
 import asyncio
-from muse_stream_client import MuseStreamClient
-from muse_discovery import find_muse_devices
+from muse_tmr.ble.muse_stream_client import MuseStreamClient
+from muse_tmr.ble.muse_discovery import find_muse_devices
 
 async def stream():
     # Find Muse devices
@@ -131,8 +131,8 @@ Replay recorded sessions:
 
 ```python
 # See examples/01_basic_streaming.py
-from muse_stream_client import MuseStreamClient
-from muse_discovery import find_muse_devices
+from muse_tmr.ble.muse_stream_client import MuseStreamClient
+from muse_tmr.ble.muse_discovery import find_muse_devices
 
 client = MuseStreamClient(
     save_raw=False,  # Don't save, just stream
@@ -170,8 +170,8 @@ await client.connect_and_stream(
 
 ```python
 # See examples/03_parse_data.py
-from muse_raw_stream import MuseRawStream
-from muse_realtime_decoder import MuseRealtimeDecoder
+from muse_tmr.ble.muse_raw_stream import MuseRawStream
+from muse_tmr.ble.muse_realtime_decoder import MuseRealtimeDecoder
 
 stream = MuseRawStream("muse_data/recording.bin")
 stream.open_read()

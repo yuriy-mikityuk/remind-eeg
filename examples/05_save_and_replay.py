@@ -7,11 +7,11 @@ import asyncio
 import sys
 import os
 import glob
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from muse_stream_client import MuseStreamClient
-from muse_discovery import find_muse_devices
-from muse_replay import MuseReplayPlayer, MuseBinaryParser
+from muse_tmr.ble.muse_stream_client import MuseStreamClient
+from muse_tmr.ble.muse_discovery import find_muse_devices
+from muse_tmr.ble.muse_replay import MuseReplayPlayer, MuseBinaryParser
 
 async def record_session():
     """Record a session to binary format"""
@@ -183,7 +183,7 @@ def analyze_recording(filepath):
     print(f"  Found {len(packets)} packets in that range")
     
     # Show file efficiency
-    from muse_raw_stream import MuseRawStream
+    from muse_tmr.ble.muse_raw_stream import MuseRawStream
     stream = MuseRawStream(filepath)
     info = stream.get_file_info()
     print(f"\nFile Efficiency:")

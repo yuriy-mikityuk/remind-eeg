@@ -6,10 +6,10 @@ This example shows how to parse and extract sensor data from a recorded binary s
 import sys
 import os
 import glob
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from muse_raw_stream import MuseRawStream
-from muse_realtime_decoder import MuseRealtimeDecoder
+from muse_tmr.ble.muse_raw_stream import MuseRawStream
+from muse_tmr.ble.muse_realtime_decoder import MuseRealtimeDecoder
 
 def main():
     """Parse the most recent recording"""

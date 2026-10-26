@@ -20,7 +20,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 # Add parent directory to path
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 # Fix Windows Qt/Bleak conflict
 try:
@@ -29,8 +29,8 @@ try:
 except (ImportError, AttributeError, OSError):
     pass
 
-from muse_stream_client import MuseStreamClient
-from muse_discovery import find_muse_devices
+from muse_tmr.ble.muse_stream_client import MuseStreamClient
+from muse_tmr.ble.muse_discovery import find_muse_devices
 
 # --- Configuration ---
 UPDATE_INTERVAL_MS = 100  # How often to update the plot (milliseconds)

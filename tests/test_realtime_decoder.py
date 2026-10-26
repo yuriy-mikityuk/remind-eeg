@@ -7,11 +7,11 @@ import datetime
 import struct
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from muse_raw_stream import MuseRawStream
-from muse_realtime_decoder import MuseRealtimeDecoder, DecodedData
-import muse_athena_protocol as proto
+from muse_tmr.ble.muse_raw_stream import MuseRawStream
+from muse_tmr.ble.muse_realtime_decoder import MuseRealtimeDecoder, DecodedData
+from muse_tmr.ble import muse_athena_protocol as proto
 
 from muse_tmr.data.sample_types import frame_from_decoded
 

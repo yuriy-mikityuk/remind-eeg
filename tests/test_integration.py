@@ -10,15 +10,15 @@ import os
 import sys
 import numpy as np
 from datetime import datetime, timedelta
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from muse_stream_client import MuseStreamClient
-from muse_raw_stream import MuseRawStream
-from muse_replay import MuseReplayPlayer, MuseBinaryParser
-from muse_realtime_decoder import MuseRealtimeDecoder
-from muse_ppg_heart_rate import PPGHeartRateExtractor, simulate_ppg_signal
-from muse_fnirs_processor import FNIRSProcessor
-import muse_athena_protocol as proto
+from muse_tmr.ble.muse_stream_client import MuseStreamClient
+from muse_tmr.ble.muse_raw_stream import MuseRawStream
+from muse_tmr.ble.muse_replay import MuseReplayPlayer, MuseBinaryParser
+from muse_tmr.ble.muse_realtime_decoder import MuseRealtimeDecoder
+from muse_tmr.ble.muse_ppg_heart_rate import PPGHeartRateExtractor, simulate_ppg_signal
+from muse_tmr.ble.muse_fnirs_processor import FNIRSProcessor
+from muse_tmr.ble import muse_athena_protocol as proto
 
 # Import real test data if available
 try:

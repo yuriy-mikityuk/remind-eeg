@@ -6,10 +6,10 @@ This example shows how to connect to a Muse S and stream basic EEG data.
 import asyncio
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from muse_stream_client import MuseStreamClient
-from muse_discovery import find_muse_devices
+from muse_tmr.ble.muse_stream_client import MuseStreamClient
+from muse_tmr.ble.muse_discovery import find_muse_devices
 
 async def main():
     """Stream EEG data for 30 seconds"""

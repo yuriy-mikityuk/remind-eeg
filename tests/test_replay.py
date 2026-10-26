@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import muse_athena_protocol as proto
-from muse_raw_stream import MuseRawStream
+from muse_tmr.ble import muse_athena_protocol as proto
+from muse_tmr.ble.muse_raw_stream import MuseRawStream
 from muse_tmr.data.replay import ReplayConfig, ReplaySession, resolve_raw_path
 from muse_tmr.testing import generate_night
 from muse_tmr.testing.synthetic import START_EPOCH_SECONDS

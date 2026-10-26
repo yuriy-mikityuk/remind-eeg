@@ -15,7 +15,7 @@ import threading
 import numpy as np
 from collections import deque
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 try:
     from bleak.backends.winrt.util import allow_sta
@@ -26,8 +26,8 @@ except (ImportError, AttributeError, OSError):
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets, QtGui
 
-from muse_stream_client import MuseStreamClient
-from muse_discovery import find_muse_devices
+from muse_tmr.ble.muse_stream_client import MuseStreamClient
+from muse_tmr.ble.muse_discovery import find_muse_devices
 
 # Global state
 current_hr = 0

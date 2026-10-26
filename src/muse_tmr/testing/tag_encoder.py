@@ -1,4 +1,4 @@
-"""Vectorised inverses of the Athena TAG decoders in ``muse_athena_protocol``.
+"""Vectorised inverses of the Athena TAG decoders in ``muse_tmr.ble.muse_athena_protocol``.
 
 ``muse_tmr.testing.synthetic`` builds its BLE notifications with these. Each encoder
 takes values in the decoder's output units and returns the bytes the decoder reads back
@@ -14,7 +14,7 @@ from typing import Sequence
 
 import numpy as np
 
-import muse_athena_protocol as proto
+from muse_tmr.ble import muse_athena_protocol as proto
 
 # Byte 0 of a notification holds its length; the longest in the committed capture
 # (tests/test_data) is 244 bytes.

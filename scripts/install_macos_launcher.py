@@ -223,7 +223,7 @@ fi
 ) &
 
 cd "$REPO_ROOT" || exit 1
-export PYTHONPATH="$REPO_ROOT:$REPO_ROOT/src:${{PYTHONPATH:-}}"
+export PYTHONPATH="$REPO_ROOT/src:${{PYTHONPATH:-}}"
 
 echo "Starting $APP_NAME"
 echo "URL: $URL"

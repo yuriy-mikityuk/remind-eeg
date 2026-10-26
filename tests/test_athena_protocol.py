@@ -7,9 +7,9 @@ import unittest
 import numpy as np
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-import muse_athena_protocol as proto
+from muse_tmr.ble import muse_athena_protocol as proto
 
 
 def build_tag_packet(first_tag, first_data, extra_subpackets=None):

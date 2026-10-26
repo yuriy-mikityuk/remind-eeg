@@ -94,6 +94,7 @@ jobs:
         run: |
           "$WHEEL_BIN/muse-tmr" --version
           "$WHEEL_BIN/python" -c "import importlib.metadata as md, muse_tmr; v = md.version('remind-eeg'); assert v == muse_tmr.__version__, (v, muse_tmr.__version__); print('remind-eeg', v)"
+          "$WHEEL_BIN/python" -c "import sys, muse_tmr.ble.muse_realtime_decoder; assert 'muse_realtime_decoder' not in sys.modules"
       - name: Run the demo from the installed wheel
         working-directory: ${{ runner.temp }}
         run: |

@@ -7,10 +7,10 @@ Data is saved in efficient binary format for later analysis.
 import asyncio
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from muse_stream_client import MuseStreamClient
-from muse_discovery import find_muse_devices
+from muse_tmr.ble.muse_stream_client import MuseStreamClient
+from muse_tmr.ble.muse_discovery import find_muse_devices
 
 async def main():
     """Record all sensors for a short duration"""

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Dict, Iterable, Mapping, Optional, Tuple
 
-from muse_raw_stream import MuseRawStream
+from muse_tmr.ble.muse_raw_stream import MuseRawStream
 
 from muse_tmr.audio import (
     AudioBackend,

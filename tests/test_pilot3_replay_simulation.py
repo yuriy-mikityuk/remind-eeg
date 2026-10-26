@@ -7,9 +7,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import muse_athena_protocol as proto
+from muse_tmr.ble import muse_athena_protocol as proto
 import numpy as np
-from muse_raw_stream import MuseRawStream
+from muse_tmr.ble.muse_raw_stream import MuseRawStream
 
 from muse_tmr.audio import CueLibrary, CueMetadata
 from muse_tmr.cli.main import main as cli_main

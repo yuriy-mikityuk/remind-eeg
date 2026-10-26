@@ -51,6 +51,8 @@ python scripts/check_forbidden_files.py
 
 A venv set up before the rename has the checkout installed as `athena-tmr-lucid`. Run `pip uninstall athena-tmr-lucid` before installing again, so that two distributions do not both own the `muse-tmr` command.
 
+The BLE layer is the package `muse_tmr.ble`. Code that imports its modules by their old top-level names, such as `from muse_stream_client import MuseStreamClient` or `import amused` in the checkout, works until 0.5 with a `DeprecationWarning`; import them from `muse_tmr.ble` instead.
+
 ## Acquisition: discover, stream, record
 
 ```bash
@@ -122,7 +124,7 @@ cd /path/to/remind-eeg
 .venv/bin/python -m pip install -e .
 
 PYAPP=/opt/homebrew/Cellar/python@3.12/3.12.3/Frameworks/Python.framework/Versions/3.12/Resources/Python.app
-PYTHONPATH="$PWD:$PWD/src:$PWD/.venv/lib/python3.12/site-packages"
+PYTHONPATH="$PWD/src:$PWD/.venv/lib/python3.12/site-packages"
 
 open -W -n \
   --stdout /tmp/muse-discover.out \

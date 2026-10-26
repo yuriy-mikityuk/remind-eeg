@@ -7,10 +7,10 @@ import tempfile
 import os
 import datetime
 import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from muse_raw_stream import MuseRawStream, RawPacket
-import muse_athena_protocol as proto
+from muse_tmr.ble.muse_raw_stream import MuseRawStream, RawPacket
+from muse_tmr.ble import muse_athena_protocol as proto
 
 
 def build_tag_packet(first_tag, first_data):

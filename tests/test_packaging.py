@@ -5,6 +5,9 @@ PyYAML is not a dependency. Nothing is built or installed.
 """
 
 import re
+import shutil
+import subprocess
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -18,10 +21,36 @@ VERSION_FILE = REPO_ROOT / "src" / "muse_tmr" / "__init__.py"
 MATRIX_JOBS = ("tests", "package")
 MATRIX_OSES = {"ubuntu-latest", "macos-latest", "windows-latest"}
 OLD_NAMES = ("athena-tmr-lucid", "athena_tmr_lucid")
+OLD_NAME_PATHS = ("pyproject.toml", "setup.py", "src", "scripts", ".github")
 
 
 def _pyproject() -> dict:
     return tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+
+
+def _old_name_hits(root: Path) -> list:
+    """The old name in the files git tracks under OLD_NAME_PATHS.
+
+    Untracked files are left out: a personal script in a checkout is not part of the
+    project, and the checkout's own folder may still carry the old name.
+    """
+    if shutil.which("git") is None:
+        raise unittest.SkipTest("git is not on PATH, and the scan reads the tracked files from git ls-files")
+    listed = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z", "--", *OLD_NAME_PATHS],
+        capture_output=True,
+    )
+    if listed.returncode != 0:
+        reason = listed.stderr.decode("utf-8", errors="replace").strip()
+        raise unittest.SkipTest(f"git ls-files failed in {root}: {reason}")
+    hits = []
+    for name in sorted(item.decode("utf-8") for item in listed.stdout.split(b"\0") if item):
+        path = root / name
+        if not path.is_file():
+            continue
+        text = path.read_bytes().decode("utf-8", errors="ignore")
+        hits.extend(f"{name}: {old}" for old in OLD_NAMES if old in text)
+    return hits
 
 
 def _version(text: str) -> tuple:
@@ -50,16 +79,20 @@ class DistributionTest(unittest.TestCase):
         self.assertEqual(pyproject["tool"]["setuptools"]["packages"]["find"]["include"], ["muse_tmr*"])
 
     def test_old_name_is_not_looked_up(self):
-        paths = [PYPROJECT, REPO_ROOT / "setup.py"]
-        for root in ("src", "scripts", ".github"):
-            paths.extend(path for path in sorted((REPO_ROOT / root).rglob("*")) if path.is_file())
-        hits = []
-        for path in paths:
-            if "__pycache__" in path.parts:
-                continue
-            text = path.read_bytes().decode("utf-8", errors="ignore")
-            hits.extend(f"{path.relative_to(REPO_ROOT)}: {name}" for name in OLD_NAMES if name in text)
-        self.assertEqual(hits, [])
+        self.assertEqual(_old_name_hits(REPO_ROOT), [])
+
+    def test_old_name_scan_reads_tracked_files_only(self):
+        if shutil.which("git") is None:
+            self.skipTest("git is not on PATH")
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "scripts").mkdir()
+            (root / "scripts" / "build.py").write_text("print('athena-tmr-lucid')\n", encoding="utf-8")
+            (root / "scripts" / "personal.sh").write_text("cd ~/athena-tmr-lucid\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "scripts/build.py"], check=True)
+
+            self.assertEqual(_old_name_hits(root), ["scripts/build.py: athena-tmr-lucid"])
 
     def test_no_amused_in_py_modules(self):
         modules = _pyproject()["tool"]["setuptools"]["py-modules"]

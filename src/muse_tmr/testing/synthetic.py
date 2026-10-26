@@ -33,8 +33,8 @@ from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
-import muse_athena_protocol as proto
-from muse_raw_stream import MuseRawStream
+from muse_tmr.ble import muse_athena_protocol as proto
+from muse_tmr.ble.muse_raw_stream import MuseRawStream
 
 from muse_tmr import __version__
 from muse_tmr.data.recorder import RecordingSummary

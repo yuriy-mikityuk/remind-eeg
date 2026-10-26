@@ -8,11 +8,16 @@ import tempfile
 import os
 import sys
 import datetime
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import importlib
+import subprocess
+# The repository root holds amused.py and the deprecated top-level shims.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(REPO_ROOT)
+sys.path.append(os.path.join(REPO_ROOT, "src"))
 
-from muse_raw_stream import MuseRawStream, RawPacket
-from muse_realtime_decoder import MuseRealtimeDecoder, DecodedData
-import muse_athena_protocol as proto
+from muse_tmr.ble.muse_raw_stream import MuseRawStream, RawPacket
+from muse_tmr.ble.muse_realtime_decoder import MuseRealtimeDecoder, DecodedData
+from muse_tmr.ble import muse_athena_protocol as proto
 
 
 def build_tag_packet(first_tag, first_data):
@@ -27,11 +32,11 @@ class TestCoreComponents(unittest.TestCase):
 
     def test_imports(self):
         """Test all imports work"""
-        from muse_stream_client import MuseStreamClient
-        from muse_replay import MuseReplayPlayer, MuseBinaryParser
-        from muse_ppg_heart_rate import PPGHeartRateExtractor
-        from muse_fnirs_processor import FNIRSProcessor
-        import muse_athena_protocol
+        from muse_tmr.ble.muse_stream_client import MuseStreamClient
+        from muse_tmr.ble.muse_replay import MuseReplayPlayer, MuseBinaryParser
+        from muse_tmr.ble.muse_ppg_heart_rate import PPGHeartRateExtractor
+        from muse_tmr.ble.muse_fnirs_processor import FNIRSProcessor
+        from muse_tmr.ble import muse_athena_protocol
 
         self.assertTrue(MuseStreamClient)
         self.assertTrue(MuseReplayPlayer)
@@ -100,12 +105,48 @@ class TestPackageStructure(unittest.TestCase):
 
     def test_package_import(self):
         """Test main package import"""
-        import amused
+        sys.modules.pop('amused', None)
+        with self.assertWarnsRegex(DeprecationWarning, 'import from muse_tmr.ble instead'):
+            import amused
 
         self.assertTrue(hasattr(amused, '__version__'))
         self.assertTrue(hasattr(amused, 'MuseStreamClient'))
         self.assertTrue(hasattr(amused, 'PPGHeartRateExtractor'))
         self.assertTrue(hasattr(amused, 'FNIRSProcessor'))
+        self.assertIs(amused.MuseRealtimeDecoder, MuseRealtimeDecoder)
+
+
+class TestDeprecatedTopLevelNames(unittest.TestCase):
+    """The muse_*.py modules moved to muse_tmr.ble in #232; their old names work until 0.5."""
+
+    NAMES = sorted(
+        name[:-3]
+        for name in os.listdir(os.path.join(REPO_ROOT, 'src', 'muse_tmr', 'ble'))
+        if name.startswith('muse_') and name.endswith('.py')
+    )
+
+    def test_old_name_warns_and_gives_the_moved_module(self):
+        self.assertEqual(len(self.NAMES), 15)
+        for name in self.NAMES:
+            with self.subTest(name=name):
+                sys.modules.pop(name, None)
+                with self.assertWarnsRegex(DeprecationWarning, f'^{name} moved to muse_tmr.ble.{name};'):
+                    module = importlib.import_module(name)
+                self.assertIs(module, importlib.import_module(f'muse_tmr.ble.{name}'))
+
+    def test_old_script_runs_the_moved_module(self):
+        env = dict(os.environ)
+        env.pop('PYTHONWARNINGS', None)
+        env['PYTHONPATH'] = os.pathsep.join(filter(None, [os.path.join(REPO_ROOT, 'src'), env.get('PYTHONPATH')]))
+        with tempfile.TemporaryDirectory() as tmp:
+            completed = subprocess.run(
+                [sys.executable, os.path.join(REPO_ROOT, 'muse_data_parser.py')],
+                capture_output=True, text=True, env=env, cwd=tmp, timeout=120,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn('Parsing Test Results:', completed.stdout)
+        self.assertIn('DeprecationWarning: muse_data_parser moved to muse_tmr.ble.muse_data_parser', completed.stderr)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=1)
