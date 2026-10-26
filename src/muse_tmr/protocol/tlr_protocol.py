@@ -349,7 +349,8 @@ def train_tlr_cue(
 ) -> TlrTrainingSession:
     config = config or TlrTrainingConfig()
     _validate_training_cue(cue)
-    volume = config.volume if config.volume is not None else (cue.volume_hint or player.config.default_volume)
+    # As in Pilot 4 and 5: the cue's hint, or the player's default (None) without one.
+    volume = config.volume if config.volume is not None else cue.volume_hint
     test_cue = TestCue(
         cue_id=cue.cue_id,
         frequency_hz=float(cue.frequency_hz),
