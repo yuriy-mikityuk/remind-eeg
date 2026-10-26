@@ -39,9 +39,12 @@ class TestMuseRawStream(unittest.TestCase):
         stream = MuseRawStream(self.filepath)
 
         test_data = build_tag_packet(proto.TAG_EEG_4CH, bytes(28))
-        test_time = datetime.datetime.now()
 
         stream.open_write()
+        # Taken after the session start: a packet from before it has a negative offset,
+        # which the format cannot store, and where now() ticks every 15.6 ms (Windows
+        # before Python 3.13) the two calls can land a tick apart.
+        test_time = datetime.datetime.now()
         stream.write_packet(test_data, test_time)
         stream.close()
 
@@ -53,8 +56,10 @@ class TestMuseRawStream(unittest.TestCase):
         self.assertEqual(packets[0].data, test_data)
         self.assertEqual(packets[0].packet_num, 0)
 
+        # The header keeps the session start and each packet its offset in whole
+        # milliseconds, so the two truncations add up to less than 2 ms.
         time_diff = abs((packets[0].timestamp - test_time).total_seconds())
-        self.assertLess(time_diff, 0.001)
+        self.assertLess(time_diff, 0.002)
 
     def test_write_and_read_multiple_packets(self):
         """Test writing and reading multiple packets"""

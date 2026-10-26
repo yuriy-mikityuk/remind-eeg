@@ -267,7 +267,8 @@ class TestOvernightRecorder(unittest.IsolatedAsyncioTestCase):
     async def test_progress_publishes_contact_and_source_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:
             recorder = OvernightRecorder(
-                RecordingConfig(output_dir=Path(tmp), duration_seconds=0.01, allow_short=True)
+                # The source ends after its one frame, see test_record_writes_expected_outputs.
+                RecordingConfig(output_dir=Path(tmp), duration_seconds=1.0, allow_short=True)
             )
 
             await recorder.record(DiagnosticsFakeSource())
