@@ -16,10 +16,12 @@ from muse_tmr.audio import (
     MockAudioBackend,
     VolumeCalibration,
 )
+from muse_tmr.data.replay import ReplayConfig, ReplaySession
 from muse_tmr.data.sample_types import EEGSample, HeartRateSample, IMUSample, MuseFrame, PPGSample
 from muse_tmr.features import EpochConfig
 from muse_tmr.models import RemGateConfig
 from muse_tmr.protocol import (
+    ArousalGuardConfig,
     NightPuzzleSession,
     PuzzleCatalog,
     PuzzleCueAssignment,
@@ -30,6 +32,7 @@ from muse_tmr.protocol import (
     plan_tlr_block,
 )
 from muse_tmr.sources.base_source import MuseDeviceInfo, MuseSourceMetadata
+from muse_tmr.testing import SyntheticNightConfig, generate_night
 from muse_tmr.validation import (
     AwakeningEvent,
     Pilot4CueingConfig,
@@ -428,6 +431,149 @@ class TestPilot4Cueing(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary_payload["resolved_audio_backend_name"], "dry-run")
         self.assertEqual(summary_payload["audio_backend_name"], "dry-run")
         self.assertEqual([event["backend_name"] for event in audio_events], ["dry-run", "dry-run"])
+
+
+# A generated p1034 night, synthetic input, not sleep: 4 min of N2, then 7 min of REM,
+# without arousals or BLE gaps. From 240 s to 540 s (epochs 8 to 17) its optics carry
+# noise at three times the pulse, a still stretch the heart-rate series cannot read.
+NOISY_NIGHT_STAGES = ("N2",) * 8 + ("R",) * 14
+NOISY_OPTICS = ((240.0, 300.0, 3.0),)
+NOISY_EPOCHS = set(range(8, 18))
+
+
+class TestBlindOpticsLowerTheVolume(unittest.TestCase):
+    """Pilot 5 over a replay of that night (#234). The guard lowers the volume on the
+    epochs its heart-rate rule is blind on, and the TLR and puzzle cues there play at
+    half their volume hint, through the scheduler, the player and the logs that every
+    lower_volume reason goes through. With hr_rule_blind_action allow the same cues play
+    at full volume."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name)
+        night = generate_night(
+            replace(
+                SyntheticNightConfig(),
+                preset="p1034",
+                scenario="noisy_optics",
+                hours=len(NOISY_NIGHT_STAGES) * 30 / 3600,
+                stages=NOISY_NIGHT_STAGES,
+                arousals_per_hour=0.0,
+                ble_gaps_per_hour=0.0,
+                noisy_optics=NOISY_OPTICS,
+            ),
+            root / "night",
+        )
+        cls.lowered = asyncio.run(_replayed_pilot5(night.recording_dir, root / "default"))
+        cls.allowed = asyncio.run(
+            _replayed_pilot5(
+                night.recording_dir,
+                root / "allow",
+                arousal_guard_config=ArousalGuardConfig(hr_rule_blind_action="allow"),
+            )
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_the_guard_lowers_the_volume_where_the_series_is_blind(self):
+        guard = self.lowered["guard"]
+        self.assertEqual(len(guard), len(NOISY_NIGHT_STAGES))
+        blind = {index for index, event in enumerate(guard) if event["metadata"].get("hr_rule_blind")}
+        self.assertEqual(blind, NOISY_EPOCHS)
+        for index, event in enumerate(guard):
+            if index in NOISY_EPOCHS:
+                self.assertEqual(event["action"], "lower_volume", index)
+                self.assertEqual(event["reason_codes"], ["hr_rule_blind"], index)
+                self.assertEqual(event["volume_multiplier"], 0.5, index)
+            else:
+                self.assertEqual(event["action"], "allow", index)
+
+    def test_cues_in_the_stretch_play_at_half_their_volume_hint(self):
+        summary = self.lowered["summary"]
+        plays = _plays(self.lowered["scheduler"])
+        self.assertTrue(summary.passed)
+        self.assertEqual(summary.tlr_cue_play_count, 2)
+        self.assertGreaterEqual(summary.puzzle_cue_play_count, 1)
+        self.assertEqual(summary.uncued_puzzle_play_count, 0)
+        for play in plays:
+            metadata = play["metadata"]
+            self.assertIn(int(play["timestamp_seconds"] // 30), NOISY_EPOCHS)
+            self.assertEqual(metadata["arousal_guard_action"], "lower_volume")
+            self.assertEqual(metadata["arousal_guard_reason_codes"], ["hr_rule_blind"])
+            self.assertEqual(metadata["volume_multiplier"], 0.5)
+            self.assertAlmostEqual(metadata["volume_hint"], 0.5 * metadata["original_volume_hint"])
+        # The player gets the lowered volume and, under the calibration cap, plays it.
+        played = [event for event in self.lowered["audio"] if event["status"] == "played"]
+        requested = [event["requested_volume"] for event in played]
+        self.assertEqual(requested, [play["metadata"]["volume_hint"] for play in plays])
+        self.assertEqual([event["effective_volume"] for event in played], requested)
+
+    def test_allow_plays_the_same_cues_at_full_volume(self):
+        lowered, allowed = _plays(self.lowered["scheduler"]), _plays(self.allowed["scheduler"])
+        self.assertEqual([_play_key(play) for play in allowed], [_play_key(play) for play in lowered])
+        for before, after in zip(allowed, lowered):
+            self.assertNotIn("volume_multiplier", before["metadata"])
+            self.assertAlmostEqual(after["metadata"]["volume_hint"], 0.5 * before["metadata"]["volume_hint"])
+        for index in NOISY_EPOCHS:
+            event = self.allowed["guard"][index]
+            self.assertEqual((event["action"], event["reason_codes"]), ("allow", []), index)
+            self.assertIs(event["metadata"]["hr_rule_blind"], True)
+        requested = [event["requested_volume"] for event in self.allowed["audio"] if event["status"] == "played"]
+        self.assertEqual(requested, [play["metadata"]["volume_hint"] for play in allowed])
+
+
+async def _replayed_pilot5(recording_dir, output_dir, *, arousal_guard_config=None):
+    """Pilot 5 with mock audio over a replay of ``recording_dir``, the p1034 gate and the
+    guard default unless ``arousal_guard_config`` is given; the summary and its logs."""
+    catalog, session, assignment, cue_library = protocol_fixture(include_tlr=True)
+    tlr_plan = plan_tlr_block(
+        default_tlr_cue(),
+        config=TlrBlockConfig(repetitions=2, interval_seconds=0.0, post_block_pause_seconds=0.0),
+    )
+    summary = await run_pilot4_cueing_night(
+        ReplaySession(ReplayConfig(input_path=recording_dir, speed=0.0)),
+        config=Pilot4CueingConfig(
+            output_dir=output_dir,
+            duration_seconds=600.0,
+            allow_short=True,
+            audio_backend_name="mock",
+            gate_config=RemGateConfig(),
+            scheduler_config=TmrSchedulerConfig(enable_tlr_block=True),
+            arousal_guard_config=arousal_guard_config,
+            pilot_id="m8_pilot5_full_night_tlr_puzzle_cueing",
+            summary_filename="pilot5_summary.json",
+            require_tlr_block=True,
+        ),
+        catalog=catalog,
+        session=session,
+        assignment=assignment,
+        cue_library=cue_library,
+        # A cap above every hint, so the lowered volume is what plays.
+        calibration=VolumeCalibration("Sleep Headphones", 0.01, 0.02, 0.10),
+        backend=MockAudioBackend(),
+        tlr_block_plan=tlr_plan,
+    )
+    return {
+        "summary": summary,
+        "guard": _jsonl(summary.arousal_guard_events_path),
+        "scheduler": _jsonl(summary.scheduler_events_path),
+        "audio": _jsonl(summary.audio_log_path),
+    }
+
+
+def _jsonl(path):
+    return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _plays(scheduler_events):
+    return [event for event in scheduler_events if event["event_type"] == "play"]
+
+
+def _play_key(play):
+    return play["timestamp_seconds"], play["protocol"], play["cue_id"], play.get("puzzle_id")
 
 
 def pilot4_config(
