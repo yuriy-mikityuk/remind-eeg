@@ -2,6 +2,7 @@ import asyncio
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -80,6 +81,23 @@ class FakeMuseSource:
         self.stop_calls += 1
 
 
+class LoopWatchingBackend(MockAudioBackend):
+    """Mock audio that, while it plays a cue, hands the event loop a callback from the
+    thread it plays on, as bleak hands it each BLE notification, and waits up to 1 s for
+    the loop to run it."""
+
+    def __init__(self, loop):
+        super().__init__()
+        self.loop = loop
+        self.loop_ran = []
+
+    def play_test_cue(self, request):
+        ran = threading.Event()
+        self.loop.call_soon_threadsafe(ran.set)
+        self.loop_ran.append(ran.wait(timeout=1.0))
+        return super().play_test_cue(request)
+
+
 class HangingMuseSource(FakeMuseSource):
     def __init__(self, *, sleep_seconds=3600.0):
         super().__init__(())
@@ -124,6 +142,27 @@ class TestPilot4Cueing(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(summary.max_effective_volume, 0.04)
         self.assertTrue(all(event["effective_volume"] <= 0.04 for event in audio_events))
         self.assertTrue(all(event["backend_name"] == "mock" for event in audio_events))
+
+    async def test_the_event_loop_keeps_running_while_a_cue_plays(self):
+        # bleak hands each BLE notification to the event loop and the stream client stamps
+        # it there, so a tone played on the loop would give every packet that came during
+        # it the time the tone ended (#227).
+        backend = LoopWatchingBackend(asyncio.get_running_loop())
+        catalog, session, assignment, cue_library = protocol_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary = await run_pilot4_cueing_night(
+                FakeMuseSource(rem_frames(4)),
+                config=replace(pilot4_config(Path(tmpdir), duration_seconds=60.0), score_cue_arousal=False),
+                catalog=catalog,
+                session=session,
+                assignment=assignment,
+                cue_library=cue_library,
+                calibration=VolumeCalibration("Sleep Headphones", 0.01, 0.02, 0.04),
+                backend=backend,
+            )
+
+        self.assertEqual(summary.cue_play_count, 2)
+        self.assertEqual(backend.loop_ran, [True, True])
 
     async def test_the_night_logs_its_gate_decisions_and_scores_its_cues(self):
         catalog, session, assignment, cue_library = protocol_fixture()

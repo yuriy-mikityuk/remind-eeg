@@ -481,7 +481,11 @@ async def run_pilot4_cueing_night(
                 if event.event_type == "play":
                     if state.first_play_seconds is None:
                         state.first_play_seconds = decision_seconds
-                    result = _play_scheduler_event(event, cue_library, player)
+                    # On a worker thread: afplay blocks until the tone ends, and the BLE
+                    # client stamps each packet when the event loop takes it, so a tone
+                    # played on the loop would stamp every packet of its length late and
+                    # the cue arousal scorer would read them as lost.
+                    result = await asyncio.to_thread(_play_scheduler_event, event, cue_library, player)
                     state.playback_results.append(result)
                     _append_jsonl(
                         recording_events_path,
