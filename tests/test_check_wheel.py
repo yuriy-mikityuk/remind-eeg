@@ -1,8 +1,12 @@
+import contextlib
 import importlib.util
+import io
+import sys
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 
 def _load_check_script():
@@ -11,6 +15,13 @@ def _load_check_script():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _run_main(check, wheel):
+    output = io.StringIO()
+    with mock.patch.object(sys, "argv", ["check_wheel.py", str(wheel)]), contextlib.redirect_stdout(output):
+        code = check.main()
+    return code, output.getvalue()
 
 
 class TestCheckWheel(unittest.TestCase):
@@ -52,6 +63,21 @@ class TestCheckWheel(unittest.TestCase):
                 archive.writestr("amused.py", "")
                 archive.writestr("amused/__init__.py", "")
             self.assertEqual(check.top_level_amused(wheel), ["amused", "amused.py"])
+
+    def test_fails_a_complete_wheel_that_ships_a_top_level_amused(self):
+        check = _load_check_script()
+        with tempfile.TemporaryDirectory() as tmp:
+            wheel = Path(tmp) / "pkg.whl"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                for name in check.expected_files():
+                    archive.writestr(name, "")
+            self.assertEqual(_run_main(check, wheel)[0], 0)
+
+            with zipfile.ZipFile(wheel, "a") as archive:
+                archive.writestr("amused.py", "")
+            code, output = _run_main(check, wheel)
+            self.assertEqual(code, 1)
+            self.assertIn("pkg.whl ships amused.py", output)
 
 
 if __name__ == "__main__":
