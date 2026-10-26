@@ -353,6 +353,7 @@ async def run_pilot4_cueing_night(
         config=config.scheduler_config,
         tlr_block_plan=tlr_block_plan,
         event_log_path=scheduler_events_path,
+        playback_config=player.config,
     )
     raw_stream = MuseRawStream(str(raw_path))
     raw_stream.open_write()
@@ -505,14 +506,17 @@ def _play_scheduler_event(
     cue = cue_library.by_id(event.cue_id)
     if cue.frequency_hz is None:
         raise ValueError(f"pilot4 cue must include frequency_hz: {cue.cue_id}")
-    requested_volume = float(event.metadata.get("volume_hint", cue.volume_hint or player.config.default_volume))
+    # The cue's hint, or the player's default without one. The player caps it and only
+    # then applies a lower_volume multiplier, so every cap still holds and the cue plays
+    # at that fraction of its normal volume.
     return player.play_test_cue(
         TestCue(
             cue_id=cue.cue_id,
             frequency_hz=cue.frequency_hz,
             duration_seconds=cue.duration_seconds,
         ),
-        volume=requested_volume,
+        volume=cue.volume_hint,
+        volume_multiplier=float(event.metadata.get("volume_multiplier", 1.0)),
     )
 
 

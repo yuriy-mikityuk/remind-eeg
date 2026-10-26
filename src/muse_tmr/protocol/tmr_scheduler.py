@@ -7,7 +7,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, Mapping, Optional, Tuple
 
-from muse_tmr.audio import CueLibrary, VolumeCalibration, calibrated_max_volume
+from muse_tmr.audio import (
+    AudioPlaybackConfig,
+    CueLibrary,
+    VolumeCalibration,
+    calibrated_max_volume,
+)
 from muse_tmr.models import RemGateDecision
 from muse_tmr.protocol.arousal_guard import ArousalGuardDecision
 from muse_tmr.protocol.puzzle_protocol import PuzzleCatalog
@@ -126,6 +131,11 @@ class TmrCueScheduler:
 
     This class logs scheduling decisions only. Audio playback remains behind
     `AudioCuePlayer`, and REM confidence remains behind `StableRemGate`.
+
+    A play event keeps the cue's own `volume_hint`; on `lower_volume` it adds the
+    guard's `volume_multiplier`, which the player applies after its cap. Given the
+    player's `playback_config`, every play event also logs the volume that player
+    plays it at (`AudioPlaybackConfig.cue_volume()`).
     """
 
     def __init__(
@@ -137,6 +147,7 @@ class TmrCueScheduler:
         config: Optional[TmrSchedulerConfig] = None,
         tlr_block_plan: Optional[TlrBlockPlan] = None,
         event_log_path: Optional[Path] = None,
+        playback_config: Optional[AudioPlaybackConfig] = None,
     ) -> None:
         self.assignment = assignment
         self.catalog = catalog
@@ -145,6 +156,7 @@ class TmrCueScheduler:
         self.config.validate()
         self.tlr_block_plan = tlr_block_plan
         self.event_log_path = event_log_path
+        self.playback_config = playback_config
         self._scheduled_puzzles = _scheduled_puzzles(assignment, catalog, cue_library)
         self._events = []
         self._active_block = False
@@ -387,6 +399,7 @@ class TmrCueScheduler:
                 "block_event_type": block_event.event_type,
                 "tlr_event_index": self._tlr_event_index + 1,
             },
+            playback_config=self.playback_config,
         )
         return self._record(
             TmrSchedulerEvent(
@@ -412,6 +425,7 @@ class TmrCueScheduler:
             cue_volume_hint=cue.volume_hint,
             volume_context=volume_context,
             extra={"puzzle_cue_index": self._puzzle_cues_in_block + 1},
+            playback_config=self.playback_config,
         )
         event = self._record(
             TmrSchedulerEvent(
@@ -509,6 +523,7 @@ def _cue_metadata(
     cue_volume_hint: Optional[float],
     volume_context: Mapping[str, object],
     extra: Mapping[str, object],
+    playback_config: Optional[AudioPlaybackConfig],
 ) -> Dict[str, object]:
     metadata: Dict[str, object] = {
         "duration_seconds": cue_duration_seconds,
@@ -516,11 +531,17 @@ def _cue_metadata(
     }
     if cue_volume_hint is not None:
         metadata["volume_hint"] = cue_volume_hint
-    if volume_context:
-        metadata.update(volume_context)
-        if cue_volume_hint is not None:
-            metadata["original_volume_hint"] = cue_volume_hint
-            metadata["volume_hint"] = cue_volume_hint * float(volume_context["volume_multiplier"])
+    # The hint stays as it is: scaling it here, before the player's cap, lost the
+    # multiplier whenever the cap sat below the hint (#255).
+    metadata.update(volume_context)
+    if playback_config is not None:
+        volume_multiplier = float(volume_context.get("volume_multiplier", 1.0))
+        metadata.update(
+            playback_config.cue_volume(
+                cue_volume_hint,
+                volume_multiplier=volume_multiplier,
+            ).to_dict()
+        )
     return metadata
 
 

@@ -444,9 +444,11 @@ NOISY_EPOCHS = set(range(8, 18))
 class TestBlindOpticsLowerTheVolume(unittest.TestCase):
     """Pilot 5 over a replay of that night (#234). The guard lowers the volume on the
     epochs its heart-rate rule is blind on, and the TLR and puzzle cues there play at
-    half their volume hint, through the scheduler, the player and the logs that every
-    lower_volume reason goes through. With hr_rule_blind_action allow the same cues play
-    at full volume."""
+    half the volume they play at otherwise, through the scheduler, the player and the
+    logs that every lower_volume reason goes through. With hr_rule_blind_action allow
+    the same cues play at full volume. The calibration cap of 0.06 sits above the TLR
+    hint (0.05) and below the hint of cue-p1 (0.10), and cue-p3 has no hint, so it plays
+    at the default volume (0.02): the guard's multiplier comes after the cap (#255)."""
 
     @classmethod
     def setUpClass(cls):
@@ -491,44 +493,157 @@ class TestBlindOpticsLowerTheVolume(unittest.TestCase):
             else:
                 self.assertEqual(event["action"], "allow", index)
 
-    def test_cues_in_the_stretch_play_at_half_their_volume_hint(self):
+    def test_cues_in_the_stretch_play_at_half_their_capped_volume(self):
         summary = self.lowered["summary"]
         plays = _plays(self.lowered["scheduler"])
         self.assertTrue(summary.passed)
         self.assertEqual(summary.tlr_cue_play_count, 2)
-        self.assertGreaterEqual(summary.puzzle_cue_play_count, 1)
+        self.assertEqual(summary.puzzle_cue_play_count, 2)
         self.assertEqual(summary.uncued_puzzle_play_count, 0)
         for play in plays:
             metadata = play["metadata"]
             self.assertIn(int(play["timestamp_seconds"] // 30), NOISY_EPOCHS)
             self.assertEqual(metadata["arousal_guard_action"], "lower_volume")
             self.assertEqual(metadata["arousal_guard_reason_codes"], ["hr_rule_blind"])
-            self.assertEqual(metadata["volume_multiplier"], 0.5)
-            self.assertAlmostEqual(metadata["volume_hint"], 0.5 * metadata["original_volume_hint"])
-        # The player gets the lowered volume and, under the calibration cap, plays it.
+            self.assertNotIn("original_volume_hint", metadata)
+        # requested, capped, multiplier and effective volume of each play
+        self.assertEqual(
+            [(play["cue_id"], _volumes(play["metadata"])) for play in plays],
+            [
+                ("tlr_soft_tone", (0.05, 0.05, 0.5, 0.025)),
+                ("tlr_soft_tone", (0.05, 0.05, 0.5, 0.025)),
+                ("cue-p1", (0.10, 0.06, 0.5, 0.03)),
+                ("cue-p3", (0.02, 0.02, 0.5, 0.01)),
+            ],
+        )
+        # The audio log says the same, and the volume_hint stays the cue's own.
         played = [event for event in self.lowered["audio"] if event["status"] == "played"]
-        requested = [event["requested_volume"] for event in played]
-        self.assertEqual(requested, [play["metadata"]["volume_hint"] for play in plays])
-        self.assertEqual([event["effective_volume"] for event in played], requested)
+        self.assertEqual([_volumes(event) for event in played], [_volumes(play["metadata"]) for play in plays])
+        self.assertEqual([play["metadata"].get("volume_hint") for play in plays], [0.05, 0.05, 0.10, None])
+        self.assertTrue(all("volume_lowered" in event["reason_codes"] for event in played))
 
-    def test_allow_plays_the_same_cues_at_full_volume(self):
+    def test_lowered_cues_play_at_exactly_half_of_what_allow_plays(self):
         lowered, allowed = _plays(self.lowered["scheduler"]), _plays(self.allowed["scheduler"])
         self.assertEqual([_play_key(play) for play in allowed], [_play_key(play) for play in lowered])
-        for before, after in zip(allowed, lowered):
-            self.assertNotIn("volume_multiplier", before["metadata"])
-            self.assertAlmostEqual(after["metadata"]["volume_hint"], 0.5 * before["metadata"]["volume_hint"])
+        for before in allowed:
+            self.assertNotIn("arousal_guard_action", before["metadata"])
+            self.assertEqual(before["metadata"]["volume_multiplier"], 1.0)
         for index in NOISY_EPOCHS:
             event = self.allowed["guard"][index]
             self.assertEqual((event["action"], event["reason_codes"]), ("allow", []), index)
             self.assertIs(event["metadata"]["hr_rule_blind"], True)
-        requested = [event["requested_volume"] for event in self.allowed["audio"] if event["status"] == "played"]
-        self.assertEqual(requested, [play["metadata"]["volume_hint"] for play in allowed])
+        normal = [event for event in self.allowed["audio"] if event["status"] == "played"]
+        quieter = [event for event in self.lowered["audio"] if event["status"] == "played"]
+        self.assertEqual(len(normal), 4)
+        self.assertEqual(
+            [event["effective_volume"] for event in quieter],
+            [0.5 * event["effective_volume"] for event in normal],
+        )
+        self.assertEqual([_volumes(event) for event in normal], [_volumes(play["metadata"]) for play in allowed])
+
+    def test_allow_logs_what_it_logged_before(self):
+        # The volume fields of the allow plays in audio_playback.jsonl as main wrote them
+        # for this replay before #255 (602386c): the TLR hint under the cap, cue-p1's
+        # hint above it, the default volume of cue-p3.
+        normal = [event for event in self.allowed["audio"] if event["status"] == "played"]
+        old_fields = ("cue_id", "requested_volume", "effective_volume", "max_volume", "volume_capped", "reason_codes")
+        before = (
+            ("tlr_soft_tone", 0.05, 0.05, 0.06, False, ["mock_playback", "device_selected"]),
+            ("tlr_soft_tone", 0.05, 0.05, 0.06, False, ["mock_playback", "device_selected"]),
+            ("cue-p1", 0.1, 0.06, 0.06, True, ["volume_capped", "mock_playback", "device_selected"]),
+            ("cue-p3", 0.02, 0.02, 0.06, False, ["mock_playback", "device_selected"]),
+        )
+        self.assertEqual(
+            [json.dumps({key: event[key] for key in old_fields}, sort_keys=True) for event in normal],
+            [json.dumps(dict(zip(old_fields, values)), sort_keys=True) for values in before],
+        )
+
+
+# Any relative alpha lowers the volume and none pauses, so every epoch is lower_volume.
+ALPHA_LOWERS_EVERY_EPOCH = ArousalGuardConfig(
+    alpha_lower_volume_relative_power=0.0,
+    alpha_pause_relative_power=1.0,
+)
+
+
+class TestLowerVolumeAfterTheCaps(unittest.IsolatedAsyncioTestCase):
+    """Pilot 4 nights where the guard lowers the volume of every epoch, against the same
+    nights under allow (#255). Before, the scheduler halved the hint and the player capped
+    it afterwards; now a lowered cue plays at exactly half of what it plays at under
+    allow, after the calibration and hard caps, with or without a volume hint."""
+
+    async def test_lowered_cues_play_at_half_the_allowed_volume_after_every_cap(self):
+        cases = (
+            # hint of both cued cues, comfortable volume, --hard-max-volume, allowed, lowered
+            (0.10, 0.06, 0.20, 0.06, 0.03),  # hint above the calibration cap: 0.05 before
+            (0.05, 0.10, 0.20, 0.05, 0.025),  # hint below it: 0.025 before too
+            (None, 0.06, 0.20, 0.02, 0.01),  # no hint, --default-volume 0.02: not lowered before
+            (0.10, 0.50, 0.04, 0.04, 0.02),  # the hard cap below the calibration: 0.04 before
+        )
+        for volume_hint, comfortable, hard_max, allowed, lowered in cases:
+            with self.subTest(volume_hint=volume_hint, comfortable=comfortable, hard_max=hard_max):
+                normal = await self._night(volume_hint, comfortable, hard_max, arousal_guard_config=None)
+                quieter = await self._night(
+                    volume_hint, comfortable, hard_max, arousal_guard_config=ALPHA_LOWERS_EVERY_EPOCH
+                )
+
+                for logs, action in ((normal, "allow"), (quieter, "lower_volume")):
+                    plays = _plays(logs["scheduler"])
+                    played = [event for event in logs["audio"] if event["status"] == "played"]
+                    self.assertTrue(logs["summary"].passed)
+                    self.assertEqual([play["puzzle_id"] for play in plays], ["p1", "p3"])
+                    for play in plays:
+                        guard = logs["guard"][int(play["timestamp_seconds"] // 30)]
+                        self.assertEqual(guard["action"], action)
+                    # The scheduler logs what the player then plays.
+                    self.assertEqual(
+                        [_volumes(event) for event in played], [_volumes(play["metadata"]) for play in plays]
+                    )
+                self.assertEqual(
+                    [_play_key(play) for play in _plays(quieter["scheduler"])],
+                    [_play_key(play) for play in _plays(normal["scheduler"])],
+                )
+                normal_played = [event for event in normal["audio"] if event["status"] == "played"]
+                quieter_played = [event for event in quieter["audio"] if event["status"] == "played"]
+                self.assertEqual([event["effective_volume"] for event in normal_played], [allowed] * 2)
+                self.assertEqual([event["effective_volume"] for event in quieter_played], [lowered] * 2)
+                self.assertEqual(
+                    [event["effective_volume"] for event in quieter_played],
+                    [0.5 * event["effective_volume"] for event in normal_played],
+                )
+                self.assertEqual(
+                    [event["volume_capped"] for event in quieter_played],
+                    [event["volume_capped"] for event in normal_played],
+                )
+                self.assertLessEqual(quieter["summary"].max_effective_volume, min(comfortable, hard_max))
+
+    async def _night(self, volume_hint, comfortable, hard_max, *, arousal_guard_config):
+        catalog, session, assignment, cue_library = protocol_fixture()
+        cue_library = _with_volume_hint(cue_library, volume_hint, cue_ids=("cue-p1", "cue-p3"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary = await run_pilot4_cueing_night(
+                FakeMuseSource(rem_frames(4)),
+                config=replace(
+                    # The end of the frames ends the night, not the clock.
+                    pilot4_config(Path(tmpdir), duration_seconds=60.0),
+                    hard_max_volume=hard_max,
+                    arousal_guard_config=arousal_guard_config,
+                ),
+                catalog=catalog,
+                session=session,
+                assignment=assignment,
+                cue_library=cue_library,
+                calibration=VolumeCalibration("Sleep Headphones", 0.01, 0.02, comfortable),
+                backend=MockAudioBackend(),
+            )
+            return _night_logs(summary)
 
 
 async def _replayed_pilot5(recording_dir, output_dir, *, arousal_guard_config=None):
     """Pilot 5 with mock audio over a replay of ``recording_dir``, the p1034 gate and the
     guard default unless ``arousal_guard_config`` is given; the summary and its logs."""
     catalog, session, assignment, cue_library = protocol_fixture(include_tlr=True)
+    cue_library = _with_volume_hint(cue_library, None, cue_ids=("cue-p3",))
     tlr_plan = plan_tlr_block(
         default_tlr_cue(),
         config=TlrBlockConfig(repetitions=2, interval_seconds=0.0, post_block_pause_seconds=0.0),
@@ -551,11 +666,15 @@ async def _replayed_pilot5(recording_dir, output_dir, *, arousal_guard_config=No
         session=session,
         assignment=assignment,
         cue_library=cue_library,
-        # A cap above every hint, so the lowered volume is what plays.
-        calibration=VolumeCalibration("Sleep Headphones", 0.01, 0.02, 0.10),
+        # Between the TLR hint (0.05) and cue-p1's (0.10).
+        calibration=VolumeCalibration("Sleep Headphones", 0.01, 0.02, 0.06),
         backend=MockAudioBackend(),
         tlr_block_plan=tlr_plan,
     )
+    return _night_logs(summary)
+
+
+def _night_logs(summary):
     return {
         "summary": summary,
         "guard": _jsonl(summary.arousal_guard_events_path),
@@ -570,6 +689,24 @@ def _jsonl(path):
 
 def _plays(scheduler_events):
     return [event for event in scheduler_events if event["event_type"] == "play"]
+
+
+def _volumes(payload):
+    """requested, capped, multiplier and effective volume of a play event's metadata or
+    an audio log line."""
+    return tuple(
+        payload[key] for key in ("requested_volume", "capped_volume", "volume_multiplier", "effective_volume")
+    )
+
+
+def _with_volume_hint(cue_library, volume_hint, *, cue_ids):
+    return replace(
+        cue_library,
+        cues=tuple(
+            replace(cue, volume_hint=volume_hint) if cue.cue_id in cue_ids else cue
+            for cue in cue_library.cues
+        ),
+    )
 
 
 def _play_key(play):
