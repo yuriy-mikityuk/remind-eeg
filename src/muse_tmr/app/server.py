@@ -42,6 +42,10 @@ CONNECTION_STATES = ("disconnected", "scanning", "connecting", "connected", "err
 
 CAFFEINATE = "/usr/bin/caffeinate"
 
+# Python's own table has no .webp before 3.13, and Windows does not always register
+# it, so the guide pictures went out as application/octet-stream there.
+_EXTRA_CONTENT_TYPES = {".webp": "image/webp"}
+
 # The recorder rewrites progress.json every ~2 s while frames arrive.
 RECORDER_HEARTBEAT_STALE_SECONDS = 10.0
 
@@ -1976,7 +1980,11 @@ class LocalMuseAppHandler(BaseHTTPRequestHandler):
             return
 
         body = file_path.read_bytes()
-        content_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+        content_type = (
+            mimetypes.guess_type(str(file_path))[0]
+            or _EXTRA_CONTENT_TYPES.get(file_path.suffix.lower())
+            or "application/octet-stream"
+        )
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
