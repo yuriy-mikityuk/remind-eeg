@@ -80,10 +80,12 @@ class OpticsAgreementConfig:
     ``sudden_hr_change_margin_bpm``, ``sudden_hr_change_pause_count`` and
     ``sudden_hr_change_link_seconds``). The ECG change of an epoch is its largest one
     between the windows the rule pairs. A fired epoch is a false jump when neither it
-    nor the epoch before has an ECG change of ``jump_bpm`` less ``jump_margin_bpm``, and
-    an ECG change of ``jump_bpm`` or more is missed when neither its epoch nor the next
-    fires. Below ``min_epochs`` compared epochs the report carries ``n_epochs_small``, below
-    ``min_jump_events`` fired epochs and ECG jumps together ``few_jump_events``.
+    nor the epoch before has an ECG change of ``jump_bpm`` less ``jump_margin_bpm``. An
+    ECG change of ``jump_bpm`` or more counts once, also when the next epoch sees it again
+    in the same direction over overlapping windows, and is missed when none of its epochs
+    and not the one after them fires. Below ``min_epochs`` compared epochs the report
+    carries ``n_epochs_small``, below ``min_jump_events`` fired epochs and ECG jumps
+    together ``few_jump_events``.
     """
 
     epoch_seconds: float = 30.0
@@ -198,8 +200,9 @@ class JumpRow:
 
     ``epochs`` had an ECG change to score against; ``fired`` of them paused,
     ``false_jumps`` of those without an ECG change of ``jump_bpm`` less the margin in
-    their own epoch or the one before. ``ecg_jumps`` had an ECG change of ``jump_bpm``
-    or more, ``missed`` of them without a pause in their epoch or the next.
+    their own epoch or the one before. ``ecg_jumps`` are the ECG changes of ``jump_bpm``
+    or more, each counted once in the epoch it starts in, ``missed`` of them without a
+    pause in their epochs or the one after.
     """
 
     stratum: str
@@ -651,7 +654,11 @@ class _EpochRecord:
     changes: Tuple[SuddenHeartRateChange, ...]
     centres: Tuple[float, ...]
     centre_ecg_bpm: Tuple[float, ...]
-    ecg_change_bpm: float
+    ecg_change: Optional[SuddenHeartRateChange]
+
+    @property
+    def ecg_change_bpm(self) -> float:
+        return self.ecg_change.delta_bpm if self.ecg_change is not None else math.nan
 
 
 class _Accumulator:
@@ -701,7 +708,7 @@ class _Accumulator:
             changes=row.sudden_hr_changes,
             centres=centres,
             centre_ecg_bpm=centre_ecg,
-            ecg_change_bpm=_ecg_change(centres, centre_ecg, previous, config),
+            ecg_change=_ecg_change(centres, centre_ecg, previous, config),
         )
         self.records.append(record)
 
@@ -779,14 +786,15 @@ def _ecg_change(
     values: Sequence[float],
     previous: Optional[_EpochRecord],
     config: OpticsAgreementConfig,
-) -> float:
-    """The largest ECG heart-rate change with the rule's pairing: windows of this epoch
-    ``hr_series_compare_seconds`` to ``hr_series_max_compare_seconds`` apart, and windows
-    of the previous epoch to this one's at most ``jump_link_seconds`` later. NaN when no
-    pair has a reference at both ends."""
+) -> Optional[SuddenHeartRateChange]:
+    """The largest ECG heart-rate change with the rule's pairing, and the two window
+    centres it lies between: windows of this epoch ``hr_series_compare_seconds`` to
+    ``hr_series_max_compare_seconds`` apart, and windows of the previous epoch to this
+    one's at most ``jump_link_seconds`` later. None when no pair has a reference at both
+    ends."""
     shortest = config.ppg.hr_series_compare_seconds - _TIME_TOLERANCE_SECONDS
     longest = config.ppg.hr_series_max_compare_seconds + _TIME_TOLERANCE_SECONDS
-    largest = math.nan
+    largest: Optional[SuddenHeartRateChange] = None
     pairs = [
         (centres[i], values[i], centres[j], values[j])
         for j in range(len(centres))
@@ -800,12 +808,18 @@ def _ecg_change(
             for before, before_value in zip(previous.centres, previous.centre_ecg_bpm)
             if 0 < after - before <= config.jump_link_seconds + _TIME_TOLERANCE_SECONDS
         ]
-    for _before, before_value, _after, after_value in pairs:
+    for before, before_value, after, after_value in pairs:
         if not (math.isfinite(before_value) and math.isfinite(after_value)):
             continue
         delta = after_value - before_value
-        if not math.isfinite(largest) or abs(delta) > abs(largest):
-            largest = delta
+        if largest is None or abs(delta) > abs(largest.delta_bpm):
+            largest = SuddenHeartRateChange(
+                start_time=before,
+                end_time=after,
+                before_bpm=before_value,
+                after_bpm=after_value,
+                delta_bpm=delta,
+            )
     return largest
 
 
@@ -995,8 +1009,11 @@ def _scored(record: _EpochRecord) -> bool:
 class _Score:
     """One scored epoch. A fire counts for an ECG change of ``jump_bpm`` less the margin
     in its own epoch or the one before, as a step at an epoch boundary pauses the epoch
-    after it; any other fire is a false jump. An ECG change of ``jump_bpm`` or more is
-    caught when its epoch or the next one fires (#251 scored the rule the same way)."""
+    after it; any other fire is a false jump. An ECG change of ``jump_bpm`` or more is one
+    ECG jump, scored on the epoch it starts in: a change in the next epoch in the same
+    direction whose windows overlap its own (the rule's test for one step seen from both
+    sides of a boundary) is the same change. The jump is caught when one of its epochs or
+    the one after them fires (#251 scored the rule the same way)."""
 
     record: _EpochRecord
     outcome: _Outcome
@@ -1011,23 +1028,37 @@ def _scores(
     config: OpticsAgreementConfig,
 ) -> List[_Score]:
     smallest = config.jump_bpm - config.jump_margin_bpm
+    jumps = [_scored(record) and abs(record.ecg_change_bpm) >= config.jump_bpm for record in records]
+    # A window over a step averages both rates, so the windows of the next epoch, paired
+    # with this one's, see the same step again.
+    goes_on = [
+        index > 0
+        and jumps[index]
+        and jumps[index - 1]
+        and _same_step(records[index - 1].ecg_change, records[index].ecg_change)
+        for index in range(len(records))
+    ]
     scores = []
     for index, (record, outcome) in enumerate(zip(records, outcomes)):
         if not _scored(record):
             continue
-        change = abs(record.ecg_change_bpm)
-        near = change
+        near = abs(record.ecg_change_bpm)
         if index > 0 and math.isfinite(records[index - 1].ecg_change_bpm):
             near = max(near, abs(records[index - 1].ecg_change_bpm))
-        ecg_jump = change >= config.jump_bpm
-        next_fired = index + 1 < len(outcomes) and outcomes[index + 1].fired
+        ecg_jump = jumps[index] and not goes_on[index]
+        caught = False
+        if ecg_jump:
+            last = index
+            while last + 1 < len(records) and goes_on[last + 1]:
+                last += 1
+            caught = any(item.fired for item in outcomes[index:last + 2])
         scores.append(
             _Score(
                 record=record,
                 outcome=outcome,
                 false_jump=outcome.fired and near < smallest,
                 ecg_jump=ecg_jump,
-                caught=ecg_jump and (outcome.fired or next_fired),
+                caught=caught,
             )
         )
     return scores
@@ -1287,9 +1318,10 @@ def _markdown(report: OpticsAgreementReport) -> str:
         f"{_number(ppg.get('hr_series_max_compare_seconds'))} s apart, and from the previous "
         f"epoch within {_number(config.get('jump_link_seconds'))} s. The ECG change of an epoch is its "
         "largest between the windows the rule pairs. A fired epoch is a false jump when "
-        f"neither it nor the epoch before changed by {smallest} bpm or more on the ECG; an "
-        f"ECG change of {jump_bpm} bpm or more is missed when neither its epoch nor the next "
-        "fired. Epochs without an ECG change to compare are not scored.",
+        f"neither it nor the epoch before changed by {smallest} bpm or more on the ECG. An "
+        f"ECG change of {jump_bpm} bpm or more counts once, also when the next epoch sees it "
+        "again over overlapping windows, and is missed when none of its epochs and not the "
+        "one after them fired. Epochs without an ECG change to compare are not scored.",
         "",
         "| Stratum | Level | Epochs | Fired | False jumps | ECG jumps | Missed |",
         "|---|---|---:|---:|---:|---:|---:|",

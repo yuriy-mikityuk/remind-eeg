@@ -85,13 +85,38 @@ def epochs_of(frames):
     return asyncio.run(build())
 
 
-def frames_report(beats_s, seconds, seed, tmp, *, config=None):
-    """Polar session and Muse frames from the same beats, and their report."""
+def frames_report(beats_s, seconds, seed, tmp, *, config=None, no_contact=None):
+    """Polar session and Muse frames from the same beats, and their report. The H10 has
+    no skin contact between the seconds ``no_contact``."""
     rng = np.random.default_rng(seed)
-    truth = write_raw_session(tmp, seconds, rng, beats_s=beats_s)
+    truth = write_raw_session(tmp, seconds, rng, beats_s=beats_s, no_contact=no_contact)
     session = load_polar_session(Path(tmp))
     epochs = epochs_of(optics_frames(beats_s, seconds, rng, wall0=truth["wall0"]))
     return optics_agreement_from_epochs(epochs, session, config), epochs
+
+
+def held_beats(seconds, seed, *rates, base_bpm=60.0):
+    """Beats at ``base_bpm``, and at ``bpm`` for each (start, end, bpm) in ``rates``."""
+    rng = np.random.default_rng(seed)
+    beats = [1.0]
+    while beats[-1] < seconds - 1.0:
+        bpm = next((rate for start, end, rate in rates if start <= beats[-1] < end), base_bpm)
+        beats.append(beats[-1] + 60.0 / bpm + rng.normal(0.0, 0.005))
+    return np.asarray(beats)
+
+
+def guard_pauses(epochs):
+    """The epochs ArousalGuard pauses for a sudden heart-rate change and the ones it logs
+    as hr_rule_blind, from their PPG rows alone."""
+    guard = ArousalGuard()
+    paused, blind = set(), set()
+    for epoch in epochs:
+        decision = guard.evaluate(timestamp_seconds=0.0, ppg=extract_ppg_features(epoch))
+        if "sudden_heart_rate_change" in decision.reason_codes:
+            paused.add(epoch.index)
+        if decision.metadata.get("hr_rule_blind"):
+            blind.add(epoch.index)
+    return paused, blind
 
 
 class SteadyHeartTest(unittest.TestCase):
@@ -194,12 +219,7 @@ class HeldStepTest(unittest.TestCase):
         )
 
     def test_the_report_fires_where_the_guard_pauses(self):
-        guard = ArousalGuard()
-        paused = set()
-        for epoch in self.epochs:
-            decision = guard.evaluate(timestamp_seconds=0.0, ppg=extract_ppg_features(epoch))
-            if "sudden_heart_rate_change" in decision.reason_codes:
-                paused.add(epoch.index)
+        paused, _blind = guard_pauses(self.epochs)
         self.assertEqual(paused, {event.epoch_index for event in self.report.events})
 
     def test_gates_keep_or_drop_the_steps(self):
@@ -223,6 +243,63 @@ class HeldStepTest(unittest.TestCase):
         self.assertEqual(config.jump_pause_count, guard.sudden_hr_change_pause_count)
         self.assertEqual(config.jump_link_seconds, guard.sudden_hr_change_link_seconds)
         self.assertEqual(config.hr_rule_blind_skipped_share, guard.hr_rule_blind_skipped_share)
+
+
+class StepScoringTest(unittest.TestCase):
+    """How the report scores held steps against the ECG, next to the epochs ArousalGuard
+    pauses on the same rows. Five minutes around 60 bpm in epochs of 30 s from 0 s."""
+
+    def score(self, *rates, no_contact=None):
+        beats = held_beats(300.0, 21, *rates)
+        with tempfile.TemporaryDirectory() as tmp:
+            report, epochs = frames_report(beats, 300.0, 22, tmp, no_contact=no_contact)
+        overall = report.jumps[0]
+        counts = (overall.ecg_jumps, overall.fired, overall.false_jumps, overall.missed)
+        return report, counts, guard_pauses(epochs)[0]
+
+    def test_a_rise_the_next_epoch_sees_again_counts_once(self):
+        # The ECG window over the rise averages both rates, so epoch 5's windows, paired with
+        # it, change by 10 bpm or more as well; the series reads that window at the new rate
+        # and the rule does not fire again.
+        for start, bpm in ((135.0, 100.0), (134.0, 85.0)):
+            with self.subTest(start=start, bpm=bpm):
+                report, counts, paused = self.score((start, 300.0, bpm))
+                self.assertEqual(counts, (1, 1, 0, 0))
+                self.assertEqual(paused, {4})
+                self.assertEqual({event.epoch_index for event in report.events}, paused)
+
+    def test_a_step_at_an_epoch_boundary(self):
+        # Up as epoch 4 starts, down as epoch 6 starts: only the previous epoch's windows,
+        # paired with the next one's, see each step, on the ECG as in the rule.
+        report, counts, paused = self.score((120.0, 180.0, 75.0))
+        self.assertEqual(counts, (2, 2, 0, 0))
+        self.assertEqual(paused, {4, 6})
+        self.assertEqual([(event.epoch_index, event.kind) for event in report.events], [(4, "across"), (6, "across")])
+
+    def test_a_step_the_row_and_the_link_both_see_is_one_change(self):
+        # 5 s into epoch 4 the row's own values and the link from epoch 3 both hold the step;
+        # the link's change, in the same direction over the same time, is not listed again.
+        report, counts, paused = self.score((125.0, 300.0, 75.0))
+        self.assertEqual(counts, (1, 1, 0, 0))
+        self.assertEqual(paused, {4})
+        self.assertEqual([(event.epoch_index, event.kind) for event in report.events], [(4, "row")])
+
+    def test_a_change_between_the_two_thresholds(self):
+        # 9.4 bpm up and down: the rule counts changes from 9 bpm, so it fires, and neither
+        # fire is false; an ECG jump takes 10.
+        _report, counts, paused = self.score((135.0, 195.0, 69.4))
+        self.assertEqual(counts, (0, 2, 0, 0))
+        self.assertEqual(paused, {4, 6})
+
+    def test_a_pause_in_the_next_epoch_catches_a_late_step(self):
+        # 25 s into epoch 4 the ECG window over the step already changes by 10 bpm or more,
+        # while the series reads that window at the old rate: the rule sees the step from
+        # epoch 5. The H10 loses contact there, so epoch 5 has no ECG change and is not
+        # scored (fired 0), and its pause still catches epoch 4's jump.
+        report, counts, paused = self.score((145.0, 300.0, 90.0), no_contact=(165.0, 170.0))
+        self.assertEqual(paused, {5})
+        self.assertEqual(counts, (1, 0, 0, 0))
+        self.assertIn("no_contact_seconds", report.limitation_codes)
 
 
 class GeneratedNightCliTest(unittest.TestCase):

@@ -80,9 +80,12 @@ the 1 bpm margin) between values 10 to 20 s apart, and the largest change from t
 previous epoch's values within 20 s, counted once when a row change holds the same step.
 The ECG change of an epoch is its largest between the windows the rule pairs. A fired
 epoch is a false jump when neither it nor the epoch before changed by 9 bpm or more on
-the ECG, and an ECG change of 10 bpm or more is missed when neither its epoch nor the
-next fired: a step at an epoch boundary pauses the epoch after it, and #251 counted
-steps found the same way. Epochs without an ECG change to compare are not scored.
+the ECG: a step at an epoch boundary pauses the epoch after it, and #251 counted steps
+found the same way. An ECG change of 10 bpm or more is one ECG jump, also when the next
+epoch sees it again: the ECG window over a step averages both rates, so the next epoch's
+windows, paired with it, can change by 10 bpm or more in the same direction over
+overlapping windows. The jump is missed when none of its epochs and not the one after
+them fired. Epochs without an ECG change to compare are not scored.
 
 The table splits the epochs by the same quality fields and by `hr_rule_blind` (more
 than half the series values skipped). A second table runs the rule with a gate on
@@ -158,8 +161,9 @@ with `ppg_confidence` below 0.4; its scores and `P_REM` do not change.
   in `muse_athena_protocol.py` and no vendor document in the repository confirms them
   (`docs/data_model.md`).
 - The jump scoring credits a fire to an ECG change in its own or the previous epoch, and
-  a caught ECG change to a fire in its own or the next one. On a recording where the heart
+  an ECG jump to a fire in its epochs or the next one. On a recording where the heart
   rate changes by 10 bpm or more in most epochs, that credit makes the rule look better
-  than it is.
+  than it is. Each epoch scores only its largest ECG change, so a surge up and back down
+  inside one epoch is one jump.
 - Below 60 compared epochs the report carries `n_epochs_small`, below 10 fired epochs and
   ECG jumps together `few_jump_events`.
