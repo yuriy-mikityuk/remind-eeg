@@ -678,6 +678,14 @@ class TestBlindOpticsLowerTheVolume(unittest.TestCase):
                 self.assertIs(report["synthetic"], True)
                 # Every cue sits in a gate-open run; the guard decisions are the same in both.
                 self.assertTrue(all(cue["rem_period_index"] is not None for cue in cues))
+                # The optics are noise from 240 to 540 s, where the series uses no value:
+                # no window has a heart-rate flag, and none is read from unused values.
+                self.assertEqual(len(report["windows"]), 8)
+                for window in report["windows"]:
+                    self.assertIsNone(window["flags"]["hr"], (window["kind"], window["index"]))
+                    self.assertIn("hr_unavailable", window["quality_flags"])
+                    self.assertGreater(window["values"]["hr_values_skipped"], 0)
+                self.assertIn("hr_unavailable", block["limitations"])
 
     def test_a_schema_1_summary_still_scores(self):
         # A summary from before #227 has no first_epoch_start: the scorer takes the first

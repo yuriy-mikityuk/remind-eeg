@@ -95,14 +95,17 @@ def stream(
     emg=(),
     line=None,
     heart_rate=None,
+    optics_noise=(),
     movements=(),
     gaps=(),
 ):
     """Frames from T0, eight a second: 12 µV 1/f EEG with 1 µV of 20-100 Hz on every
     channel, a still IMU, optics only when heart_rate is given. alpha (10 Hz) and emg
     (55-95 Hz) are (start, stop, µV) bursts in seconds from T0 on every channel, line(t)
-    the µV of a 63.93 Hz line on AF7, movements (start, stop) head turns of 0.6 g and
-    80 deg/s, gaps (start, stop) stretches whose frames never arrive."""
+    the µV of a 63.93 Hz line on AF7, optics_noise (start, stop) stretches where the
+    optics are 0.5-4 Hz noise at three times the pulse instead, movements (start, stop)
+    head turns of 0.6 g and 80 deg/s, gaps (start, stop) stretches whose frames never
+    arrive."""
     rng = np.random.default_rng(seed)
     n = int(seconds * FS)
     t = np.arange(n) / FS
@@ -119,6 +122,12 @@ def stream(
     if line is not None:
         eeg["AF7"] = eeg["AF7"] + line(t) * np.sin(2 * np.pi * 63.93 * t)
     optics = None if heart_rate is None else pulse(seconds, heart_rate)
+    if optics is not None and optics_noise:
+        optics_t = np.arange(optics.size) / PPG_FS
+        noise = 3.0 * float(np.std(optics)) * band_noise(optics.size, 0.5, 4.0, rng, fs=PPG_FS)
+        for start, stop in optics_noise:
+            inside = (optics_t >= start) & (optics_t < stop)
+            optics[inside] = 50000.0 + noise[inside]
     frames = []
     per_frame = int(FRAME_SECONDS * FS)
     imu_done = 0
@@ -236,6 +245,20 @@ class WindowFlagTest(unittest.TestCase):
         self.assertGreaterEqual(cue.values["hr_jump_bpm"], 10.0)
         self.assertIs(control.flags["hr"], False)
         self.assertGreaterEqual(control.values["hr_values_baseline"], 3)
+
+    def test_optics_that_turn_to_noise_give_hr_unavailable_not_a_flag(self):
+        # The series uses none of its values after the cue; read anyway, they would give a
+        # heart rate the pulse never had.
+        steady = lambda t: np.full(t.shape, 60.0)  # noqa: E731
+        cue, control = score(stream(heart_rate=steady, optics_noise=[(40.0, 56.0)]), optics_capable=True)
+        self.assertIsNone(cue.flags["hr"])
+        self.assertIn("hr_unavailable", cue.quality_flags)
+        self.assertGreaterEqual(cue.values["hr_values_baseline"], 3)
+        self.assertEqual(cue.values["hr_values_post"], 0)
+        self.assertGreater(cue.values["hr_values_skipped"], 0)
+        self.assertIs(cue.flags["any"], False)
+        self.assertIs(control.flags["hr"], False)
+        self.assertNotIn("hr_unavailable", control.quality_flags)
 
     def test_missing_ppg_gives_ppg_absent_not_a_flag(self):
         for optics_capable in (True, False):
