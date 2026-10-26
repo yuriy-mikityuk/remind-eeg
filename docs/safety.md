@@ -12,9 +12,11 @@ Sleep-time audio must use conservative defaults:
 - no cueing outside a stable REM gate
 
 `muse_tmr.audio.audio_player.AudioCuePlayer` enforces a maximum playback volume, records
-the requested and effective volume, carries fade-in/fade-out settings, supports an
+the requested, capped and effective volume, carries fade-in/fade-out settings, supports an
 emergency stop state, and can append playback outcomes to JSONL logs. Tests must use
-mock or dry-run playback rather than a real speaker.
+mock or dry-run playback rather than a real speaker. An arousal guard `lower_volume`
+reaches the player as a multiplier that it applies after the cap, so a lowered cue plays
+at exactly that fraction of what it would have played at and never above a cap (#255).
 
 Pre-sleep volume calibration must exist before planned sleep-time cues. Calibration
 records the detectable, identifiable, and comfortable volume for the target playback
@@ -52,10 +54,9 @@ optics. When an optics epoch's series skipped more than half of its values, the 
 (`ArousalGuardConfig.hr_rule_blind_action`, `lower_volume`; `allow` only logs the flag,
 `pause` pauses). A pause or stop reason in the same epoch still wins, blind epochs in a
 row do not add up to a pause, and a preset without optics never raises it. Like every
-`lower_volume` reason it halves the cue's volume hint before the calibration cap, so a
-cue plays quieter only where the cap sits above half its hint, and a cue without a hint
-plays at the default volume. There is no paired optics and ECG recording of sleep yet to
-say how often the series goes blind asleep.
+`lower_volume` reason it halves the volume the cue would have played at, after the
+calibration and hard caps, with or without a volume hint (#255). There is no paired
+optics and ECG recording of sleep yet to say how often the series goes blind asleep.
 
 The HR rules can also be gated on the quality of the epoch's heart rate:
 `min_ppg_confidence_for_hr_rule` (`--guard-min-ppg-confidence`), `ppg_quality_for_hr_rule`

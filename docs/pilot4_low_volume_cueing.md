@@ -99,9 +99,11 @@ flag acts: none covers noisy optics. When more than half of an epoch's values we
 skipped the decision says `hr_rule_blind` and lowers the volume (#234,
 `ArousalGuardConfig.hr_rule_blind_action`), unless a pause or stop reason wins in the same
 epoch. A cue played then shows it in `scheduler_events.jsonl` (`arousal_guard_action`
-`lower_volume`, `arousal_guard_reason_codes`, `volume_multiplier` 0.5,
-`original_volume_hint` and the halved `volume_hint`) and in the requested volume in
-`audio_playback.jsonl`; the calibration cap still applies after the halving.
+`lower_volume`, `arousal_guard_reason_codes`, `volume_multiplier` 0.5) and in
+`audio_playback.jsonl`. The halving comes after the calibration and hard caps: both logs
+give the cue's `requested_volume` (its `volume_hint`, or `--default-volume` without one),
+the `capped_volume`, the multiplier and the `effective_volume` that plays, half the
+capped one (#255).
 `--guard-min-ppg-confidence` and `--guard-min-hr-series-quality` (default 0,
 off) turn the HR rules off on epochs of low PPG quality, logged as `hr_rule_skipped_by`;
 leave them off for a night until `docs/optics_agreement.md` has a paired table that
