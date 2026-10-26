@@ -37,6 +37,8 @@ Complete command and code reference for `muse-tmr`, organized by workflow stage.
 
 ## Installation & local development
 
+The pip distribution is `remind-eeg`, with the `muse-tmr` command and the `muse_tmr` import. It is not on PyPI yet, so install it from a checkout; [`release.md`](release.md) says how a release gets there. CI runs the tests and the installed wheel on Python 3.9 to 3.13 on Linux, macOS and Windows; the app launcher and real audio (`afplay`) are macOS only.
+
 ```bash
 pip install -e .
 python -m muse_tmr.cli.main --help
@@ -46,6 +48,8 @@ python scripts/check_forbidden_files.py
 ```
 
 `muse-tmr status` only prints a line confirming the package is installed.
+
+A venv set up before the rename has the checkout installed as `athena-tmr-lucid`. Run `pip uninstall athena-tmr-lucid` before installing again, so that two distributions do not both own the `muse-tmr` command.
 
 ## Acquisition: discover, stream, record
 
