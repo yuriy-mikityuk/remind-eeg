@@ -914,6 +914,70 @@ as wrong), `by_condition` (`trial_count`, `correct_count`, `recall_rate` for `cu
 `protocol` block with `protocol_source` (the `--protocol-metadata` file's name, or
 `assignment`).
 
+Schema 3 (#228) reads one retest per wave. `rows`, `condition_metrics` and
+`effect_summary` are those of the `morning` wave, or of the earliest wave given without
+one (`metadata.primary_retest_wave`, with `metadata.retest_waves`). New fields:
+
+| Field | Content |
+|---|---|
+| `wave_metrics` | Per wave given: `retest_id`, `reported_at_utc`, `condition_metrics` (`cued`, `uncued`) and `effect_summary`, computed as the top-level ones from that wave's results. |
+| `incorporation` | `source` (`raters` with rater coding sheets of the night, else `self_report` with a dream report, else `none`), `rater_ids`, `rater_count`, `incorporated_count`, `self_linked_count`, `split_puzzle_ids` (raters disagreed), `uncoded_puzzle_ids`. |
+| `incorporation_solved` | `available` (false with source `none`), `source`, and per wave `incorporated` and `not_incorporated` (each `puzzles`, `solved`, `unsolved`, `solve_rate`), also `by_condition`. |
+| rows: `wave_results` | Per wave the puzzle's `solved`, `duration_seconds`, `confidence`. |
+| rows: `self_linked`, `rater_codes` | Whether the dream report links the puzzle; `rater_count` and the share of raters per category and for `any`. `incorporated` follows the raters when the night has codes: more than half of them put the puzzle in some category. |
+| rows: `sham_play_count` | A sham night's plays in the puzzle's place: the sham sound played, so they are not in `cue_play_count`. |
+| `cue_timing` | Adds `arm` (the arm the scheduler events carry, `null` without events), `sham_puzzle_play_count` and `virtual_puzzle_play_count`. `uncued_puzzle_play_count` counts every play that names an uncued puzzle, a sham play included. |
+
+New limitations: `missing_delayed_retest` (no `day7` or no `day10` wave; `metadata.missing_waves`),
+`sham_arm` (in place of `missing_cued_timing` on a sham night) and `no_cue_arm`. A schema
+1 or 2 report loads with empty new fields, each row's `self_linked` read from its
+`incorporated`.
+
+## Blind Coding Packets And Coding Sheets
+
+`muse_tmr.reports.incorporation_coding` (#228) writes two kinds of file, which hold dream
+text and stay in the gitignored `data/reports/`.
+
+The packet of `export-blind-coding`, version 1 (`BlindCodingPacket`):
+
+| Field | Content |
+|---|---|
+| `kind`, `schema_version`, `packet_id` | `blind_coding_packet`, 1, `<session>-blind-coding`. |
+| `session_id`, `generated_at_utc` | The night and when the packet was written. |
+| `instructions`, `categories` | The rater's instructions and the definitions of `sound_cue`, `direct_conceptual` and `indirect_conceptual`. |
+| `dream_text` | The dream report's text, and nothing else of the report. |
+| `puzzles` | `blind_index` (1 to N in the session's order, as the retest numbers them), `puzzle_id`, `prompt`. |
+
+A rater's coding sheet from `record-incorporation-coding`, version 1
+(`IncorporationCodingSheet`): `kind` `incorporation_coding`, `schema_version`,
+`packet_id`, `session_id`, `rater_id`, `coded_at_utc`, `coding_count`,
+`incorporated_count`, `notes` and `codings`, one `IncorporationCoding` per puzzle:
+`rater_id`, `puzzle_id`, the three categories as true or false, and `notes`.
+`compare-incorporation-codings --output` writes `rater_ids`, `session_ids`,
+`item_count`, `unmatched` (puzzles one rater only coded) and per category and `any`:
+`items`, `agreements`, `percent_agreement`, `kappa` (Cohen's, `null` when chance
+agreement is 1) with `kappa_note`, and `yes_counts` per rater.
+
+## N-of-1 Series Analyses
+
+`analyze-nof1` (`muse_tmr.reports.nof1_analysis`, #228) writes version 1:
+
+| Field | Content |
+|---|---|
+| `report`, `schema_version`, `analysis_id`, `generated_at_utc` | `nof1_analysis`, 1, `<schedule-id>-nof1-analysis`. With a synthetic night, `synthetic: true` and the note. |
+| `schedule` | `schedule_id`, `created_at_utc`, `seed`, `blocks`, `washout_nights`, `arms`, `sham_cue_id`, `night_count`, `commitment_sha256`, `seal`, `unsealed_at_utc`, and the nights' distinct `protocol_effective_hashes`. |
+| `settings` | `seed`, `permutations`, `interval` (0.95), `min_nights_per_arm`, `primary_outcome`, `primary_contrast`, `reference_set` (`schedule_design`, or `within_block` for a schedule `plan-night-schedule` could not have drawn), `possible_orders`, `method` (`exact` or `monte_carlo`), `relabelings`, `outside_possible`, `software_version`. |
+| `outcomes` | Each outcome's definition. |
+| `nights` | Each block night: `night_id`, `position`, `block`, `arm` (the schedule's), `first_night`, `has_data`, `synthetic`, `summary_arm`, `summary_kind`, `started_at`, `summary_passed`, `failed_criteria`, `protocol_effective_hash`, `plays`, `virtual_plays`, `inputs` (what was found), `incorporation_source`, `arousal_proxy_per_cue` and `values`, one per outcome, `null` when missing. |
+| `descriptives` | Per outcome and arm: `nights`, `mean`, `nights_without_first_night`, `mean_without_first_night`. |
+| `differences` | Per outcome and contrast (`cue-no_cue`, `cue-sham`, `sham-no_cue`): `difference` (first arm's mean minus the second's), `nights` per arm, `interval` (low, high), `observed_outside_interval`, `relabelings` and `primary`. |
+| `autocorrelation` | Per outcome: `lag1` of the values once the arm means are taken out, over consecutive positions, with `pairs` and `nights`. |
+| `cue_counts`, `arousal` | Per arm: nights with a summary, `plays`, `plays_per_night`, `virtual_plays`; nights with arousal proxies and the mean of each flag's rate per cue. |
+| `limitations` | `code`, `severity`, `message`, `metadata`, as in the cued-vs-uncued analysis; the codes are in `docs/nof1_protocol.md`. |
+| `reporting_checklist`, `reporting_checklist_counts` | Each SCRIBE 2016 item with its CENT 2015 items, `status` (`auto`, `partial`, `manual`) and what fills it; the count per status. |
+
+No dream text is copied into it.
+
 ## Cue Recall Tests
 
 `muse_tmr.reports.cue_recall` (`record-cue-recall`, and the app's Morning tab) writes
@@ -1005,7 +1069,9 @@ The schedule, `<schedule-id>.json`, version 1 (`NightSchedule`, `load_night_sche
 
 The sealed companion, `<schedule-id>.sealed.json`, holds only `{"commitment_sha256": ...}`.
 `unseal_night_schedule()` and every runner check the schedule against it first
-(`SealMismatch` otherwise); `arm_for(night_id)` gives a night's arm.
+(`SealMismatch` otherwise); `arm_for(night_id)` gives a night's arm. `prereg_template()`
+(`prereg-template`) renders a preregistration from the schedule's design, its
+commitment and a protocol block, never from its arms, seed or salt.
 
 A night run with an arm writes a `night_arm` block into its `metadata.json` (Pilot 4/5):
 `arm`, `night_id`, `sham_cue_id`, `sealed_schedule` (whether the arm came from a

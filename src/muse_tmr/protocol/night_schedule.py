@@ -27,6 +27,10 @@ Morning tab never reads a schedule. A night's summary, logs and reports do name 
 the runbook (docs/nof1_protocol.md) keeps them closed until the series is unsealed:
 nothing hides the arms from whoever opens those files, and at n = 1 the experimenter
 cannot be blind.
+
+``prereg_template()`` renders a preregistration of the series from its design, its
+commitment and the protocol block, with no arm, no seed and no salt, so it can be filed
+before the first night.
 """
 
 from __future__ import annotations
@@ -463,6 +467,186 @@ def night_arm_from_schedule(
         schedule_path=str(schedule_path),
         sealed_path=str(sealed_path),
     )
+
+
+def prereg_template(
+    schedule: NightSchedule,
+    *,
+    protocol: Optional[Mapping[str, object]] = None,
+    protocol_source: str = "",
+    analysis: Optional[Mapping[str, object]] = None,
+    software_version: str = "",
+    generated_at_utc: Optional[str] = None,
+) -> str:
+    """An OSF-style preregistration of the series, as Markdown.
+
+    It renders what can be filed before the first night: the design (blocks, arms,
+    washout nights, the nights in order and how their arms are drawn), the sealed
+    commitment and the protocol block's hashes (``ProtocolPreset.manifest()``).
+    It never renders an arm, the seed or the salt: the seed alone gives the order back.
+    So two schedules of one design differ in the template only in their commitment.
+    ``analysis`` holds the analysis settings it states (seed, permutations, interval,
+    outcomes); lines marked "To fill in" are the author's.
+    """
+    generated = generated_at_utc or _utc_now()
+    analysis = dict(analysis or {})
+    block_nights = [night for night in schedule.nights if night.arm != "washout"]
+    lines = [
+        f"# Preregistration: N-of-1 series {schedule.schedule_id}",
+        "",
+        f"Written by `muse-tmr prereg-template`{_version_text(software_version)} on {generated[:10]} from the sealed "
+        "night schedule and its commitment. It gives the series' design and its seal and holds no arm, no seed "
+        "and no salt, so it can be filed, on OSF for example, before the first night. Lines marked _To fill in_ "
+        "are yours.",
+        "",
+    ]
+    if not schedule.sealed:
+        lines += [
+            f"> This schedule was unsealed at {schedule.unsealed_at_utc}. A template written after unsealing is not "
+            "a preregistration.",
+            "",
+        ]
+    lines += [
+        "## Study information",
+        "",
+        "- Title: _To fill in._",
+        "- Research question and hypotheses: _To fill in_: which arm difference you expect, on which outcome and at "
+        "which retest.",
+        "- Description: one participant runs a series of nights with REMind and a Muse S Athena headband. A `cue` "
+        "night plays the trained sounds when the REM gate and the arousal guard let a cue through, a `sham` night "
+        "plays a sound that was never trained at the same moments, and a `no_cue` night plays nothing. This is a "
+        "single-case self-experiment, not a clinical trial: it can describe what happened, not show that cueing "
+        "works.",
+        "",
+        "## Design",
+        "",
+        "- Study type: an N-of-1 series, randomised in blocks, one participant.",
+        f"- Arms: {', '.join(f'`{arm}`' for arm in schedule.arms)}; the sham sound is `{schedule.sham_cue_id}`, "
+        "which is never trained.",
+        f"- Blocks: {schedule.blocks}, each with one night of every arm; {schedule.washout_nights} washout "
+        f"night{'s' if schedule.washout_nights != 1 else ''} between two blocks, without a cueing run; "
+        f"{len(schedule.nights)} nights in all, {len(block_nights)} of them in blocks.",
+        f"- Counterbalancing: within every group of {len(schedule.arms)} blocks each arm takes each place in its "
+        "block once (the rows of a Latin square).",
+        "- Within a night: `assign-puzzle-cues` splits the night's puzzles into cued and uncued with the night's "
+        "own seed, and an uncued puzzle is never scheduled, in any arm.",
+        "- Blinding: the arms stay in the schedule file. The runners never print a night's arm and the Morning tab "
+        "never reads the schedule; a night's summary, logs and reports name the arm and stay closed until "
+        "`unseal-night-schedule`. At n = 1 the participant is the experimenter and cannot be blind, a sham night "
+        "still makes sound, and the sleeper may tell it from a trained cue.",
+        "",
+        "| Position | Night | Block |",
+        "| ---: | --- | --- |",
+    ]
+    for night in schedule.nights:
+        lines.append(f"| {night.position} | {night.night_id} | {'washout' if night.block is None else night.block} |")
+    lines += [
+        "",
+        "## Randomisation and seal",
+        "",
+        f"- Drawn by `plan-night-schedule` on {schedule.created_at_utc[:10]} with `random.Random(seed)`. The seed "
+        "came from `--seed` or was drawn at random. It stays in the schedule file with a random 16-byte salt and "
+        "is not given here, because the seed alone gives the order back.",
+        f"- Commitment: `commitment_sha256 = {schedule.commitment_sha256()}`, the sha256 of the schedule's canonical "
+        "JSON (sorted keys, no spaces) followed by the salt. The sealed companion "
+        f"`{schedule.schedule_id}.sealed.json` holds nothing else.",
+        "- After the series: `muse-tmr unseal-night-schedule` checks the schedule against the commitment and "
+        "records `unsealed_at_utc`. Anyone given the unsealed schedule can compute the hash again.",
+        "",
+        "## Protocol",
+        "",
+        f"- {_protocol_line(protocol, protocol_source)}",
+        f"- Software: REMind{_version_text(software_version, prefix=' ') or ' (version not given)'}.",
+        "",
+        "## Sampling plan",
+        "",
+        "- Participant: one. Inclusion and exclusion criteria: _To fill in._",
+        f"- Planned nights: {len(schedule.nights)}, with retests the morning after, a week later (`day7`) and ten "
+        "days later (`day10`).",
+        "- Stopping rule: _To fill in._",
+        "",
+        "## Variables",
+        "",
+        "- Manipulated: the night's arm; within a night, cued against uncued puzzles.",
+        "- Measured in the morning, before unsealing (the Morning tab, or `record-dream-report`, "
+        "`record-cue-recall` and `record-puzzle-retest`): lucidity, whether and where a sound was heard "
+        "(`cue_perception`), whether a sound woke the sleeper, the times of eye-signal attempts (marked by the "
+        "sleeper, never detected), the sound check, and each puzzle's retest (solved, duration, confidence) the "
+        "morning after, a week later and ten days later.",
+        "- Coded blind: each puzzle's dream incorporation (`sound_cue`, `direct_conceptual`, "
+        "`indirect_conceptual`) from the packets of `export-blind-coding`, which hold no arm and no cue condition.",
+        "- Logged by each night: plays and virtual plays, awakening markers, and the arousal proxies per cue of "
+        "`score-cue-arousal`, run after unsealing.",
+        "",
+        "## Analysis plan",
+        "",
+        "- `muse-tmr analyze-nof1`, after `unseal-night-schedule`: per arm, the mean of "
+        f"{_outcome_list(analysis.get('outcomes'))}; for each of them the differences cue - no_cue, cue - sham "
+        f"and sham - no_cue, each with its permutation interval: the central {_percent(analysis.get('interval'))} "
+        "of the differences over the arm orders `plan-night-schedule` could have drawn for these blocks, every "
+        f"order up to {_count(analysis.get('permutations'))} of them, else that many drawn with "
+        f"`--seed {analysis.get('seed', 0)}`; the lag-1 autocorrelation of each outcome after the arm means are "
+        "taken out; the first night flagged, with the means without it."
+        + _orders_note(analysis.get("possible_orders"), analysis.get("outside_possible")),
+        "- Primary outcome and contrast: _To fill in_ (`--primary-outcome`, `--primary-contrast`).",
+        "- Inference: descriptive and single-case. No p-value is computed, and a difference outside its interval "
+        "describes this series; it is not evidence that cueing works.",
+        "- Missing data: a missing form or retest is a missing value, never a zero, and the report names the "
+        "nights it concerns.",
+        "- Exclusions: _To fill in._",
+        "",
+        "## Known limitations",
+        "",
+        "- One participant, who is also the experimenter; a sham still makes sound and may be recognised; "
+        "consecutive nights can carry over into each other; the first night may differ from the rest; the REM "
+        "gate runs on consumer forehead EEG, and its detector weights and first-cue latency are open issues "
+        "(#116, #167), which every arm comparison inherits.",
+        "- Reporting follows SCRIBE 2016 and CENT 2015: `analyze-nof1` writes their checklist with the report.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _protocol_line(protocol: Optional[Mapping[str, object]], source: str) -> str:
+    where = f" From {source}." if source else ""
+    if not protocol:
+        return "Protocol preset: unknown; give `--protocol-preset` or `--protocol-metadata`." + where
+    overrides = dict(protocol.get("overrides", {}) or {})
+    override_text = (
+        ", ".join(f"`{name}={value}`" for name, value in sorted(overrides.items())) if overrides else "none"
+    )
+    registry = protocol.get("registry_version")
+    return (
+        f"Protocol preset `{protocol.get('name', 'unknown')}` version {protocol.get('version', 'unknown')}"
+        + (f" (registry {registry})" if registry is not None else "")
+        + f", content hash `{protocol.get('content_hash', 'unknown')}`, effective hash "
+        f"`{protocol.get('effective_hash', 'unknown')}`, overrides: {override_text}.{where}"
+    )
+
+
+def _orders_note(possible_orders: object, outside_possible: object) -> str:
+    if not isinstance(possible_orders, int):
+        return ""
+    note = f" These blocks allow {possible_orders:,} arm orders"
+    if outside_possible is False:
+        return note + ", too few for any difference to fall outside its interval."
+    return note + "."
+
+
+def _version_text(version: str, prefix: str = ", REMind ") -> str:
+    return f"{prefix}{version}" if version else ""
+
+
+def _outcome_list(outcomes: object) -> str:
+    names = [str(name) for name in (outcomes or ())]
+    return ", ".join(f"`{name}`" for name in names) if names else "each outcome"
+
+
+def _percent(level: object) -> str:
+    return f"{float(level) * 100:g} %" if isinstance(level, (int, float)) else "95 %"
+
+
+def _count(value: object) -> str:
+    return f"{int(value):,}" if isinstance(value, int) else "10,000"
 
 
 def canonical_json(payload: object) -> str:

@@ -135,7 +135,9 @@ a random salt. The runners read a night's arm from it and never print it, and th
 Morning tab never reads it. A night's summary, logs and reports do name the arm, and so
 do `protocol-fidelity` and `score-cue-arousal`, so the runbook keeps them closed until
 the series is unsealed. Nothing hides the arms from whoever opens those files: at n = 1
-the experimenter cannot be blind. Runbook: [`nof1_protocol.md`](nof1_protocol.md).
+the experimenter cannot be blind. Runbook: [`nof1_protocol.md`](nof1_protocol.md), which
+also covers the preregistration (`prereg-template`), blind coding of the dream reports
+and the per-arm analysis (`analyze-nof1`).
 
 ## Arousal Guard
 
@@ -233,6 +235,7 @@ The CLI command is:
 muse-tmr analyze-cued-uncued data/protocol/night-001_puzzles.json \
   --assignment data/protocol/night-001_assignment.json \
   --retest data/reports/night-001_retest.json \
+  --retest data/reports/night-001_retest_day7.json \
   --dream-report data/reports/night-001_dream_report.json \
   --scheduler-events data/reports/night-001_scheduler.jsonl \
   --output data/reports/night-001_analysis.json \
@@ -242,6 +245,32 @@ muse-tmr analyze-cued-uncued data/protocol/night-001_puzzles.json \
 Reports must be interpreted as exploratory home-run data, not statistical proof. The
 JSON output includes limitations such as `small_n`, missing dream report, missing
 scheduler events, missing cued timing, or any accidental uncued cue play.
+
+Schema 3 (#228) takes one `--retest` per wave and gives each wave's solve rates and
+cued-minus-uncued deltas, with `missing_delayed_retest` when the `day7` or `day10` wave
+is not there. A rater's codes (`--coding`, below) decide which puzzles a dream
+incorporated, in place of the sleeper's own links, and the report crosses incorporation
+with solving for each wave. A sham night's plays name the puzzle they stand in for, but
+the sham sound played: they are counted apart as sham plays, never as plays of the cued
+puzzle's sound.
+
+## Blind Incorporation Coding
+
+The sleeper's own puzzle links are self-report. `muse_tmr.reports.incorporation_coding`
+lets a rater code the dream text instead, in the three categories the blind raters of
+Konkoly et al. 2026 used: `sound_cue`, `direct_conceptual` and `indirect_conceptual`.
+`muse-tmr export-blind-coding` writes the rater's packet: the dream text and the night's
+puzzles in the order of the retest, and nothing about cues, the assignment or the arm.
+`record-incorporation-coding` saves a rater's codes and `compare-incorporation-codings`
+gives two raters' percent agreement and Cohen's kappa per category. With more than one
+rater a puzzle counts as incorporated when more than half of them coded it.
+
+## N-of-1 Series Analysis
+
+`muse_tmr.reports.nof1_analysis` (`analyze-nof1`) describes a series of cue, sham and
+no-cue nights once its schedule is unsealed, and `prereg-template` writes the series'
+preregistration before the first night. Both are in the runbook,
+[`nof1_protocol.md`](nof1_protocol.md).
 
 Association checks compare a remembered response with the expected solution using a
 case-insensitive whitespace-normalized match and append the result to the night session

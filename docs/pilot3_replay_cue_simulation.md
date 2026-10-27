@@ -174,7 +174,9 @@ no-cue plan has no `play` events and a `virtual_play` skip where the cue arm pla
 (`metrics.virtual_play_count`). Uncued puzzles stay unschedulable in every arm. The
 report (schema 2) records `arm`, `night_id` and `schedule_commitment_sha256` and adds the
 criteria `no_play_in_no_cue_arm` and, with a schedule, `arm_matches_sealed_schedule`; the
-printed line leaves out the plan's counts and its first play.
+printed line leaves out the plan's counts and its first play. `analyze-nof1 --summary`
+reads such a report as the night's record, so a replayed series can be described the
+way a real one is, as replay, not sleep-time cueing.
 
 ## Validate
 

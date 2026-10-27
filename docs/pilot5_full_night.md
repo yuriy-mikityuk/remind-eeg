@@ -267,7 +267,13 @@ A week and ten days later, retest the same puzzles again with `--wave day7` and
 `--wave day10`, saved as `data/reports/night-001_retest_day7.json` and
 `night-001_retest_day10.json` (the Morning tab's wave selector writes the same files).
 
-Generate analysis:
+For a blind code of what the dream took from each puzzle, export the night's packet for
+a rater with `export-blind-coding` and record the codes with
+`record-incorporation-coding` (`docs/nof1_protocol.md`, section 5); the analysis then
+prefers them to the dream report's own links.
+
+Generate analysis (add `--retest` for each delayed wave and `--coding` for each rater's
+sheet once they exist):
 
 ```bash
 .venv/bin/python -m muse_tmr.cli.main analyze-cued-uncued \

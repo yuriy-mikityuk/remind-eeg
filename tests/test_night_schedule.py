@@ -26,6 +26,7 @@ from muse_tmr.protocol import (
     load_night_schedule,
     load_sealed_commitment,
     night_arm_from_schedule,
+    prereg_template,
     sealed_path_for,
     unseal_night_schedule,
     write_night_schedule,
@@ -344,6 +345,110 @@ class TestScheduleCommands(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("does not match the commitment", err)
         self.assertTrue(load_night_schedule(self.path).sealed)
+
+
+class TestPreregTemplate(unittest.TestCase):
+    """The preregistration gives the design and the commitment, never an arm, the seed or the salt (#228)."""
+
+    SEED = 918273645
+    OTHER_SEED = 192837465
+    PROTOCOL = {"name": "remind_default_v1", "version": 1, "content_hash": "c" * 64, "effective_hash": "e" * 64,
+                "overrides": {}, "registry_version": 1}
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def schedule(self, seed, salt):
+        return generate_night_schedule(
+            seed, 4, 1, schedule_id="series-p", salt=salt, created_at_utc="2026-11-01T10:00:00+00:00"
+        )
+
+    def test_two_orders_of_one_design_differ_only_in_their_commitment(self):
+        first = self.schedule(self.SEED, SALT)
+        second = self.schedule(self.OTHER_SEED, "fedcba9876543210" * 2)
+        self.assertNotEqual([n.arm for n in first.nights], [n.arm for n in second.nights])
+        texts = []
+        for schedule in (first, second):
+            text = prereg_template(schedule, protocol=self.PROTOCOL, generated_at_utc="2026-11-01T11:00:00+00:00")
+            self.assertIn(schedule.commitment_sha256(), text)
+            self.assertNotIn(str(schedule.seed), text)
+            self.assertNotIn(schedule.salt, text)
+            texts.append(text.replace(schedule.commitment_sha256(), "<commitment>"))
+        self.assertEqual(texts[0], texts[1])
+
+    def test_the_template_names_the_design_the_seal_and_the_protocol(self):
+        schedule = self.schedule(self.SEED, SALT)
+        text = prereg_template(
+            schedule, protocol=self.PROTOCOL, protocol_source="a session", software_version="9.9.9",
+            analysis={"seed": 0, "permutations": 10000, "interval": 0.95, "outcomes": ["lucid"]},
+        )
+        for expected in (
+            "# Preregistration: N-of-1 series series-p",
+            "Blocks: 4, each with one night of every arm; 1 washout night between two blocks",
+            "15 nights in all, 12 of them in blocks",
+            "| 4 | night-004 | washout |",
+            "`commitment_sha256 = " + schedule.commitment_sha256() + "`",
+            "Protocol preset `remind_default_v1` version 1 (registry 1), content hash `" + "c" * 64,
+            "effective hash `" + "e" * 64 + "`, overrides: none. From a session.",
+            "REMind 9.9.9",
+            "`lucid`",
+            "every order up to 10,000",
+            "No p-value is computed",
+            "_To fill in_",
+        ):
+            self.assertIn(expected, text)
+        self.assertNotIn("unsealed at", text)
+        for night in schedule.nights:
+            if night.arm != "washout":
+                self.assertNotIn(f"{night.night_id} | {night.arm}", text)
+        self.assertIn("Protocol preset: unknown", prereg_template(schedule))
+
+    def test_a_template_after_unsealing_says_it_is_not_a_preregistration(self):
+        unsealed = replace(self.schedule(self.SEED, SALT), unsealed_at_utc="2026-12-01T00:00:00+00:00")
+        self.assertIn("is not a preregistration", prereg_template(unsealed))
+
+    def test_the_command_checks_the_seal_and_writes_markdown(self):
+        schedule = self.schedule(self.SEED, SALT)
+        path, _sealed = write_night_schedule(schedule, self.root / "series-p.json")
+        out_path = self.root / "prereg.md"
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = cli_main.main(["prereg-template", str(path), "--output", str(out_path)])
+        self.assertEqual(code, 0)
+        text = out_path.read_text(encoding="utf-8")
+        self.assertIn("Protocol preset `remind_default_v1`", text)
+        self.assertIn("the default preset of every runner", text)
+        self.assertIn("These blocks allow 72 arm orders.", text)
+        two = generate_night_schedule(self.SEED, 2, schedule_id="series-two", salt=SALT)
+        self.assertIn(
+            "These blocks allow 12 arm orders, too few for any difference to fall outside its interval.",
+            prereg_template(two, analysis={"possible_orders": 12, "outside_possible": False}),
+        )
+        self.assertNotIn(str(self.SEED), stdout.getvalue() + text)
+        self.assertNotIn(SALT, stdout.getvalue() + text)
+
+        session = self.root / "night-001_puzzles.json"
+        session.write_text(json.dumps({"metadata": {"protocol": dict(self.PROTOCOL, name="konkoly2026_puzzle")}}), encoding="utf-8")
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            code = cli_main.main(["prereg-template", str(path), "--protocol-metadata", str(session)])
+        self.assertEqual(code, 0)
+        self.assertIn("`konkoly2026_puzzle`", printed.getvalue())
+        self.assertIn("From `night-001_puzzles.json`", printed.getvalue())
+
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli_main.main(["prereg-template", str(path), "--protocol-preset", "nope"]), 2)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["seed"] = 1
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.assertEqual(cli_main.main(["prereg-template", str(path)]), 1)
+        self.assertIn("does not match the commitment", err.getvalue())
 
 
 class TestLayering(unittest.TestCase):

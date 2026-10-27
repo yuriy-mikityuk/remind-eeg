@@ -1,23 +1,51 @@
-"""Cued-vs-uncued analysis reports."""
+"""Cued-vs-uncued analysis reports.
+
+Schema 3 (#228) reads several retests of a night, one per ``retest_wave`` (the morning
+after, ``day7``, ``day10``), and gives the metrics and the cued-minus-uncued deltas of
+each in ``wave_metrics``; ``rows``, ``condition_metrics`` and ``effect_summary`` stay
+those of the morning retest, or of the earliest wave given without one. Rater codes
+(``reports.incorporation_coding``) decide a puzzle's incorporation when the night has
+any, the sleeper's own links when it has none; ``incorporation_solved`` crosses
+incorporation with solving per wave. A sham night's plays keep the puzzle they stand in
+for, but they played the sham sound: they count as ``sham_play_count``, never as plays
+of the cued puzzle's sound. Files of schema 1 and 2 still load.
+"""
 
 from __future__ import annotations
 
 import datetime as dt
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Iterable, Mapping, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from muse_tmr.protocol import NightPuzzleSession, PuzzleCueAssignment, TmrSchedulerEvent
+from muse_tmr.protocol.tmr_scheduler import SHAM_ARM_REASON
 from muse_tmr.reports.dream_report import DreamReport
-from muse_tmr.reports.morning_retest import MorningRetest
+from muse_tmr.reports.incorporation_coding import (
+    ANY_CATEGORY,
+    CODING_CATEGORIES,
+    IncorporationCodingSheet,
+    rater_incorporation,
+)
+from muse_tmr.reports.morning_retest import RETEST_WAVES, MorningRetest
 
 if TYPE_CHECKING:
     from muse_tmr.reports.cue_recall import CueRecallTest
 
-# 2 adds cue_recall, the rows' cue_recalled and metadata.protocol (#231).
-ANALYSIS_SCHEMA_VERSION = 2
+# 2 adds cue_recall, the rows' cue_recalled and metadata.protocol (#231); 3 adds
+# wave_metrics, incorporation, incorporation_solved, the rows' wave_results,
+# self_linked, rater_codes and sham_play_count, cue_timing's arm and its sham and
+# virtual puzzle plays, and the limitations missing_delayed_retest, sham_arm and
+# no_cue_arm (#228).
+ANALYSIS_SCHEMA_VERSION = 3
 ANALYSIS_CONDITIONS = ("cued", "uncued")
+# The waves after the morning one; a night without either has missing_delayed_retest.
+DELAYED_RETEST_WAVES = tuple(wave for wave in RETEST_WAVES if wave != "morning")
+# Where a puzzle's incorporation comes from: rater codes, the sleeper's own links, or nothing.
+INCORPORATION_SOURCES = ("raters", "self_report", "none")
+
+RetestInput = Union[MorningRetest, Sequence[MorningRetest]]
 
 
 @dataclass(frozen=True)
@@ -36,6 +64,16 @@ class PuzzleAnalysisRow:
     cue_time_seconds: Tuple[float, ...] = ()
     # Whether the morning sound check placed this puzzle's sound; None without one.
     cue_recalled: Optional[bool] = None
+    # A sham night's plays that stood in for this puzzle's cue: the sham sound played.
+    sham_play_count: int = 0
+    # Whether the sleeper linked the puzzle in the dream report. ``incorporated`` follows
+    # the raters instead when the night has rater codes.
+    self_linked: bool = False
+    # rater_count and, per category and for any category, the share of raters who coded
+    # it; empty without rater codes.
+    rater_codes: Mapping[str, object] = field(default_factory=dict)
+    # Each retest wave's solved, duration_seconds and confidence.
+    wave_results: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "puzzle_id", _required_str(self.puzzle_id, "puzzle_id"))
@@ -48,11 +86,17 @@ class PuzzleAnalysisRow:
             _validate_confidence(self.incorporation_confidence, "incorporation_confidence")
         if self.cue_play_count < 0:
             raise ValueError("cue_play_count must be non-negative")
+        if self.sham_play_count < 0:
+            raise ValueError("sham_play_count must be non-negative")
         cue_times = tuple(float(value) for value in self.cue_time_seconds)
         if any(value < 0 for value in cue_times):
             raise ValueError("cue_time_seconds must be non-negative")
         object.__setattr__(self, "cue_id", str(self.cue_id).strip())
         object.__setattr__(self, "cue_time_seconds", cue_times)
+        object.__setattr__(self, "rater_codes", dict(self.rater_codes))
+        object.__setattr__(
+            self, "wave_results", {str(wave): dict(result) for wave, result in self.wave_results.items()}
+        )
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -64,15 +108,20 @@ class PuzzleAnalysisRow:
             "confidence": self.confidence,
             "incorporated": self.incorporated,
             "incorporation_confidence": self.incorporation_confidence,
+            "self_linked": self.self_linked,
+            "rater_codes": dict(self.rater_codes),
             "cue_play_count": self.cue_play_count,
+            "sham_play_count": self.sham_play_count,
             "first_cue_time_seconds": self.first_cue_time_seconds,
             "last_cue_time_seconds": self.last_cue_time_seconds,
             "cue_time_seconds": list(self.cue_time_seconds),
             "cue_recalled": self.cue_recalled,
+            "wave_results": {wave: dict(result) for wave, result in self.wave_results.items()},
         }
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> "PuzzleAnalysisRow":
+        incorporated = _boolish(payload.get("incorporated", False))
         return cls(
             puzzle_id=str(payload["puzzle_id"]),
             cue_id=str(payload.get("cue_id", "")),
@@ -80,7 +129,7 @@ class PuzzleAnalysisRow:
             solved=_boolish(payload["solved"]),
             duration_seconds=float(payload["duration_seconds"]),
             confidence=float(payload["confidence"]),
-            incorporated=_boolish(payload.get("incorporated", False)),
+            incorporated=incorporated,
             incorporation_confidence=_optional_float(payload.get("incorporation_confidence")),
             cue_play_count=int(payload.get("cue_play_count", 0)),
             first_cue_time_seconds=_optional_float(payload.get("first_cue_time_seconds")),
@@ -89,6 +138,11 @@ class PuzzleAnalysisRow:
             cue_recalled=(
                 None if payload.get("cue_recalled") is None else _boolish(payload.get("cue_recalled"))
             ),
+            sham_play_count=int(payload.get("sham_play_count", 0)),
+            # Before schema 3 the sleeper's links were the only source of incorporated.
+            self_linked=_boolish(payload.get("self_linked", incorporated)),
+            rater_codes=dict(payload.get("rater_codes", {}) or {}),
+            wave_results=dict(payload.get("wave_results", {}) or {}),
         )
 
 
@@ -196,6 +250,12 @@ class CuedUncuedAnalysisReport:
     metadata: Mapping[str, object] = field(default_factory=dict)
     # The morning sound check by condition, or {"available": False}.
     cue_recall: Mapping[str, object] = field(default_factory=dict)
+    # Per retest wave: its retest_id, reported_at_utc, condition_metrics and effect_summary.
+    wave_metrics: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    # Where incorporation came from (source, rater_ids, split and uncoded puzzles).
+    incorporation: Mapping[str, object] = field(default_factory=dict)
+    # Incorporated or not against solved or not, per wave, or {"available": False}.
+    incorporation_solved: Mapping[str, object] = field(default_factory=dict)
     schema_version: int = ANALYSIS_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -228,8 +288,11 @@ class CuedUncuedAnalysisReport:
                 for metrics in self.condition_metrics
             },
             "effect_summary": dict(self.effect_summary),
+            "wave_metrics": {wave: dict(block) for wave, block in self.wave_metrics.items()},
             "cue_timing": dict(self.cue_timing),
             "cue_recall": dict(self.cue_recall),
+            "incorporation": dict(self.incorporation),
+            "incorporation_solved": dict(self.incorporation_solved),
             "limitations": [limitation.to_dict() for limitation in self.limitations],
             "metadata": dict(self.metadata),
         }
@@ -250,11 +313,38 @@ class CuedUncuedAnalysisReport:
             f"- Uncued solve rate: {_format_rate(uncued.solve_rate if uncued else None)}",
             f"- Solve-rate delta: {_format_rate(solve_delta)}",
             f"- Incorporation-rate delta: {_format_rate(incorporation_delta)}",
+            f"- Incorporation from: {_incorporation_line(self.incorporation)}",
             f"- Puzzle cue plays: {self.cue_timing.get('puzzle_play_event_count', 0)}",
-            f"- Sound check (manipulation check): {_recall_line(self.cue_recall)}",
-            "",
-            "## Limitations",
         ]
+        if self.cue_timing.get("sham_puzzle_play_count"):
+            lines.append(
+                f"- Sham plays in place of puzzle cues: {self.cue_timing.get('sham_puzzle_play_count')} "
+                "(the sham sound, not counted as cue plays)"
+            )
+        lines.append(f"- Sound check (manipulation check): {_recall_line(self.cue_recall)}")
+        if len(self.wave_metrics) > 1:
+            lines += ["", "## Retest Waves", "", "| Wave | Cued solve rate | Uncued solve rate | Delta |",
+                      "| --- | ---: | ---: | ---: |"]
+            for wave, block in self.wave_metrics.items():
+                by_condition = dict(block.get("condition_metrics", {}) or {})
+                effect = dict(block.get("effect_summary", {}) or {})
+                lines.append(
+                    f"| {wave} | {_format_rate((by_condition.get('cued') or {}).get('solve_rate'))} | "
+                    f"{_format_rate((by_condition.get('uncued') or {}).get('solve_rate'))} | "
+                    f"{_format_rate(effect.get('solve_rate_difference_cued_minus_uncued'))} |"
+                )
+        if self.incorporation_solved.get("available"):
+            lines += ["", "## Incorporation And Solving", "",
+                      "| Wave | Incorporated: solved | Incorporated: unsolved | Not: solved | Not: unsolved |",
+                      "| --- | ---: | ---: | ---: | ---: |"]
+            for wave, block in dict(self.incorporation_solved.get("waves", {}) or {}).items():
+                yes = dict(block.get("incorporated", {}) or {})
+                no = dict(block.get("not_incorporated", {}) or {})
+                lines.append(
+                    f"| {wave} | {yes.get('solved', 0)} | {yes.get('unsolved', 0)} | "
+                    f"{no.get('solved', 0)} | {no.get('unsolved', 0)} |"
+                )
+        lines += ["", "## Limitations"]
         if self.limitations:
             lines.extend(f"- `{item.code}`: {item.message}" for item in self.limitations)
         else:
@@ -308,6 +398,9 @@ class CuedUncuedAnalysisReport:
             ),
             metadata=dict(payload.get("metadata", {}) or {}),
             cue_recall=dict(payload.get("cue_recall", {}) or {}),
+            wave_metrics=dict(payload.get("wave_metrics", {}) or {}),
+            incorporation=dict(payload.get("incorporation", {}) or {}),
+            incorporation_solved=dict(payload.get("incorporation_solved", {}) or {}),
         )
 
     @classmethod
@@ -318,11 +411,12 @@ class CuedUncuedAnalysisReport:
 def build_cued_uncued_analysis(
     session: NightPuzzleSession,
     assignment: PuzzleCueAssignment,
-    retest: MorningRetest,
+    retest: RetestInput,
     *,
     dream_report: Optional[DreamReport] = None,
     scheduler_events: Iterable[TmrSchedulerEvent] = (),
     cue_recall: Optional["CueRecallTest"] = None,
+    incorporation_codings: Iterable[IncorporationCodingSheet] = (),
     protocol: Optional[Mapping[str, object]] = None,
     protocol_source: Optional[str] = None,
     analysis_id: str = "",
@@ -331,6 +425,10 @@ def build_cued_uncued_analysis(
 ) -> CuedUncuedAnalysisReport:
     """The descriptive cued-vs-uncued report of one night.
 
+    ``retest`` is one ``MorningRetest`` or several, at most one per ``retest_wave``; the
+    rows and the top-level metrics are those of the morning wave, or of the earliest wave
+    given without one, and ``wave_metrics`` has every wave given. ``incorporation_codings``
+    are rater coding sheets of this night, preferred over the dream report's own links.
     ``cue_recall`` is the morning sound check (``reports.cue_recall``); without it, or
     when it was finished after the retest, the limitations say so. ``protocol`` is the
     night's protocol preset block, copied into ``metadata.protocol`` with where it came
@@ -338,36 +436,46 @@ def build_cued_uncued_analysis(
     """
     if min_group_size <= 0:
         raise ValueError("min_group_size must be positive")
+    retests = retests_by_wave(retest)
     assignment.validate_against_session(session)
-    retest.validate_against_session(session)
+    for item in retests.values():
+        item.validate_against_session(session)
     if dream_report is not None:
         dream_report.validate_against_session(session)
     if cue_recall is not None:
         cue_recall.validate_against_session(session)
-    if retest.session_id != session.session_id:
-        raise ValueError("retest session_id does not match night puzzle session")
+    primary_wave = primary_retest_wave(retests)
+    primary = retests[primary_wave]
 
-    retest_by_id = {result.puzzle_id: result for result in retest.results}
-    incorporations = _incorporation_map(dream_report)
+    incorporations, incorporation_summary = incorporation_by_puzzle(
+        session, dream_report=dream_report, incorporation_codings=incorporation_codings
+    )
     events = tuple(scheduler_events)
-    cue_times_by_puzzle, unknown_event_puzzle_ids = _cue_times_by_puzzle(session, events)
+    arm = _night_arm(events)
+    cue_times_by_puzzle, sham_times_by_puzzle, unknown_event_puzzle_ids = _cue_times_by_puzzle(session, events)
     recalled = (
         {trial.puzzle_id: trial.correct for trial in cue_recall.trials} if cue_recall is not None else {}
     )
+    results_by_wave = {
+        wave: {result.puzzle_id: result for result in item.results} for wave, item in retests.items()
+    }
 
     rows = tuple(
         _build_row(
             puzzle_id,
             assignment=assignment,
-            retest_by_id=retest_by_id,
-            incorporations=incorporations,
-            cue_times_by_puzzle=cue_times_by_puzzle,
+            results_by_wave=results_by_wave,
+            primary_wave=primary_wave,
+            incorporation=incorporations[puzzle_id],
+            cue_times=cue_times_by_puzzle.get(puzzle_id, ()),
+            sham_times=sham_times_by_puzzle.get(puzzle_id, ()),
             cue_recalled=recalled.get(puzzle_id),
         )
         for puzzle_id in session.puzzle_ids
     )
     metrics = tuple(_condition_metrics(condition, rows) for condition in ANALYSIS_CONDITIONS)
-    recall_summary = _cue_recall_summary(cue_recall, assignment, retest)
+    wave_metrics = {wave: _wave_block(wave, item, rows) for wave, item in retests.items()}
+    recall_summary = _cue_recall_summary(cue_recall, assignment, primary)
     limitations = _limitations(
         rows,
         metrics,
@@ -376,12 +484,17 @@ def build_cued_uncued_analysis(
         unknown_event_puzzle_ids=unknown_event_puzzle_ids,
         min_group_size=min_group_size,
         recall_summary=recall_summary,
+        arm=arm,
+        waves=tuple(retests),
     )
     metadata: Dict[str, object] = {
         "assignment_seed": assignment.seed,
         "dream_report_available": dream_report is not None,
         "scheduler_events_available": bool(events),
         "cue_recall_available": cue_recall is not None,
+        "incorporation_codings_available": incorporation_summary["source"] == "raters",
+        "retest_waves": list(retests),
+        "primary_retest_wave": primary_wave,
         "min_group_size": min_group_size,
     }
     if protocol:
@@ -394,8 +507,11 @@ def build_cued_uncued_analysis(
         rows=rows,
         condition_metrics=metrics,
         effect_summary=_effect_summary(metrics),
-        cue_timing=_cue_timing_summary(rows, events),
+        cue_timing=_cue_timing_summary(rows, events, arm),
         cue_recall=recall_summary,
+        wave_metrics=wave_metrics,
+        incorporation=incorporation_summary,
+        incorporation_solved=_incorporation_solved(rows, tuple(retests), incorporation_summary["source"]),
         limitations=limitations,
         metadata=metadata,
     )
@@ -406,18 +522,94 @@ def load_cued_uncued_analysis(input_path: Path) -> CuedUncuedAnalysisReport:
     return CuedUncuedAnalysisReport.load(input_path)
 
 
+def retests_by_wave(retest: RetestInput) -> Dict[str, MorningRetest]:
+    """The retests of a night by wave, in ``RETEST_WAVES`` order; two of one wave raise."""
+    items = (retest,) if isinstance(retest, MorningRetest) else tuple(retest)
+    if not items:
+        raise ValueError("the analysis needs at least one retest")
+    by_wave: Dict[str, MorningRetest] = {}
+    for item in items:
+        if item.retest_wave in by_wave:
+            raise ValueError(f"two retests of the {item.retest_wave} wave; give one per wave")
+        by_wave[item.retest_wave] = item
+    sessions = sorted({item.session_id for item in items})
+    if len(sessions) > 1:
+        raise ValueError(f"the retests belong to different sessions: {', '.join(sessions)}")
+    return {wave: by_wave[wave] for wave in RETEST_WAVES if wave in by_wave}
+
+
+def primary_retest_wave(retests: Mapping[str, MorningRetest]) -> str:
+    """The wave the rows and top-level metrics show: morning, else the earliest given."""
+    return "morning" if "morning" in retests else next(iter(retests))
+
+
+def incorporation_by_puzzle(
+    session: NightPuzzleSession,
+    *,
+    dream_report: Optional[DreamReport] = None,
+    incorporation_codings: Iterable[IncorporationCodingSheet] = (),
+) -> Tuple[Dict[str, Dict[str, object]], Dict[str, object]]:
+    """Each session puzzle's incorporation, and where it came from.
+
+    With rater coding sheets of this night, a puzzle is incorporated when more than half
+    of the raters who coded it put it in some category (``rater_incorporation()``);
+    without them, when the sleeper linked it in the dream report; with neither, the
+    source is ``none`` and no puzzle is incorporated. A sheet of another night raises.
+    """
+    sheets = tuple(sheet.validate_against_session(session) for sheet in incorporation_codings)
+    links = (
+        {link.puzzle_id: link for link in dream_report.puzzle_incorporations if link.incorporated}
+        if dream_report is not None
+        else {}
+    )
+    raters = rater_incorporation(sheets, session) if sheets else {}
+    source = "raters" if sheets else ("self_report" if dream_report is not None else "none")
+    per_puzzle: Dict[str, Dict[str, object]] = {}
+    for puzzle_id in session.puzzle_ids:
+        link = links.get(puzzle_id)
+        codes = raters.get(puzzle_id, {})
+        rater_codes = (
+            {key: codes[key] for key in ("rater_count",) + CODING_CATEGORIES + (ANY_CATEGORY,)} if codes else {}
+        )
+        per_puzzle[puzzle_id] = {
+            "incorporated": bool(codes.get("incorporated")) if source == "raters" else link is not None,
+            "self_linked": link is not None,
+            "confidence": link.confidence if link is not None else None,
+            "rater_codes": rater_codes,
+        }
+    summary: Dict[str, object] = {
+        "source": source,
+        "rater_ids": sorted(sheet.rater_id for sheet in sheets),
+        "rater_count": len(sheets),
+        "incorporated_count": sum(1 for item in per_puzzle.values() if item["incorporated"]),
+        "self_linked_count": sum(1 for item in per_puzzle.values() if item["self_linked"]),
+        "split_puzzle_ids": [puzzle_id for puzzle_id, codes in raters.items() if codes.get("split")],
+        "uncoded_puzzle_ids": [puzzle_id for puzzle_id, codes in raters.items() if not codes.get("rater_count")],
+    }
+    return per_puzzle, summary
+
+
 def _build_row(
     puzzle_id: str,
     *,
     assignment: PuzzleCueAssignment,
-    retest_by_id: Mapping[str, object],
-    incorporations: Mapping[str, object],
-    cue_times_by_puzzle: Mapping[str, Tuple[float, ...]],
+    results_by_wave: Mapping[str, Mapping[str, object]],
+    primary_wave: str,
+    incorporation: Mapping[str, object],
+    cue_times: Tuple[float, ...],
+    sham_times: Tuple[float, ...],
     cue_recalled: Optional[bool] = None,
 ) -> PuzzleAnalysisRow:
-    retest_result = retest_by_id[puzzle_id]
-    incorporation = incorporations.get(puzzle_id)
-    cue_times = cue_times_by_puzzle.get(puzzle_id, ())
+    retest_result = results_by_wave[primary_wave][puzzle_id]
+    wave_results = {
+        wave: {
+            "solved": result.solved,
+            "duration_seconds": result.duration_seconds,
+            "confidence": result.confidence,
+        }
+        for wave, results in results_by_wave.items()
+        for result in (results[puzzle_id],)
+    }
     condition = "cued" if assignment.is_cued(puzzle_id) else "uncued"
     return PuzzleAnalysisRow(
         puzzle_id=puzzle_id,
@@ -426,16 +618,77 @@ def _build_row(
         solved=retest_result.solved,
         duration_seconds=retest_result.duration_seconds,
         confidence=retest_result.confidence,
-        incorporated=incorporation is not None,
-        incorporation_confidence=(
-            incorporation.confidence if incorporation is not None else None
-        ),
+        incorporated=bool(incorporation["incorporated"]),
+        incorporation_confidence=incorporation["confidence"],  # type: ignore[arg-type]
         cue_play_count=len(cue_times),
         first_cue_time_seconds=cue_times[0] if cue_times else None,
         last_cue_time_seconds=cue_times[-1] if cue_times else None,
         cue_time_seconds=cue_times,
         cue_recalled=cue_recalled,
+        sham_play_count=len(sham_times),
+        self_linked=bool(incorporation["self_linked"]),
+        rater_codes=dict(incorporation["rater_codes"]),  # type: ignore[arg-type]
+        wave_results=wave_results,
     )
+
+
+def _wave_block(wave: str, retest: MorningRetest, rows: Tuple[PuzzleAnalysisRow, ...]) -> Dict[str, object]:
+    """One wave's metrics and cued-minus-uncued deltas, from the rows with that wave's results."""
+    wave_rows = tuple(
+        replace(
+            row,
+            solved=bool(row.wave_results[wave]["solved"]),
+            duration_seconds=float(row.wave_results[wave]["duration_seconds"]),  # type: ignore[arg-type]
+            confidence=float(row.wave_results[wave]["confidence"]),  # type: ignore[arg-type]
+        )
+        for row in rows
+    )
+    metrics = tuple(_condition_metrics(condition, wave_rows) for condition in ANALYSIS_CONDITIONS)
+    return {
+        "retest_id": retest.retest_id,
+        "reported_at_utc": retest.reported_at_utc,
+        "condition_metrics": {item.cue_condition: item.to_dict() for item in metrics},
+        "effect_summary": _effect_summary(metrics),
+    }
+
+
+def _incorporation_solved(
+    rows: Tuple[PuzzleAnalysisRow, ...],
+    waves: Tuple[str, ...],
+    source: str,
+) -> Dict[str, object]:
+    """Incorporated or not against solved or not, per wave, overall and by condition."""
+    if source == "none":
+        return {"available": False, "source": source}
+
+    def cell(subset: Sequence[PuzzleAnalysisRow], wave: str) -> Dict[str, object]:
+        solved = sum(1 for row in subset if row.wave_results[wave]["solved"])
+        return {
+            "puzzles": len(subset),
+            "solved": solved,
+            "unsolved": len(subset) - solved,
+            "solve_rate": _rate(solved, len(subset)),
+        }
+
+    by_wave: Dict[str, object] = {}
+    for wave in waves:
+        block: Dict[str, object] = {
+            "incorporated": cell([row for row in rows if row.incorporated], wave),
+            "not_incorporated": cell([row for row in rows if not row.incorporated], wave),
+        }
+        block["by_condition"] = {
+            condition: {
+                "incorporated": cell(
+                    [row for row in rows if row.cue_condition == condition and row.incorporated], wave
+                ),
+                "not_incorporated": cell(
+                    [row for row in rows if row.cue_condition == condition and not row.incorporated], wave
+                ),
+            }
+            for condition in ANALYSIS_CONDITIONS
+        }
+        by_wave[wave] = block
+    return {"available": True, "source": source, "waves": by_wave, "interpretation": "descriptive_only"}
 
 
 def _cue_recall_summary(
@@ -536,6 +789,7 @@ def _effect_summary(metrics: Tuple[ConditionMetrics, ...]) -> Dict[str, object]:
 def _cue_timing_summary(
     rows: Tuple[PuzzleAnalysisRow, ...],
     events: Tuple[TmrSchedulerEvent, ...],
+    arm: Optional[str] = None,
 ) -> Dict[str, object]:
     puzzle_play_rows = tuple(row for row in rows if row.cue_play_count > 0)
     all_times = tuple(timestamp for row in rows for timestamp in row.cue_time_seconds)
@@ -548,8 +802,15 @@ def _cue_timing_summary(
         "cued_puzzle_play_count": sum(
             row.cue_play_count for row in rows if row.cue_condition == "cued"
         ),
+        # Any play that names an uncued puzzle, the sham sound's included.
         "uncued_puzzle_play_count": sum(
-            row.cue_play_count for row in rows if row.cue_condition == "uncued"
+            row.cue_play_count + row.sham_play_count for row in rows if row.cue_condition == "uncued"
+        ),
+        # The night's arm as its events have it; None without events.
+        "arm": arm,
+        "sham_puzzle_play_count": sum(row.sham_play_count for row in rows),
+        "virtual_puzzle_play_count": sum(
+            1 for event in events if event.virtual_play and event.protocol == "puzzle"
         ),
     }
 
@@ -563,6 +824,8 @@ def _limitations(
     unknown_event_puzzle_ids: Tuple[str, ...],
     min_group_size: int,
     recall_summary: Optional[Mapping[str, object]] = None,
+    arm: Optional[str] = None,
+    waves: Tuple[str, ...] = ("morning",),
 ) -> Tuple[AnalysisLimitation, ...]:
     limitations = [
         AnalysisLimitation(
@@ -612,7 +875,8 @@ def _limitations(
         for row in rows
         if row.cue_condition == "cued" and row.cue_play_count == 0
     )
-    if scheduler_events and missing_cued_timing:
+    # A sham or no-cue night plays no cued puzzle's sound by design.
+    if scheduler_events and missing_cued_timing and arm not in ("sham", "no_cue"):
         limitations.append(
             AnalysisLimitation(
                 code="missing_cued_timing",
@@ -624,7 +888,7 @@ def _limitations(
     uncued_plays = tuple(
         row.puzzle_id
         for row in rows
-        if row.cue_condition == "uncued" and row.cue_play_count > 0
+        if row.cue_condition == "uncued" and (row.cue_play_count > 0 or row.sham_play_count > 0)
     )
     if uncued_plays:
         limitations.append(
@@ -642,6 +906,42 @@ def _limitations(
                 severity="warning",
                 message="Scheduler log includes puzzle events outside this session.",
                 metadata={"puzzle_ids": unknown_event_puzzle_ids},
+            )
+        )
+    if arm == "sham":
+        limitations.append(
+            AnalysisLimitation(
+                code="sham_arm",
+                severity="info",
+                message=(
+                    "A sham night: every play was the untrained sham sound at a cued puzzle's moment. The plays "
+                    "count as sham_play_count, not as plays of the cued puzzles' sounds."
+                ),
+                metadata={"sham_puzzle_play_count": sum(row.sham_play_count for row in rows)},
+            )
+        )
+    elif arm == "no_cue":
+        limitations.append(
+            AnalysisLimitation(
+                code="no_cue_arm",
+                severity="info",
+                message=(
+                    "A no-cue night: nothing played. Its virtual_play skips mark where a cue night would have "
+                    "played."
+                ),
+            )
+        )
+    missing_waves = tuple(wave for wave in DELAYED_RETEST_WAVES if wave not in waves)
+    if missing_waves:
+        limitations.append(
+            AnalysisLimitation(
+                code="missing_delayed_retest",
+                severity="warning",
+                message=(
+                    "No retest a week or ten days later was supplied for some waves; cueing effects have shown "
+                    "up only at a delayed retest in some studies. A missing wave is not a zero."
+                ),
+                metadata={"waves_given": list(waves), "missing_waves": list(missing_waves)},
             )
         )
     recall_summary = recall_summary or {}
@@ -674,24 +974,30 @@ def _limitations(
     return tuple(limitations)
 
 
-def _incorporation_map(
-    dream_report: Optional[DreamReport],
-) -> Dict[str, object]:
-    if dream_report is None:
-        return {}
-    return {
-        link.puzzle_id: link
-        for link in dream_report.puzzle_incorporations
-        if link.incorporated
-    }
+def _night_arm(events: Tuple[TmrSchedulerEvent, ...]) -> Optional[str]:
+    """The arm a night's scheduler events carry; None without events. One night's log
+    has one arm, so a log with two raises."""
+    arms = sorted({event.arm for event in events})
+    if not arms:
+        return None
+    if len(arms) > 1:
+        raise ValueError(f"the scheduler events hold more than one arm ({', '.join(arms)}); give one night's log")
+    return arms[0]
+
+
+def _is_sham_play(event: TmrSchedulerEvent) -> bool:
+    return event.arm == "sham" or SHAM_ARM_REASON in event.reason_codes
 
 
 def _cue_times_by_puzzle(
     session: NightPuzzleSession,
     events: Tuple[TmrSchedulerEvent, ...],
-) -> Tuple[Dict[str, Tuple[float, ...]], Tuple[str, ...]]:
+) -> Tuple[Dict[str, Tuple[float, ...]], Dict[str, Tuple[float, ...]], Tuple[str, ...]]:
+    """The times of each session puzzle's plays, its sham plays apart, and the puzzle IDs
+    of plays outside the session."""
     session_ids = set(session.puzzle_ids)
-    times: Dict[str, list] = {puzzle_id: [] for puzzle_id in session.puzzle_ids}
+    times: Dict[str, List[float]] = {puzzle_id: [] for puzzle_id in session.puzzle_ids}
+    sham: Dict[str, List[float]] = {puzzle_id: [] for puzzle_id in session.puzzle_ids}
     unknown = []
     for event in events:
         if event.event_type != "play" or event.protocol != "puzzle" or not event.puzzle_id:
@@ -699,9 +1005,10 @@ def _cue_times_by_puzzle(
         if event.puzzle_id not in session_ids:
             unknown.append(event.puzzle_id)
             continue
-        times[event.puzzle_id].append(event.timestamp_seconds)
+        (sham if _is_sham_play(event) else times)[event.puzzle_id].append(event.timestamp_seconds)
     return (
         {puzzle_id: tuple(sorted(values)) for puzzle_id, values in times.items()},
+        {puzzle_id: tuple(sorted(values)) for puzzle_id, values in sham.items()},
         tuple(sorted(set(unknown))),
     )
 
@@ -769,6 +1076,16 @@ def _recall_line(summary: Mapping[str, object]) -> str:
     cued = (by_condition.get("cued") or {}).get("recall_rate")
     uncued = (by_condition.get("uncued") or {}).get("recall_rate")
     return f"{_format_rate(summary.get('recall_rate'))} placed (cued {_format_rate(cued)}, uncued {_format_rate(uncued)})"
+
+
+def _incorporation_line(summary: Mapping[str, object]) -> str:
+    source = summary.get("source")
+    if source == "raters":
+        count = int(summary.get("rater_count", 0) or 0)
+        return f"rater codes ({count} rater{'s' if count != 1 else ''})"
+    if source == "self_report":
+        return "the dream report's own links"
+    return "no dream report and no rater codes"
 
 
 def _format_seconds(value: Optional[float]) -> str:

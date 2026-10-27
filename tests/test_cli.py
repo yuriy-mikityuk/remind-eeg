@@ -791,6 +791,10 @@ class TestCli(unittest.TestCase):
             "data/protocol/assignment.json",
             "--retest",
             "data/reports/retest.json",
+            "--retest",
+            "data/reports/retest_day7.json",
+            "--coding",
+            "data/reports/coding_rater-a.json",
             "--dream-report",
             "data/reports/dream.json",
             "--scheduler-events",
@@ -808,7 +812,9 @@ class TestCli(unittest.TestCase):
         self.assertEqual(args.command, "analyze-cued-uncued")
         self.assertEqual(args.session, Path("data/protocol/session.json"))
         self.assertEqual(args.assignment, Path("data/protocol/assignment.json"))
-        self.assertEqual(args.retest, Path("data/reports/retest.json"))
+        # One --retest per wave since schema 3 (#228).
+        self.assertEqual(args.retest, [Path("data/reports/retest.json"), Path("data/reports/retest_day7.json")])
+        self.assertEqual(args.coding, [Path("data/reports/coding_rater-a.json")])
         self.assertEqual(args.dream_report, Path("data/reports/dream.json"))
         self.assertEqual(args.scheduler_events, Path("data/reports/scheduler.jsonl"))
         self.assertEqual(args.output, Path("data/reports/analysis.json"))

@@ -57,6 +57,8 @@ def run_fast_tests():
         'tests.test_dream_report',
         'tests.test_morning_retest',
         'tests.test_cued_uncued_analysis',
+        'tests.test_incorporation_coding',
+        'tests.test_nof1_analysis',
         'tests.test_pilot1_validation',
         'tests.test_pilot2_validation',
         'tests.test_pilot3_replay_simulation',
