@@ -66,9 +66,10 @@ To run a night with a protocol preset (`docs/protocol_presets.md`), give the sam
 example the `--repetitions`, `--interval-seconds` and `--post-block-pause-seconds` above.
 `create-cue-library` then puts the preset's TLR tone in `data/cues/starter.json` under
 `tlr_soft_tone`, the same cue `create-tlr-cue --protocol-preset` makes, so training, the
-plan and the night all read that one library. Each file records the preset it was made
-with; a night whose plan or assignment was made with another preset says so in a warning
-and in `metadata.json`.
+plan and the night all read that one library. Without the flag the library keeps the
+starter's tone, and `plan-tlr-block --protocol-preset` warns when that is not the
+preset's. Each file records the preset it was made with; a night whose plan or
+assignment was made with another preset says so in a warning and in `metadata.json`.
 
 The night plays the TLR cue of its own `--cue-library`, whatever library the plan was
 made from. So the plan records the tone it was made with (`tone`), and

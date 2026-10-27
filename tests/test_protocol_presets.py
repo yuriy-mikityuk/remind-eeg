@@ -386,6 +386,32 @@ class CliLoaderTest(unittest.TestCase):
                     self.assertIn(f"protocol={preset.name}", output)
                     self.assertTrue(validate_cue_library_file(library_path).is_valid)
 
+    def test_a_preset_plan_warns_when_the_tlr_cue_is_not_its_tone(self):
+        """The starter library made without --protocol-preset keeps REMind's tone (#264)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            starter, nijmegen, plan_path = Path(tmp) / "starter.json", Path(tmp) / "nijmegen.json", Path(tmp) / "plan.json"
+
+            def plan(library, *flags):
+                stderr = io.StringIO()
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                    self.assertEqual(cli_main.main(["plan-tlr-block", str(library), "--output", str(plan_path), *flags]), 0)
+                return stderr.getvalue()
+
+            self._run("create-cue-library", "--output", str(starter))
+            self._run("create-cue-library", "--output", str(nijmegen), "--protocol-preset", "konkoly2021_nijmegen")
+            warning = plan(starter, "--protocol-preset", "konkoly2021_nijmegen")
+            self.assertIn("tlr_soft_tone is 396 Hz for 1 s and records no protocol preset", warning)
+            self.assertIn("konkoly2021_nijmegen's TLR tone is 600 Hz for 0.65 s", warning)
+            self.assertIn("create-cue-library --protocol-preset konkoly2021_nijmegen", warning)
+            # The preset's own library, and the starter one without a preset or with the default, say nothing.
+            self.assertEqual(plan(nijmegen, "--protocol-preset", "konkoly2021_nijmegen"), "")
+            self.assertEqual(plan(starter), "")
+            self.assertEqual(plan(starter, "--protocol-preset", "remind_default_v1"), "")
+            # A cue made with another preset gets the warning it had before.
+            other = plan(nijmegen, "--protocol-preset", "konkoly2024_exp2")
+            self.assertIn("was made with protocol preset konkoly2021_nijmegen", other)
+            self.assertNotIn("records no protocol preset", other)
+
     def test_without_a_preset_the_tlr_files_are_todays(self):
         with tempfile.TemporaryDirectory() as tmp:
             cues = Path(tmp) / "cues.json"

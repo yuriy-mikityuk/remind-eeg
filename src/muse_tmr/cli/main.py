@@ -3569,6 +3569,10 @@ def _plan_tlr_block(args: argparse.Namespace) -> int:
         extra_overrides={"tlr_block_enabled": False} if args.disabled else None,
     )
     metadata: Dict[str, object] = {"protocol": _protocol_block(preset, overrides, tlr_cue=cue.metadata)}
+    if args.protocol_preset is not None:
+        tone_warning = _preset_tone_warning(cue, preset, overrides)
+        if tone_warning is not None:
+            print(tone_warning, file=sys.stderr)
     if training is not None:
         metadata["training"] = {"session_id": training.session_id, "completed_at_utc": training.completed_at_utc}
     plan = plan_tlr_block(
@@ -3590,6 +3594,25 @@ def _plan_tlr_block(args: argparse.Namespace) -> int:
         + f"output={output_path}"
     )
     return 0
+
+
+def _preset_tone_warning(cue, preset, overrides: Mapping[str, object]) -> Optional[str]:
+    """A warning when ``cue`` records no protocol preset and is not the preset's TLR tone,
+    as the starter library's tlr_soft_tone is without create-cue-library --protocol-preset
+    (#264). A cue made with another preset is named by _protocol_block()."""
+    from muse_tmr.protocol import TlrTone
+
+    if isinstance(cue.metadata, Mapping) and isinstance(cue.metadata.get("protocol"), Mapping):
+        return None
+    config = preset.tlr_cue_config(cue_id=cue.cue_id, overrides=overrides)
+    tone = TlrTone(cue_id=cue.cue_id, frequency_hz=config.frequency_hz, duration_seconds=config.duration_seconds)
+    if not tone.differs_from(cue):
+        return None
+    return (
+        f"warning: the tlr cue {cue.cue_id} is {TlrTone.of_cue(cue).describe()} and records no protocol preset, "
+        f"{preset.name}'s TLR tone is {tone.describe()}; create-cue-library --protocol-preset {preset.name} makes "
+        "a library with it"
+    )
 
 
 def _import_puzzles(args: argparse.Namespace) -> int:
