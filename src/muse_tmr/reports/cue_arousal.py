@@ -47,8 +47,10 @@ from muse_tmr.validation.gate_log import (
     REM_GATE_DECISIONS_FILENAME,
     GateDecisionRecord,
     GateOpenRun,
+    emitting_record,
     gate_open_runs,
     load_rem_gate_decisions,
+    run_at,
 )
 from muse_tmr.validation.pilot4 import AwakeningEvent, load_awakening_events
 
@@ -779,7 +781,7 @@ def _cue_targets(inputs: _NightInputs, first_epoch_start: float, config: CueArou
     for play, audio in zip(inputs.plays, inputs.audio):
         metadata = dict(play.get("metadata", {}) or {})
         scheduled = float(play["timestamp_seconds"])
-        record = _emitting_record(records, starts, scheduled)
+        record = emitting_record(records, scheduled, starts=starts)
         if metadata.get("decision_seconds") is not None:
             offset = float(metadata["decision_seconds"])
         elif record is not None:
@@ -806,18 +808,6 @@ def _cue_targets(inputs: _NightInputs, first_epoch_start: float, config: CueArou
             )
         )
     return targets
-
-
-def _emitting_record(
-    records: Sequence[GateDecisionRecord],
-    starts: Sequence[float],
-    scheduled_seconds: float,
-) -> Optional[GateDecisionRecord]:
-    """The epoch whose decision played a cue the scheduler logged at ``scheduled_seconds``:
-    the first epoch starting at or after it. A puzzle cue is logged at its epoch's start, a
-    TLR cue at its planned time, which the next epoch to start plays."""
-    position = bisect.bisect_left(starts, scheduled_seconds - _TIME_TOLERANCE_SECONDS)
-    return records[position] if position < len(records) else None
 
 
 def _cue_info(play: Mapping[str, object], audio: Optional[Mapping[str, object]]) -> Dict[str, object]:
@@ -1472,7 +1462,7 @@ def _with_night_context(
     awakenings: Optional[Sequence[Tuple[float, Optional[str]]]],
     config: CueArousalConfig,
 ) -> CueArousalWindow:
-    run = _run_at(runs, window.offset_seconds) if window.gate_open else None
+    run = run_at(runs, window.offset_seconds) if window.gate_open else None
     awakening = None
     if window.kind == "cue" and awakenings is not None and window.offset_seconds is not None:
         later = [
@@ -1499,20 +1489,6 @@ def _with_night_context(
         awakening_in_seconds=awakening,
         cue=window.cue,
     )
-
-
-def _run_at(runs: Sequence[GateOpenRun], offset: Optional[float]) -> Optional[GateOpenRun]:
-    """The gate-open run the gate was in at ``offset``; a decision time is compared with
-    the run's own decision times, so float rounding is tolerated."""
-    if offset is None:
-        return None
-    tolerance = _TIME_TOLERANCE_SECONDS
-    for run in runs:
-        if offset < run.start_seconds - tolerance:
-            continue
-        if offset < run.end_seconds - tolerance or (not run.closed and offset <= run.end_seconds + tolerance):
-            return run
-    return None
 
 
 def _flag_counts(windows: Sequence[CueArousalWindow]) -> Dict[str, Dict[str, object]]:
