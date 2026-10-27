@@ -177,6 +177,8 @@ class TestMorningNights(unittest.TestCase):
         write_arm(self.protocol.parent, "sham")
         morning.save_retest(self.protocol, self.reports, retest_body())
         morning.save_retest(self.protocol, self.reports, retest_body(wave="day7"))
+        # The sleeper's own words come back as typed; the walk below looks at keys and whole
+        # values, so a note may say anything.
         morning.save_dream_report(
             self.protocol,
             self.reports,
