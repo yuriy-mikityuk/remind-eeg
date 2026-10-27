@@ -845,6 +845,7 @@ class TestPilot3Arms(unittest.TestCase):
             "--recordings-dir", str(self.root / "replayed_recordings"),
             *summaries,
             "--output", str(self.root / "replayed_nof1.json"),
+            "--markdown-output", str(self.root / "replayed_nof1.md"),
         ]
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(cli_main(command), 2)  # still sealed
@@ -854,13 +855,27 @@ class TestPilot3Arms(unittest.TestCase):
         payload = json.loads((self.root / "replayed_nof1.json").read_text(encoding="utf-8"))
         for night in payload["nights"]:
             self.assertEqual((night["summary_kind"], night["summary_arm"]), ("pilot3_report", night["arm"]))
+            # A replay played nothing: its cues count as planned, never as plays.
+            self.assertTrue(night["replay"])
             self.assertEqual(
-                (night["plays"], night["virtual_plays"]), (0, 2) if night["arm"] == "no_cue" else (2, 0), night["arm"]
+                (night["plays"], night["planned_plays"], night["virtual_plays"]),
+                (None, 0, 2) if night["arm"] == "no_cue" else (None, 2, 0),
+                night["arm"],
             )
+        self.assertEqual({arm: counts["plays"] for arm, counts in payload["cue_counts"].items()},
+                         {"cue": None, "sham": None, "no_cue": None})
         codes = [item["code"] for item in payload["limitations"]]
         self.assertNotIn("arm_mismatch", codes)
         self.assertIn("missing_night_data", codes)
+        replayed = next(item for item in payload["limitations"] if item["code"] == "replay_nights")
+        self.assertEqual(replayed["metadata"]["night_ids"], [night.night_id for night in load_night_schedule(schedule_path).nights])
+        # No sound reached the sleeper, so neither the sham's sound nor its scoring applies.
+        self.assertNotIn("sham_detectable", codes)
+        self.assertNotIn("missing_arousal_scoring", codes)
         self.assertEqual(payload["schedule"]["seal"], "matches")
+        markdown = (self.root / "replayed_nof1.md").read_text(encoding="utf-8")
+        self.assertEqual(markdown.count(" (replay) |"), 3)
+        self.assertIn("`replay_nights`", markdown)
 
 
 if __name__ == "__main__":

@@ -129,31 +129,40 @@ class TestSealAndInputs(_SeriesTest):
             load_series_inputs(series.schedule, reports_dir=series.reports_dir)
         self.assertIn("night-002", str(caught.exception))
 
-    def test_a_pilot3_report_can_stand_for_a_night(self):
+    def test_a_pilot3_report_can_stand_for_a_night_as_replay(self):
         series = self.series()
-        night_dir = series.recordings_dir / "night-001"
-        summary = json.loads((night_dir / "pilot5_summary.json").read_text(encoding="utf-8"))
-        shutil.rmtree(night_dir)
+        shutil.rmtree(series.recordings_dir / "night-001")
         replay = self.tmp / "replays" / "night-001_pilot3.json"
         replay.parent.mkdir()
-        replay.write_text(
-            json.dumps(
-                {
-                    "synthetic": True,
-                    "pilot_id": "m8_pilot3_replay_cue_simulation",
-                    "night_id": "night-001",
-                    "arm": summary["arm"],
-                    "schedule_commitment_sha256": summary["schedule_commitment_sha256"],
-                    "metrics": {"cue_plan_count": 3, "virtual_play_count": 0},
-                }
-            ),
-            encoding="utf-8",
-        )
+        night = series.schedule.nights[0]
+        self.assertEqual(night.arm, "cue")
+        replay.write_text(json.dumps(dict(_pilot3_report(series.schedule, night), synthetic=True)), encoding="utf-8")
         nights = load_series_inputs(series.schedule, recordings_dir=series.recordings_dir, summary_paths=(replay,))
         report = build_nof1_analysis(series.schedule, nights)
         first = report.nights[0]
-        self.assertEqual((first["summary_kind"], first["plays"], first["virtual_plays"]), ("pilot3_report", 3, 0))
+        self.assertEqual(
+            (first["summary_kind"], first["replay"], first["plays"], first["planned_plays"], first["virtual_plays"]),
+            ("pilot3_report", True, None, 3, 0),
+        )
         self.assertIsNone(first["started_at"])
+        self.assertFalse(any(night["replay"] for night in report.nights[1:]))
+        # The cue arm's plays are the three real nights'; the replay's cues were only planned.
+        real_plays = sum(night["plays"] for night in report.nights[1:] if night["arm"] == "cue")
+        self.assertEqual(
+            {key: report.cue_counts["cue"][key] for key in ("nights_with_summary", "replay_nights", "plays", "planned_plays")},
+            {"nights_with_summary": 4, "replay_nights": 1, "plays": real_plays, "planned_plays": 3},
+        )
+        replayed = next(item for item in report.limitations if item.code == "replay_nights")
+        self.assertEqual(replayed.metadata["night_ids"], ["night-001"])
+        # Nothing played on the replayed cue night, so no arousal scoring is missing there.
+        self.assertNotIn("missing_arousal_scoring", report.limitation_codes)
+        carry = next(item for item in report.limitations if item.code == "carry_over_possible")
+        self.assertNotIn("night-002", carry.metadata["nights_after_a_playing_night"])
+        markdown = report.to_markdown()
+        self.assertIn("| night-001 (first) (replay) |", markdown)
+        self.assertIn("| 3 planned |", markdown)
+        self.assertIn("Planned in replay", markdown)
+        self.assertNotIn("Planned in replay", _analyse(self.series("real")).to_markdown())
 
     def test_reads_arousal_from_the_scorers_report_when_the_summary_has_none(self):
         series = self.series(arousal_scored=False)

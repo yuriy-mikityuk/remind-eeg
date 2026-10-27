@@ -6,7 +6,9 @@ report, the arousal proxies per cue of ``score-cue-arousal`` (``arousal_proxy_pe
 and the morning forms: lucidity, cue perception and sound awakenings from the dream
 report (schema 2), incorporation from rater codes or else the sleeper's links, and the
 cued-minus-uncued solve rate of each retest wave from ``analysis.py``. It defines no
-schema of its own for any of them.
+schema of its own for any of them. A night whose record is a Pilot 3 report is a replay:
+its cues were planned on a recording and none played, so they count as planned, never
+as plays, and the limitation ``replay_nights`` names it.
 
 For each outcome it gives the mean per arm, with and without the series' first night,
 and for each pair of arms the difference of the means with a permutation interval: the
@@ -303,8 +305,12 @@ class Nof1AnalysisReport:
         for night in self.nights:
             values = dict(night.get("values", {}) or {})
             first = " (first)" if night.get("first_night") else ""
+            replay = " (replay)" if night.get("replay") else ""
+            plays = (
+                f"{_number(night.get('planned_plays'))} planned" if night.get("replay") else _number(night.get("plays"))
+            )
             lines.append(
-                f"| {night['position']} | {night['night_id']}{first} | {night['block']} | {night['arm']} | "
+                f"| {night['position']} | {night['night_id']}{first}{replay} | {night['block']} | {night['arm']} | "
                 + " | ".join(
                     _number(values.get(name))
                     for name in (
@@ -318,7 +324,7 @@ class Nof1AnalysisReport:
                         _wave_outcome("day10"),
                     )
                 )
-                + f" | {_number(night.get('plays'))} | {_number(night.get('virtual_plays'))} |"
+                + f" | {plays} | {_number(night.get('virtual_plays'))} |"
             )
         lines += ["", "## Means by arm", "", "| Outcome | " + " | ".join(arms) + " | Without the first night |",
                   "| --- | " + " | ".join("---:" for _ in arms) + " | --- |"]
@@ -342,19 +348,23 @@ class Nof1AnalysisReport:
         lines += ["", "## Serial dependence", "", "| Outcome | Lag-1 autocorrelation | Pairs |", "| --- | ---: | ---: |"]
         for outcome, item in self.autocorrelation.items():
             lines.append(f"| {outcome} | {_number(item.get('lag1'))} | {item.get('pairs', 0)} |")
+        replayed = any(night.get("replay") for night in self.nights)
         lines += [
             "",
             "## Plays and arousal proxies by arm",
             "",
-            "| Arm | Nights | Plays | Virtual plays | Any arousal flag per cue |",
-            "| --- | ---: | ---: | ---: | ---: |",
+            "| Arm | Nights | Plays | Virtual plays | " + ("Planned in replay | " if replayed else "")
+            + "Any arousal flag per cue |",
+            "| --- | ---: | ---: | ---: | " + ("---: | " if replayed else "") + "---: |",
         ]
         for arm in arms:
             counts = dict(self.cue_counts.get(arm, {}) or {})
             rates = dict(dict(self.arousal.get(arm, {}) or {}).get("mean_rate", {}) or {})
             lines.append(
                 f"| {arm} | {counts.get('nights_with_summary', 0)} | {_number(counts.get('plays'))} | "
-                f"{_number(counts.get('virtual_plays'))} | {_number(rates.get('any'))} |"
+                f"{_number(counts.get('virtual_plays'))} | "
+                + (f"{_number(counts.get('planned_plays'))} | " if replayed else "")
+                + f"{_number(rates.get('any'))} |"
             )
         lines += ["", "## Limitations", ""]
         lines.extend(f"- `{item.code}`: {item.message}" for item in self.limitations)
@@ -694,9 +704,11 @@ def _night_row(night: ScheduledNight, inputs: Nof1NightInputs, first: bool) -> R
         for wave, block in analysis.wave_metrics.items():
             delta = dict(block.get("effect_summary", {}) or {}).get("solve_rate_difference_cued_minus_uncued")
             values[_wave_outcome(wave)] = None if delta is None else float(delta)
-    pilot3 = _is_replay(summary)
+    replay = _is_replay(summary)
     metrics = dict(summary.get("metrics", {}) or {})
-    plays = summary.get("cue_play_count", metrics.get("cue_plan_count")) if summary else None
+    # A replay plans its cues on a recording and plays none: they count as planned.
+    plays = summary.get("cue_play_count") if summary and not replay else None
+    planned = metrics.get("cue_plan_count") if replay else None
     virtual = summary.get("virtual_play_count", metrics.get("virtual_play_count")) if summary else None
     protocol = protocol_block_of(summary) if summary else None
     return {
@@ -707,13 +719,15 @@ def _night_row(night: ScheduledNight, inputs: Nof1NightInputs, first: bool) -> R
         "first_night": first,
         "has_data": inputs.has_data,
         "synthetic": inputs.synthetic,
+        "replay": replay,
         "summary_arm": summary.get("arm") if summary else None,
-        "summary_kind": ("pilot3_report" if pilot3 else "pilot_summary") if summary else None,
+        "summary_kind": ("pilot3_report" if replay else "pilot_summary") if summary else None,
         "started_at": summary.get("started_at") if summary else None,
         "summary_passed": summary.get("passed") if summary else None,
         "failed_criteria": list(summary.get("failed_criteria", ()) or ()) if summary else [],
         "protocol_effective_hash": protocol.get("effective_hash") if protocol else None,
         "plays": None if plays is None else int(plays),
+        "planned_plays": None if planned is None else int(planned),
         "virtual_plays": None if virtual is None else int(virtual),
         "inputs": {
             "summary": inputs.summary_path,
@@ -958,16 +972,20 @@ def _autocorrelation(rows: Sequence[Row]) -> Dict[str, object]:
 
 
 def _cue_counts(rows: Sequence[Row], arms: Sequence[str]) -> Dict[str, object]:
+    """Plays per arm from the nights' summaries; a replay's cues count as planned_plays."""
     result: Dict[str, object] = {}
     for arm in arms:
-        with_summary = [row for row in rows if row["arm"] == arm and row["plays"] is not None]
-        plays = [int(row["plays"]) for row in with_summary]
-        virtual = [int(row["virtual_plays"]) for row in with_summary if row["virtual_plays"] is not None]
+        recorded = [row for row in rows if row["arm"] == arm and row["summary_kind"] is not None]
+        plays = [int(row["plays"]) for row in recorded if row["plays"] is not None]
+        planned = [int(row["planned_plays"]) for row in recorded if row["planned_plays"] is not None]
+        virtual = [int(row["virtual_plays"]) for row in recorded if row["virtual_plays"] is not None]
         result[arm] = {
-            "nights_with_summary": len(with_summary),
-            "plays": sum(plays) if with_summary else None,
+            "nights_with_summary": len(recorded),
+            "replay_nights": sum(1 for row in recorded if row["replay"]),
+            "plays": sum(plays) if plays else None,
             "plays_per_night": _mean([float(value) for value in plays]),
-            "virtual_plays": sum(virtual) if virtual else (0 if with_summary else None),
+            "planned_plays": sum(planned) if planned else None,
+            "virtual_plays": sum(virtual) if virtual else (0 if recorded else None),
         }
     return result
 
@@ -1012,6 +1030,20 @@ def _limitations(
                 code="synthetic_input",
                 severity="info",
                 message="At least one night is synthetic input, not sleep: nothing here is about sleep.",
+            )
+        )
+    replayed = [str(row["night_id"]) for row in rows if row["replay"]]
+    if replayed:
+        items.append(
+            AnalysisLimitation(
+                code="replay_nights",
+                severity="warning",
+                message=(
+                    "Some nights are Pilot 3 replays: their cues were planned on a recording and none played, so "
+                    "no sound reached the sleeper. They count planned cues, not plays, and any arousal proxies of "
+                    "theirs were scored with nothing played. They describe replay, not sleep-time cueing."
+                ),
+                metadata={"night_ids": replayed},
             )
         )
     items.append(
@@ -1140,7 +1172,7 @@ def _limitations(
                 metadata=unblinded,
             )
         )
-    sham_rows = [row for row in analysed if row["arm"] == "sham"]
+    sham_rows = [row for row in analysed if row["arm"] == "sham" and _played_sound(row)]
     if sham_rows:
         items.append(
             AnalysisLimitation(
@@ -1163,7 +1195,7 @@ def _limitations(
     after_playing = [
         str(row["night_id"])
         for position, row in sorted(positions.items())
-        if position - 1 in positions and positions[position - 1]["arm"] in PLAYING_ARMS
+        if position - 1 in positions and _played_sound(positions[position - 1])
     ]
     if any(position + 1 in positions for position in positions):
         items.append(
@@ -1204,11 +1236,7 @@ def _limitations(
                 metadata={"missing_waves": delayed_missing},
             )
         )
-    unscored = [
-        str(row["night_id"])
-        for row in analysed
-        if row["arm"] in PLAYING_ARMS and not row["arousal_proxy_per_cue"]
-    ]
+    unscored = [str(row["night_id"]) for row in analysed if _played_sound(row) and not row["arousal_proxy_per_cue"]]
     if unscored:
         items.append(
             AnalysisLimitation(
@@ -1229,6 +1257,11 @@ def _limitations(
         )
     )
     return tuple(items)
+
+
+def _played_sound(row: Row) -> bool:
+    """A cue or sham night that ran for real; a replay played nothing."""
+    return row["arm"] in PLAYING_ARMS and not row["replay"]
 
 
 def _unblinded(schedule: NightSchedule, rows: Sequence[Row]) -> Dict[str, object]:

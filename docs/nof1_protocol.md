@@ -288,7 +288,9 @@ delayed retest was saved, or before a night started; `sham_detectable`;
 `missing_arousal_scoring`; `missing_night_data`, a night without its summary, puzzle
 session, assignment, dream report or morning retest; `arm_mismatch`, a summary that names
 another arm than the schedule, whose arm is kept; `inherits_detector_limits`, the
-detector's open issues #116 and #167; and `synthetic_input`.
+detector's open issues #116 and #167; `replay_nights`, nights whose record is a Pilot 3
+report, so nothing played: their cues count as planned, not played, and they are left
+out of `sham_detectable` and `missing_arousal_scoring`; and `synthetic_input`.
 
 The Markdown report ends with a checklist of SCRIBE 2016 and CENT 2015
 ([`references.md`](references.md)): each item is `auto` when the report holds it,
