@@ -1032,7 +1032,8 @@ def _tone_check(preset: ProtocolPreset, plays: Sequence[_Play], night: _Night) -
 
     The audio log names the cue, not its tone; the tone is the TLR plan's in
     ``metadata.json``, which a night only starts with when its cue library holds that tone
-    under the plan's cue ID. A plan from before #264 records none.
+    under the plan's cue ID. A plan from before #264 records none. A preset whose paper
+    had no TLR cue keeps REMind's default tone, which no paper published.
     """
     tlr = [play for play in plays if play.stream == "tlr"]
     plan = night.tlr_plan
@@ -1041,11 +1042,18 @@ def _tone_check(preset: ProtocolPreset, plays: Sequence[_Play], night: _Night) -
     tone = dict((plan or {}).get("tone") or {})
     frequency = _optional_float(tone.get("frequency_hz"))
     duration = _optional_float(tone.get("duration_seconds"))
-    published = {
-        "frequency_hz": preset.runner.tlr_tone_frequency_hz,
-        "duration_seconds": preset.runner.tlr_tone_duration_seconds,
-    }
-    if frequency is None or duration is None:
+    spec = preset.cue_spec("tlr")
+    published = (
+        None
+        if spec is None
+        else {
+            "frequency_hz": preset.runner.tlr_tone_frequency_hz,
+            "duration_seconds": preset.runner.tlr_tone_duration_seconds,
+        }
+    )
+    if published is None:
+        status = "not_published"
+    elif frequency is None or duration is None:
         status = "not_available"
     elif not tlr:
         status = "no_cues"
@@ -1056,7 +1064,7 @@ def _tone_check(preset: ProtocolPreset, plays: Sequence[_Play], night: _Night) -
         status = "as_published"
     else:
         status = "differs"
-    spec = preset.cue_spec("tlr")
+    described = spec or preset.cue_spec("any")
     return {
         "status": status,
         "observed": (
@@ -1065,12 +1073,12 @@ def _tone_check(preset: ProtocolPreset, plays: Sequence[_Play], night: _Night) -
             else {"cue_id": tone.get("cue_id"), "frequency_hz": frequency, "duration_seconds": duration}
         ),
         "published": published,
-        "described": None if spec is None else spec.description,
+        "described": None if described is None else described.description,
         "note": (
             "observed: the TLR plan's tone, which the night played under the plan's cue ID (a sham night played the "
             "sham sound for as long instead); published: the tone of the preset's TLR cue as create-cue-library and "
             "create-tlr-cue make it with --protocol-preset, which stands in for the paper's cue where that was not "
-            "one tone"
+            "one tone, and none where the paper had no TLR cue"
         ),
     }
 

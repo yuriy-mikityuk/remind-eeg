@@ -335,6 +335,20 @@ class GateSequenceTest(unittest.TestCase):
         tone = build_protocol_fidelity(nijmegen).checks["tlr_tone"]
         self.assertEqual((tone["status"], tone["observed"]), ("not_available", None))
 
+    def test_no_tlr_tone_is_published_where_the_paper_had_no_tlr_cue(self):
+        # Their runner keeps REMind's 396 Hz tone of 1 s, which is not a published one.
+        for name in ("konkoly2021_osnabrueck", "borghese2022_rem_home", "schwartz2022_irt_rem"):
+            with self.subTest(preset=name):
+                report = build_protocol_fidelity(write_night(self.root / name, [0.9] * 20, preset=name, tlr=True))
+                tone = report.checks["tlr_tone"]
+                self.assertGreater(report.summary["plays"]["tlr"], 0)
+                self.assertEqual((tone["status"], tone["published"]), ("not_published", None))
+                self.assertEqual(tone["observed"]["frequency_hz"], 396.0)
+                self.assertIn("| tlr_tone | not_published |", report.to_markdown())
+        # The same night against a preset with a TLR cue is compared.
+        other = build_protocol_fidelity(self.root / "borghese2022_rem_home", preset_name="remind_default_v1")
+        self.assertEqual(other.checks["tlr_tone"]["status"], "as_published")
+
     def test_the_stable_window_against_the_published_start(self):
         probabilities = [0.2, 0.9, 0.9, 0.9, 0.9]
         nijmegen = build_protocol_fidelity(write_night(self.root / "n", probabilities, preset="konkoly2021_nijmegen"))
