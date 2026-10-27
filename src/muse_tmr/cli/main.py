@@ -316,7 +316,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("decoded-frames", "edf", "muselsl-csv", "openmuse-csv", "brainflow-csv", "mindmonitor-csv"),
     )
     import_parser.add_argument(
-        "--output", type=Path, help="Recording directory to write. Default: data/recordings/imported/<input name>."
+        "--output",
+        type=Path,
+        help="Recording directory to write. Default: data/recordings/imported/<input name>, or for a "
+        "decoded_frames.jsonl the name of its recording directory.",
     )
     import_parser.add_argument(
         "--eeg-scale",
@@ -2568,13 +2571,13 @@ def _parse_start_time(text: Optional[str]) -> Optional[float]:
 
 def _import_recording(args: argparse.Namespace) -> int:
     from muse_tmr.data.edf_io import resolve_channel_map
-    from muse_tmr.data.import_recording import import_recording
+    from muse_tmr.data.import_recording import default_import_name, import_recording
 
     source = _resolve_output_path(args.input)
     output = (
         _resolve_output_path(args.output)
         if args.output
-        else _default_path_base() / "data" / "recordings" / "imported" / source.stem
+        else _default_path_base() / "data" / "recordings" / "imported" / default_import_name(source)
     )
     try:
         result = import_recording(

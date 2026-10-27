@@ -469,8 +469,19 @@ def _iso(seconds: float) -> str:
     return dt.datetime.fromtimestamp(seconds, tz=dt.timezone.utc).isoformat()
 
 
-def _check_output_dir(output_dir: Path) -> None:
-    """An import writes into a new or empty directory, or over an earlier import."""
+def default_import_name(path: Path) -> str:
+    """The directory an import goes into by default under ``imported/``: the input's
+    stem, or for a recorder's ``decoded_frames.jsonl``, a name every recording uses, the
+    name of the recording directory it is in."""
+    path = Path(path)
+    if path.name == DECODED_FRAMES_FILENAME and path.parent.name:
+        return path.parent.name
+    return path.stem
+
+
+def _check_output_dir(output_dir: Path, input_sha256: str) -> None:
+    """An import writes into a new or empty directory, or over an earlier import of the
+    same file (as with another scale), never over another file's."""
     if not output_dir.exists():
         return
     if not output_dir.is_dir():
@@ -483,9 +494,14 @@ def _check_output_dir(output_dir: Path) -> None:
         payload = json.loads(metadata.read_text(encoding="utf-8")) if metadata.exists() else {}
     except ValueError:
         payload = {}
-    if isinstance(payload, dict) and isinstance(payload.get("import"), dict) and "raw_amused.bin" not in names:
-        return
-    raise ValueError(f"{output_dir} holds files that are not an earlier import; import into a new directory")
+    block = payload.get("import") if isinstance(payload, dict) else None
+    if not isinstance(block, dict) or "raw_amused.bin" in names:
+        raise ValueError(f"{output_dir} holds files that are not an earlier import; import into a new directory")
+    if block.get("input_sha256") not in (None, input_sha256):
+        raise ValueError(
+            f"{output_dir} holds the import of another file ({block.get('input_name')}); "
+            "import into a new directory, or remove that one first"
+        )
 
 
 def import_recording(
@@ -506,7 +522,7 @@ def import_recording(
     less its length does, recorded as approximate. ``channel_map`` is for ``edf``
     (``edf_io.read_edf()``). ValueError when the scale cannot be resolved
     (``resolve_scale()``), for an unreadable file and for an output directory that holds
-    anything but an earlier import.
+    anything but an earlier import of the same file.
     """
     path = Path(path).expanduser()
     out_dir = Path(out_dir).expanduser()
@@ -515,7 +531,8 @@ def import_recording(
     scale, declared_by = resolve_scale(fmt, eeg_scale=eeg_scale, eeg_offset=eeg_offset, source_version=source_version)
     if channel_map is not None and fmt != "edf":
         raise ValueError("a channel map is for --format edf only")
-    _check_output_dir(out_dir)
+    input_sha256 = _sha256(path)
+    _check_output_dir(out_dir, input_sha256)
     source = f"import:{fmt}"
     frames, details = _source_frames(
         path,
@@ -566,7 +583,7 @@ def import_recording(
         "source_version": source_version,
         "input_name": path.name,
         "input_bytes": path.stat().st_size,
-        "input_sha256": _sha256(path),
+        "input_sha256": input_sha256,
         "imported_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "muse_tmr_version": __version__,
         "note": IMPORT_NOTE,

@@ -12,6 +12,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -24,6 +25,7 @@ from muse_tmr.data.import_recording import (
     IMPORT_FORMATS,
     IMPORT_SCALE_TABLE,
     MIDSCALE_UV,
+    default_import_name,
     import_banner,
     import_recording,
     require_declared_scale,
@@ -213,6 +215,36 @@ class TestImportFormats(unittest.TestCase):
         with self.assertRaises(ValueError):
             import_recording(decoded, "decoded-frames", self.root / "x", channel_map={"HB_1": "eeg:AF7"})
         self.assertTrue((self.night.recording_dir / "raw_amused.bin").exists())
+
+        # Another file never replaces an import.
+        other = self.root / "other.jsonl"
+        other.write_text("".join(frame.to_json(include_raw=False) + "\n" for frame in self.frames[200:400]))
+        with self.assertRaises(ValueError) as caught:
+            import_recording(other, "decoded-frames", self.root / "imp_again")
+        self.assertIn("again.jsonl", str(caught.exception))
+        kept = json.loads((self.root / "imp_again" / "metadata.json").read_text())["import"]
+        self.assertEqual(kept["input_name"], "again.jsonl")
+
+    def test_each_recordings_decoded_frames_import_under_its_name(self):
+        self.assertEqual(default_import_name(Path("data/recordings/night_a/decoded_frames.jsonl")), "night_a")
+        self.assertEqual(default_import_name(Path("exports/muselsl_0114.csv")), "muselsl_0114")
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            for name, part in (("night_a", self.frames[:150]), ("night_b", self.frames[150:300])):
+                (base / name).mkdir()
+                (base / name / "decoded_frames.jsonl").write_text(
+                    "".join(frame.to_json(include_raw=False) + "\n" for frame in part)
+                )
+            with patch("muse_tmr.cli.main._default_path_base", return_value=base), quiet():
+                for name in ("night_a", "night_b"):
+                    code = cli_main(["import", str(base / name / "decoded_frames.jsonl"), "--format", "decoded-frames"])
+                    self.assertEqual(code, 0)
+
+            imported = base / "data" / "recordings" / "imported"
+            self.assertEqual(sorted(path.name for path in imported.iterdir()), ["night_a", "night_b"])
+            digests = {json.loads((imported / name / "metadata.json").read_text())["import"]["input_sha256"]
+                       for name in ("night_a", "night_b")}
+            self.assertEqual(len(digests), 2)
 
 
 class TestScaleTable(unittest.TestCase):

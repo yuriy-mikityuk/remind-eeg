@@ -4,7 +4,7 @@
 
 ## Report and simulation only
 
-An import writes `decoded_frames.jsonl`, `metadata.json` and `summary.json` into `data/recordings/imported/<name>/` (gitignored) or `--output`, a new or empty directory or an earlier import:
+An import writes `decoded_frames.jsonl`, `metadata.json` and `summary.json` into `data/recordings/imported/<name>/` (gitignored), where the name is the input's, or for a `decoded_frames.jsonl` its recording directory's, or into `--output`: a new or empty directory, or an earlier import of the same file:
 
 - `metadata.json`: `source.source_name` `import:<format>`, `capabilities.raw_packets` false, and an `import` block with the scale, offset, who declared them, their evidence and status, the clock, the input's name, size and sha256, and for an EDF its signals, channel map and any resampling. Nothing from the input's header that could name a person or a device is copied.
 - `summary.json`: `raw_packet_count` 0 and `stop_reason` `imported`.
