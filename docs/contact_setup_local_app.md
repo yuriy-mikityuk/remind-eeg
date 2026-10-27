@@ -96,9 +96,21 @@ and how the dream touched any of the puzzles. The blind retest shows each puzzle
 prompt with a timer (one runs at a time), an answer, solved, confidence and the
 seconds. Both save through the same code as `record-dream-report` and
 `record-puzzle-retest`, to `data/reports/<night>_dream_report.json` and
-`<night>_retest.json`; saving again asks first and replaces the file. The page is never
-told which puzzles were cued; the retest file keeps `cue_condition` for
-`analyze-cued-uncued`.
+`<night>_retest.json`; saving again asks first and replaces the file.
+
+Between the two, the sound check asks "Which puzzle does this sound belong to?": one
+Play button per sound, numbered 1 to N in an order the session ID alone decides, and a
+puzzle to pick for each. It needs a cue library in `data/cues` or `data/protocol` with
+every puzzle's tone and a calibration in `data/calibration`. The sounds play through
+`afplay`, each at its cue's volume hint under the calibrated comfortable volume and the
+0.20 cap. Start the app with `--cue-backend dry-run` (or `mock`) to go through it without
+sound. Without `afplay`, the default `--cue-backend system` refuses every play and names
+the fix, unless the app runs with `--allow-dry-run`, which plays them silently. It saves
+through the same code as `record-cue-recall`, to `<night>_cue_recall.json`, and logs
+every play to `<night>_cue_recall_audio.jsonl`.
+
+The page is never told which puzzles were cued; the retest and sound check files keep
+`cue_condition` for `analyze-cued-uncued`.
 
 ## Recordings tab
 

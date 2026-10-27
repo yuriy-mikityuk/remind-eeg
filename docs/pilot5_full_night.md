@@ -162,8 +162,9 @@ puzzle), then the blind retest with a timer per puzzle. It finds the night's cat
 and assignment in `data/protocol`, the cues in `data/cues` and the calibration in
 `data/calibration`, and saves to the same `data/reports/<night>_dream_report.json`,
 `<night>_cue_recall.json` and `<night>_retest.json` as the commands below. Its sounds
-play on `afplay`; start the app with `--cue-backend dry-run` (or `--allow-dry-run`) to
-go through the step without sound. From the terminal:
+play on `afplay`; start the app with `--cue-backend dry-run` (or `mock`) to go through
+the step without sound. `--allow-dry-run` only matters where `afplay` is missing: it
+then plays the sounds silently instead of refusing them. From the terminal:
 
 Record dream report:
 

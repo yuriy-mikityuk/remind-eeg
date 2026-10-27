@@ -97,11 +97,12 @@ into a volume set-point waits for real nights.
 
 A night that asks for sound does not run silently by accident. `system` and `afplay`
 need macOS `afplay`; when it is not on PATH, `run-pilot4-cueing`,
-`run-pilot5-full-night`, `train-tlr-cue` and `play-test-cue` exit with code 2 and say
-how to fix it, and the two night commands do so before they read an input, connect
-the headband or write a file. `--allow-dry-run` runs silently on purpose, and the
-night's `metadata.json` and summary record both the requested and the resolved
-backend. Finding `afplay` does not prove the cue is audible through the intended
+`run-pilot5-full-night`, `train-tlr-cue`, `play-test-cue` and `record-cue-recall` exit
+with code 2 and say how to fix it, and the two night commands do so before they read
+an input, connect the headband or write a file. The app's Morning tab sound check
+(`muse-tmr app --cue-backend`, default `system`) refuses each play the same way.
+`--allow-dry-run` runs silently on purpose, and the night's `metadata.json` and summary
+record both the requested and the resolved backend. Finding `afplay` does not prove the cue is audible through the intended
 headphones; play a test cue while awake and listen.
 
 Cue libraries must validate private sound-file availability before a sleep session.
