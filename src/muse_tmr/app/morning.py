@@ -1,18 +1,20 @@
 """The morning after a puzzle night, from the app: the dream report, the sound check and
-the blind retest.
+the blind retest, the morning after and a week or ten days later.
 
 The forms save through the same builders as `record-dream-report`, `record-cue-recall`
 and `record-puzzle-retest`, into the files the Pilot 5 runbook uses
-(`data/reports/<night>_dream_report.json`, `<night>_cue_recall.json` and
-`<night>_retest.json`). A night is a puzzle session file in `data/protocol`. Its cue
+(`data/reports/<night>_dream_report.json`, `<night>_cue_recall.json`,
+`<night>_retest.json`, and `<night>_retest_day7.json` or `<night>_retest_day10.json` for
+a delayed retest). A night is a puzzle session file in `data/protocol`. Its cue
 assignment is the one with the same session ID and its catalog is one that holds all of
 its puzzles, so neither depends on file names; the sound check plays the night's cues
 from a library in `data/cues` or `data/protocol` that holds every one of them, at the
 newest volume calibration in `data/calibration`.
 
-Nothing this module hands to the page says which puzzles were cued: the sound check's
-trials are numbered 1 to N for every puzzle in an order the session alone decides, and
-a saved check comes back as the answers only.
+Nothing this module hands to the page says which puzzles were cued or which arm the
+night had: the sound check's trials are numbered 1 to N for every puzzle in an order the
+session alone decides, a saved check comes back as the answers only, and no night
+schedule or night log is read here.
 """
 
 from __future__ import annotations
@@ -39,11 +41,13 @@ from muse_tmr.protocol import (
     load_puzzle_cue_assignment,
 )
 from muse_tmr.reports import (
+    RETEST_WAVES,
     MorningRetestResult,
     build_dream_report,
     build_morning_retest,
     load_dream_report,
     load_morning_retest,
+    parse_eye_signal_attempt_times,
 )
 from muse_tmr.reports.cue_recall import (
     CueRecallTrialPlan,
@@ -85,8 +89,13 @@ class PuzzleNight:
     def dream_report_path(self, reports_dir: Path) -> Path:
         return reports_dir / f"{self.name}_dream_report.json"
 
-    def retest_path(self, reports_dir: Path) -> Path:
-        return reports_dir / f"{self.name}_retest.json"
+    def retest_path(self, reports_dir: Path, wave: str = "morning") -> Path:
+        """``<night>_retest.json`` the morning after, ``<night>_retest_<wave>.json`` later."""
+        if wave == "morning":
+            return reports_dir / f"{self.name}_retest.json"
+        if wave not in RETEST_WAVES:
+            raise ValueError(f"wave must be one of: {', '.join(RETEST_WAVES)}")
+        return reports_dir / f"{self.name}_retest_{wave}.json"
 
     def cue_recall_path(self, reports_dir: Path) -> Path:
         return reports_dir / f"{self.name}_cue_recall.json"
@@ -147,6 +156,7 @@ def night_payload(protocol_dir: Path, reports_dir: Path, name: str) -> Dict[str,
     ]
     payload["dream_report"] = _saved_dream_report(night.dream_report_path(reports_dir))
     payload["retest"] = _saved_retest(night.retest_path(reports_dir))
+    payload["retests"] = {wave: _saved_retest(night.retest_path(reports_dir, wave)) for wave in RETEST_WAVES}
     payload["cue_recall"] = _cue_recall_payload(night, protocol_dir, reports_dir)
     return payload
 
@@ -219,11 +229,19 @@ def save_dream_report(protocol_dir: Path, reports_dir: Path, body: Mapping[str, 
     links = body.get("puzzle_links") or {}
     if not isinstance(links, dict):
         raise ValueError("puzzle_links must map puzzle IDs to text")
+    perception = str(body.get("cue_perception") or "") or None
+    # A page from before schema 2 sends cues_heard alone.
+    cues_heard = _yes_no(body, "cues_heard") if body.get("cues_heard") not in (None, "") else None
+    if perception is None and cues_heard is None:
+        raise ValueError("cue_perception is required")
     report = build_dream_report(
         night.session,
         catalog=night.catalog,
         lucid=_yes_no(body, "lucid"),
-        cues_heard=_yes_no(body, "cues_heard"),
+        cues_heard=cues_heard,
+        cue_perception=perception,
+        woke_from_sound=str(body.get("woke_from_sound") or "unknown"),
+        eye_signal_attempt_times=_attempt_times(body.get("eye_signal_attempt_times")),
         confidence=_fraction(body, "confidence"),
         dream_text=str(body.get("dream_text") or ""),
         puzzle_incorporation_text={
@@ -236,12 +254,14 @@ def save_dream_report(protocol_dir: Path, reports_dir: Path, body: Mapping[str, 
 
 
 def save_retest(protocol_dir: Path, reports_dir: Path, body: Mapping[str, Any]) -> Dict[str, Any]:
+    """Save one retest wave: ``wave`` is morning (the default), day7 or day10."""
     night = _night(protocol_dir, str(body.get("night") or ""))
     if night.catalog is None:
         raise ValueError(f"no puzzle catalog in data/protocol holds the puzzles of {night.name}")
     if night.assignment is None:
         raise ValueError(f"no cue assignment in data/protocol for session {night.session.session_id}")
-    path = night.retest_path(reports_dir)
+    wave = str(body.get("wave") or "morning")
+    path = night.retest_path(reports_dir, wave)
     _refuse_overwrite(path, body)
     entries = body.get("results")
     if not isinstance(entries, list) or not entries:
@@ -263,9 +283,10 @@ def save_retest(protocol_dir: Path, reports_dir: Path, body: Mapping[str, Any]) 
         catalog=night.catalog,
         assignment=night.assignment,
         notes=str(body.get("notes") or ""),
+        retest_wave=wave,
     )
     retest.save(path)
-    return {"saved": path.name, "reported_at_utc": retest.reported_at_utc}
+    return {"saved": path.name, "reported_at_utc": retest.reported_at_utc, "wave": wave}
 
 
 def _summary(night: PuzzleNight, reports_dir: Path) -> Dict[str, Any]:
@@ -279,6 +300,7 @@ def _summary(night: PuzzleNight, reports_dir: Path) -> Dict[str, Any]:
         "dream_report_saved": night.dream_report_path(reports_dir).is_file(),
         "cue_recall_saved": night.cue_recall_path(reports_dir).is_file(),
         "retest_saved": night.retest_path(reports_dir).is_file(),
+        "retest_waves_saved": [wave for wave in RETEST_WAVES if night.retest_path(reports_dir, wave).is_file()],
     }
 
 
@@ -373,6 +395,9 @@ def _saved_dream_report(path: Path) -> Optional[Dict[str, Any]]:
         "reported_at_utc": report.reported_at_utc,
         "lucid": report.lucid,
         "cues_heard": report.cues_heard,
+        "cue_perception": report.cue_perception,
+        "woke_from_sound": report.woke_from_sound,
+        "eye_signal_attempt_times": list(report.eye_signal_attempt_times),
         "confidence": report.confidence,
         "dream_text": report.dream_text,
         "notes": report.notes,
@@ -443,6 +468,15 @@ def _yes_no(body: Mapping[str, Any], key: str) -> bool:
     if str(value).lower() in ("yes", "no"):
         return str(value).lower() == "yes"
     raise ValueError(f"{key} must be yes or no")
+
+
+def _attempt_times(value: Any) -> Tuple[str, ...]:
+    """Eye-signal attempt times from a list, or from one text separated by commas."""
+    if value in (None, ""):
+        return ()
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    return parse_eye_signal_attempt_times(str(value))
 
 
 def _fraction(body: Mapping[str, Any], key: str) -> float:

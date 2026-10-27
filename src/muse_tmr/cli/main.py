@@ -697,7 +697,30 @@ def build_parser() -> argparse.ArgumentParser:
     dream_report_parser.add_argument("session", type=Path, help="Input night puzzle session .json path.")
     dream_report_parser.add_argument("--output", type=Path, required=True, help="Output dream report .json path.")
     dream_report_parser.add_argument("--lucid", choices=("yes", "no"), required=True)
-    dream_report_parser.add_argument("--cues-heard", choices=("yes", "no"), required=True)
+    dream_report_parser.add_argument(
+        "--cues-heard",
+        choices=("yes", "no"),
+        help="Heard any sound in the night. Give it, --cue-perception or both.",
+    )
+    dream_report_parser.add_argument(
+        "--cue-perception",
+        choices=("not_perceived", "in_dream", "awake", "unsure", "unknown"),
+        help="Where a sound was heard: not at all, in a dream, awake, heard but unsure where, or unknown.",
+    )
+    dream_report_parser.add_argument(
+        "--woke-from-sound",
+        choices=("yes", "no", "unknown"),
+        default="unknown",
+        help="Whether a sound woke you (default unknown).",
+    )
+    dream_report_parser.add_argument(
+        "--eye-signal-attempt",
+        action="append",
+        default=[],
+        metavar="TIME",
+        help="When you think you made the eye signal (LRLR), HH:MM or an ISO time. Repeat for each. "
+        "A marking only: nothing detects the signal.",
+    )
     dream_report_parser.add_argument("--confidence", type=float, required=True, help="Self-report confidence 0.0-1.0.")
     dream_report_parser.add_argument("--dream-text", required=True, help="Free-text dream recall.")
     dream_report_parser.add_argument(
@@ -782,6 +805,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional per-puzzle retest note.",
     )
     retest_parser.add_argument("--retest-id", default="")
+    retest_parser.add_argument(
+        "--wave",
+        choices=("morning", "day7", "day10"),
+        default="morning",
+        help="The retest of the night's puzzles this is: the morning after, a week or ten days later.",
+    )
     retest_parser.add_argument("--notes", default="")
 
     analysis_parser = subparsers.add_parser(
@@ -3489,23 +3518,36 @@ def _record_dream_report(args: argparse.Namespace) -> int:
         if args.catalog is not None
         else None
     )
-    report = build_dream_report(
-        session,
-        catalog=catalog,
-        report_id=args.report_id,
-        lucid=_yes_no(args.lucid),
-        cues_heard=_yes_no(args.cues_heard),
-        confidence=args.confidence,
-        dream_text=args.dream_text,
-        puzzle_incorporation_text=_parse_puzzle_links(args.puzzle_link),
-        notes=args.notes,
-    )
+    if args.cues_heard is None and args.cue_perception is None:
+        print("record-dream-report: give --cue-perception, --cues-heard or both", file=sys.stderr)
+        return 2
+    try:
+        report = build_dream_report(
+            session,
+            catalog=catalog,
+            report_id=args.report_id,
+            lucid=_yes_no(args.lucid),
+            cues_heard=_yes_no(args.cues_heard) if args.cues_heard is not None else None,
+            cue_perception=args.cue_perception,
+            woke_from_sound=args.woke_from_sound,
+            eye_signal_attempt_times=tuple(args.eye_signal_attempt),
+            confidence=args.confidence,
+            dream_text=args.dream_text,
+            puzzle_incorporation_text=_parse_puzzle_links(args.puzzle_link),
+            notes=args.notes,
+        )
+    except ValueError as exc:
+        print(f"record-dream-report: {exc}", file=sys.stderr)
+        return 2
     output_path = report.save(_resolve_output_path(args.output))
     print(
         "dream report recorded "
         f"session={report.session_id} "
         f"lucid={report.lucid} "
         f"cues_heard={report.cues_heard} "
+        f"cue_perception={report.cue_perception} "
+        f"woke_from_sound={report.woke_from_sound} "
+        f"eye_signal_attempts={len(report.eye_signal_attempt_times)} "
         f"linked_puzzles={report.puzzle_incorporation_count} "
         f"output={output_path}"
     )
@@ -3556,11 +3598,13 @@ def _record_puzzle_retest(args: argparse.Namespace) -> int:
         assignment=assignment,
         retest_id=args.retest_id,
         notes=args.notes,
+        retest_wave=args.wave,
     )
     output_path = retest.save(_resolve_output_path(args.output))
     print(
         "morning puzzle retest recorded "
         f"session={retest.session_id} "
+        f"wave={retest.retest_wave} "
         f"results={len(retest.results)} "
         f"solved={retest.solved_count} "
         f"unsolved={retest.unsolved_count} "

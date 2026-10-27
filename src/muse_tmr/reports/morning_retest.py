@@ -1,4 +1,9 @@
-"""Morning puzzle retest data capture."""
+"""Morning puzzle retest data capture.
+
+Schema 2 (#228) adds ``retest_wave``: ``morning``, the retest the morning after the
+night, or ``day7`` and ``day10``, the same puzzles a week or ten days later. A schema 1
+file loads as it was, as a ``morning`` retest.
+"""
 
 from __future__ import annotations
 
@@ -10,8 +15,9 @@ from typing import Dict, Iterable, Mapping, Optional, Tuple
 
 from muse_tmr.protocol import NightPuzzleSession, PuzzleCatalog, PuzzleCueAssignment
 
-MORNING_RETEST_SCHEMA_VERSION = 1
+MORNING_RETEST_SCHEMA_VERSION = 2
 RETEST_CUE_CONDITIONS = ("cued", "uncued", "unknown")
+RETEST_WAVES = ("morning", "day7", "day10")
 
 
 @dataclass(frozen=True)
@@ -76,13 +82,19 @@ class MorningRetest:
     notes: str = ""
     metadata: Mapping[str, object] = field(default_factory=dict)
     schema_version: int = MORNING_RETEST_SCHEMA_VERSION
+    # Which retest of the night's puzzles this is: morning, day7 or day10.
+    retest_wave: str = "morning"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "session_id", _required_str(self.session_id, "session_id"))
         object.__setattr__(self, "results", tuple(self.results))
         object.__setattr__(self, "notes", str(self.notes))
+        wave = str(self.retest_wave).strip().lower()
+        if wave not in RETEST_WAVES:
+            raise ValueError(f"retest_wave must be one of: {', '.join(RETEST_WAVES)}")
+        object.__setattr__(self, "retest_wave", wave)
         if not self.retest_id:
-            object.__setattr__(self, "retest_id", f"{self.session_id}-morning-retest")
+            object.__setattr__(self, "retest_id", f"{self.session_id}-{wave}-retest")
         if not self.reported_at_utc:
             object.__setattr__(self, "reported_at_utc", _utc_now())
         puzzle_ids = [result.puzzle_id for result in self.results]
@@ -130,6 +142,7 @@ class MorningRetest:
             "schema_version": self.schema_version,
             "retest_id": self.retest_id,
             "session_id": self.session_id,
+            "retest_wave": self.retest_wave,
             "reported_at_utc": self.reported_at_utc,
             "result_count": len(self.results),
             "solved_count": self.solved_count,
@@ -162,6 +175,7 @@ class MorningRetest:
             ),
             notes=str(payload.get("notes", "")),
             metadata=dict(payload.get("metadata", {}) or {}),
+            retest_wave=str(payload.get("retest_wave") or "morning"),
         )
 
     @classmethod
@@ -179,6 +193,7 @@ def build_morning_retest(
     reported_at_utc: str = "",
     notes: str = "",
     require_complete: bool = True,
+    retest_wave: str = "morning",
 ) -> MorningRetest:
     if assignment is not None:
         assignment.validate_against_session(session)
@@ -194,6 +209,7 @@ def build_morning_retest(
         reported_at_utc=reported_at_utc,
         results=tuple(sorted(enriched, key=lambda result: result.blind_index)),
         notes=notes,
+        retest_wave=retest_wave,
         metadata={
             "session_puzzle_count": len(session.puzzle_ids),
             "assignment_available": assignment is not None,
