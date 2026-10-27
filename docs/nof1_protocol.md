@@ -260,8 +260,8 @@ For every night, and as a mean per arm, it gives what the files hold:
   not play, which is the comparison the arms are for;
 - plays and virtual plays from the summary, and the arousal proxies per cue of
   `score-cue-arousal` (`arousal_proxy_per_cue`, from the summary's `cue_arousal` block or
-  the `cue_arousal_report.json` next to it). Only nights with sound have them, so they
-  stay a mean per arm.
+  the `cue_arousal_report.json` next to it, when that report scored this summary or
+  Pilot 3 report). Only nights with sound have them, so they stay a mean per arm.
 
 For each outcome and each pair of arms it gives the difference of the means with its
 permutation interval. The arm labels are moved within their blocks the way

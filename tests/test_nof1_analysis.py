@@ -44,6 +44,19 @@ def _analyse(series, **kwargs):
     return build_nof1_analysis(series.schedule, nights, generated_at_utc=GENERATED, **kwargs)
 
 
+def _pilot3_report(schedule, night, planned=3):
+    """A Pilot 3 report of a night of ``schedule``, with the fields analyze-nof1 reads."""
+    no_cue = night.arm == "no_cue"
+    return {
+        "pilot_id": "m8_pilot3_replay_cue_simulation",
+        "audio_playback_executed": False,
+        "night_id": night.night_id,
+        "arm": night.arm,
+        "schedule_commitment_sha256": schedule.commitment_sha256(),
+        "metrics": {"cue_plan_count": 0 if no_cue else planned, "virtual_play_count": planned if no_cue else 0},
+    }
+
+
 class _SeriesTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -144,15 +157,56 @@ class TestSealAndInputs(_SeriesTest):
 
     def test_reads_arousal_from_the_scorers_report_when_the_summary_has_none(self):
         series = self.series(arousal_scored=False)
-        night_dir = series.recordings_dir / "night-001"
-        (night_dir / "cue_arousal_report.json").write_text(
-            json.dumps({"synthetic": True, "outcomes": {"arousal_proxy_per_cue": {"any": 0.25, "imu": 0.1}}}),
-            encoding="utf-8",
-        )
+        for night_id, scored in (("night-001", "pilot5_summary.json"), ("night-002", "pilot4_summary.json")):
+            (series.recordings_dir / night_id / "cue_arousal_report.json").write_text(
+                json.dumps(
+                    {
+                        "synthetic": True,
+                        "outcomes": {"arousal_proxy_per_cue": {"any": 0.25, "imu": 0.1}},
+                        "metadata": {"inputs": {"summary": scored}},
+                    }
+                ),
+                encoding="utf-8",
+            )
         nights = load_series_inputs(series.schedule, recordings_dir=series.recordings_dir)
         self.assertEqual(nights[0].arousal_proxy_per_cue, {"any": 0.25, "imu": 0.1})
         self.assertEqual(nights[0].arousal_source, "cue_arousal_report.json")
+        # A report that scored another summary than the night's is not the night's.
         self.assertIsNone(nights[1].arousal_proxy_per_cue)
+        self.assertIsNone(nights[2].arousal_proxy_per_cue)
+
+    def test_pilot3_reports_in_one_directory_keep_their_own_arousal_scoring(self):
+        """score-cue-arousal writes next to the Pilot 3 report it scores; the other reports
+        in that directory were not scored, and nothing else there is their night's."""
+        series = self.series(blocks=1)
+        replays = self.tmp / "replays"
+        replays.mkdir()
+        paths = []
+        for night in series.schedule.nights:
+            shutil.rmtree(series.recordings_dir / night.night_id)
+            path = replays / f"{night.night_id}_pilot3.json"
+            path.write_text(json.dumps(_pilot3_report(series.schedule, night)), encoding="utf-8")
+            paths.append(path)
+        (replays / "cue_arousal_report.json").write_text(
+            json.dumps(
+                {
+                    "outcomes": {"arousal_proxy_per_cue": {"any": 0.25}},
+                    "metadata": {"inputs": {"pilot3_report": "night-002_pilot3.json"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (replays / "awakening_events.jsonl").write_text(json.dumps({"event_type": "awakening"}) + "\n", encoding="utf-8")
+        (replays / "metadata.json").write_text(json.dumps({"synthetic": True}), encoding="utf-8")
+        nights = load_series_inputs(series.schedule, summary_paths=tuple(paths))
+        self.assertEqual([item.arousal_source for item in nights], [None, "cue_arousal_report.json", None])
+        self.assertEqual(nights[1].arousal_proxy_per_cue, {"any": 0.25})
+        self.assertEqual([item.awakening_count for item in nights], [None, None, None])
+        self.assertEqual([item.synthetic for item in nights], [False, False, False])
+        report = build_nof1_analysis(series.schedule, nights)
+        scored_arm = report.nights[1]["arm"]
+        self.assertEqual({arm: item["nights_scored"] for arm, item in report.arousal.items()},
+                         {arm: int(arm == scored_arm) for arm in BLOCK_ARMS})
 
 
 class TestPermutationIntervals(_SeriesTest):

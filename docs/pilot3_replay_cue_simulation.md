@@ -176,7 +176,9 @@ report (schema 2) records `arm`, `night_id` and `schedule_commitment_sha256` and
 criteria `no_play_in_no_cue_arm` and, with a schedule, `arm_matches_sealed_schedule`; the
 printed line leaves out the plan's counts and its first play. `analyze-nof1 --summary`
 reads such a report as the night's record, so a replayed series can be described the
-way a real one is, as replay, not sleep-time cueing.
+way a real one is, as replay, not sleep-time cueing. It reads the `cue_arousal_report.json`
+next to a report only when that report is the one scored, so give each night's report a
+directory of its own if you score more than one.
 
 ## Validate
 

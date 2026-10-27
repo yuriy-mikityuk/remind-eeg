@@ -68,6 +68,7 @@ INTERVAL_LEVEL = 0.95
 CONTRASTS = ("cue-no_cue", "cue-sham", "sham-no_cue")
 DELAYED_WAVES = tuple(wave for wave in RETEST_WAVES if wave != "morning")
 SUMMARY_FILENAMES = ("pilot4_summary.json", "pilot5_summary.json")
+PILOT3_PILOT_ID = "m8_pilot3_replay_cue_simulation"
 AROUSAL_REPORT_FILENAME = "cue_arousal_report.json"
 AWAKENING_EVENTS_FILENAME = "awakening_events.jsonl"
 PLAYING_ARMS = ("cue", "sham")
@@ -513,6 +514,9 @@ def load_series_inputs(
     ``recordings_dir`` whose ``night_id`` and ``schedule_commitment_sha256`` are this
     series', and ``summary_paths`` (Pilot 4/5 summaries or Pilot 3 reports), which must
     be. Two files of one kind for one night raise, so a night is never picked by chance.
+    A ``cue_arousal_report.json`` next to a night's record counts when it scored that
+    record; the awakening markers and ``metadata.json`` next to it only for a Pilot 4/5
+    summary, whose directory is its night's.
     """
     night_ids = [night.night_id for night in schedule.nights if night.arm != "washout"]
     wanted = set(night_ids)
@@ -600,8 +604,10 @@ def load_series_inputs(
     for night_id in night_ids:
         item = found[night_id]
         summary_path, summary = item.get("summary") or (None, {})
-        night_dir = Path(summary_path).parent if summary_path is not None else None
-        arousal, arousal_source, arousal_synthetic = _arousal_of(summary, night_dir)
+        # A Pilot 4/5 summary sits in its night's own directory. A Pilot 3 report can share
+        # one with the other nights' reports, so nothing next to it is read as its night's.
+        night_dir = Path(summary_path).parent if summary_path is not None and not _is_replay(summary) else None
+        arousal, arousal_source, arousal_synthetic = _arousal_of(summary, summary_path)
         inputs.append(
             Nof1NightInputs(
                 night_id=night_id,
@@ -688,7 +694,7 @@ def _night_row(night: ScheduledNight, inputs: Nof1NightInputs, first: bool) -> R
         for wave, block in analysis.wave_metrics.items():
             delta = dict(block.get("effect_summary", {}) or {}).get("solve_rate_difference_cued_minus_uncued")
             values[_wave_outcome(wave)] = None if delta is None else float(delta)
-    pilot3 = summary.get("pilot_id") == "m8_pilot3_replay_cue_simulation"
+    pilot3 = _is_replay(summary)
     metrics = dict(summary.get("metrics", {}) or {})
     plays = summary.get("cue_play_count", metrics.get("cue_plan_count")) if summary else None
     virtual = summary.get("virtual_play_count", metrics.get("virtual_play_count")) if summary else None
@@ -1253,22 +1259,45 @@ def _unblinded(schedule: NightSchedule, rows: Sequence[Row]) -> Dict[str, object
 # --------------------------------------------------------------------------- #
 
 
+def _is_replay(summary: Mapping[str, object]) -> bool:
+    """Whether a night's record is a Pilot 3 report: cues planned on a recording, none played."""
+    return bool(summary) and summary.get("pilot_id") == PILOT3_PILOT_ID
+
+
 def _arousal_of(
     summary: Mapping[str, object],
-    night_dir: Optional[Path],
+    summary_path: Optional[Path],
 ) -> Tuple[Optional[Mapping[str, object]], Optional[str], bool]:
     """``arousal_proxy_per_cue`` from the summary's scored ``cue_arousal`` block, else from
-    the ``cue_arousal_report.json`` next to it; and whether that report is synthetic."""
+    the ``cue_arousal_report.json`` next to the night's record when that report scored
+    this record; and whether that report is synthetic."""
     block = summary.get("cue_arousal") if summary else None
     if isinstance(block, Mapping) and block.get("status") == "scored":
         rates = block.get("arousal_proxy_per_cue")
         if isinstance(rates, Mapping):
             return dict(rates), "summary", block.get("synthetic") is True
-    payload = _read_json_or_none(night_dir / AROUSAL_REPORT_FILENAME) if night_dir is not None else None
-    outcomes = payload.get("outcomes") if payload else None
-    if payload and isinstance(outcomes, Mapping) and isinstance(outcomes.get("arousal_proxy_per_cue"), Mapping):
+    if summary_path is None:
+        return None, None, False
+    record = Path(summary_path)
+    payload = _read_json_or_none(record.parent / AROUSAL_REPORT_FILENAME)
+    if not payload or not _scored_record(payload, record, replay=_is_replay(summary)):
+        return None, None, False
+    outcomes = payload.get("outcomes")
+    if isinstance(outcomes, Mapping) and isinstance(outcomes.get("arousal_proxy_per_cue"), Mapping):
         return dict(outcomes["arousal_proxy_per_cue"]), AROUSAL_REPORT_FILENAME, payload.get("synthetic") is True
     return None, None, False
+
+
+def _scored_record(payload: Mapping[str, object], record: Path, *, replay: bool) -> bool:
+    """Whether a ``cue_arousal_report.json`` scored ``record``. ``score-cue-arousal`` names
+    in its ``metadata.inputs`` the Pilot 3 report it read (``pilot3_report``) or the
+    night's summary (``summary``). It writes next to the Pilot 3 report it scores, and
+    several reports may share that directory: the others there were not scored."""
+    metadata = payload.get("metadata")
+    inputs = metadata.get("inputs") if isinstance(metadata, Mapping) else None
+    if not isinstance(inputs, Mapping):
+        return False
+    return inputs.get("pilot3_report" if replay else "summary") == record.name
 
 
 def _awakening_count(night_dir: Optional[Path]) -> Optional[int]:
