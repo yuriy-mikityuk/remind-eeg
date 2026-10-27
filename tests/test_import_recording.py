@@ -342,6 +342,18 @@ class TestImportedNightInThePipeline(unittest.TestCase):
         with quiet() as (_, err):
             self.assertEqual(cli_main(["annotate-template", str(bare), "--output", str(self.root / "x.csv")]), 2)
         self.assertIn("--eeg-scale", err.getvalue())
+        protocol = _write_demo_protocol(self.root / "protocol_bare", seed=0)
+        simulated = self.root / "bare_pilot3.json"
+        with quiet() as (_, err):
+            code = cli_main([
+                "simulate-replay-cues", str(bare),
+                "--catalog", str(protocol["catalog"]), "--session", str(protocol["session"]),
+                "--assignment", str(protocol["assignment"]), "--cue-library", str(protocol["cue_library"]),
+                "--output", str(simulated), "--preset", "p1034",
+            ])
+        self.assertEqual(code, 2)
+        self.assertIn("--eeg-scale", err.getvalue())
+        self.assertFalse(simulated.exists())
         # replay only lists the frames, and says the scale is missing.
         with quiet() as (out, _):
             self.assertEqual(cli_main(["replay", str(bare)]), 0)
