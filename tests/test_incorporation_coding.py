@@ -43,6 +43,8 @@ FORBIDDEN_KEYS = {
     "woke_from_sound",
     "puzzle_incorporations",
     "assignment",
+    "assignment_id",
+    "night_arm",
     "seed",
 }
 # Two raters of the 8-puzzle synthetic packet below, per category.
