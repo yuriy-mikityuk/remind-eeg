@@ -36,8 +36,12 @@ from muse_tmr.protocol import (
     TmrSchedulerConfig,
     TmrSchedulerEvent,
     default_tlr_cue,
+    generate_night_schedule,
     load_night_schedule,
+    night_arm_from_schedule,
     plan_tlr_block,
+    sealed_path_for,
+    write_night_schedule,
 )
 from muse_tmr.cli import main as cli_main
 from muse_tmr.protocol import get_protocol_preset
@@ -106,6 +110,31 @@ class LoopWatchingBackend(MockAudioBackend):
         self.loop.call_soon_threadsafe(ran.set)
         self.loop_ran.append(ran.wait(timeout=1.0))
         return super().play_test_cue(request)
+
+
+class ReplanningMuseSource(FakeMuseSource):
+    """After the night's first frame, plans its series again under the same names, as if
+    the schedule and its sealed companion were replaced while the night ran."""
+
+    def __init__(self, frames, schedule_path):
+        super().__init__(frames)
+        self.schedule_path = schedule_path
+
+    async def stream(self):
+        replanned = False
+        async for frame in super().stream():
+            yield frame
+            if not replanned:
+                replanned = True
+                schedule = load_night_schedule(self.schedule_path)
+                self.schedule_path.unlink()
+                sealed_path_for(self.schedule_path).unlink()
+                write_night_schedule(
+                    generate_night_schedule(
+                        schedule.seed, schedule.blocks, schedule.washout_nights, schedule_id=schedule.schedule_id
+                    ),
+                    self.schedule_path,
+                )
 
 
 class HangingMuseSource(FakeMuseSource):
@@ -1008,7 +1037,7 @@ def _arm_context(arm):
 class TestPilot5Arms(unittest.IsolatedAsyncioTestCase):
     """A Pilot 5 night under cue, sham and no_cue (#228), mock audio, no speakers."""
 
-    async def _night(self, tmpdir, arm, *, tlr_cue=None):
+    async def _night(self, tmpdir, arm, *, tlr_cue=None, night_arm=None, source=None):
         catalog, session, assignment, cue_library = protocol_fixture(include_tlr=True)
         cue_library = replace(cue_library, cues=cue_library.cues + (SHAM_CUE,))
         tlr_plan = plan_tlr_block(
@@ -1025,9 +1054,9 @@ class TestPilot5Arms(unittest.IsolatedAsyncioTestCase):
             require_tlr_block=True,
         )
         if arm is not None:
-            config = replace(config, night_arm=_arm_context(arm))
+            config = replace(config, night_arm=night_arm or _arm_context(arm))
         summary = await run_pilot4_cueing_night(
-            FakeMuseSource(rem_frames(5)),
+            source or FakeMuseSource(rem_frames(5)),
             config=config,
             catalog=catalog,
             session=session,
@@ -1143,6 +1172,45 @@ class TestPilot5Arms(unittest.IsolatedAsyncioTestCase):
             [request.effective_volume for request in cue],
         )
         self.assertEqual({request.frequency_hz for request in sham}, {330.0})
+
+    async def test_a_schedule_replaced_during_the_night_fails_it(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path, _ = write_night_schedule(generate_night_schedule(5, 1), Path(tmpdir) / "series.json")
+            night = load_night_schedule(path).nights[0]
+            logs = await self._night(
+                tmpdir,
+                night.arm,
+                night_arm=night_arm_from_schedule(path, night.night_id),
+                source=ReplanningMuseSource(rem_frames(5), path),
+            )
+
+        criteria = {c["name"]: c for c in logs["payload"]["criteria"]}
+        self.assertEqual(
+            criteria["arm_matches_sealed_schedule"]["observed"],
+            {"commitment_matches": False, "arm_matches": True},
+        )
+        self.assertFalse(criteria["arm_matches_sealed_schedule"]["passed"])
+        self.assertTrue(criteria["no_play_in_no_cue_arm"]["passed"])
+        self.assertFalse(logs["payload"]["passed"])
+
+    async def test_a_played_line_fails_a_no_cue_night(self):
+        # An output directory used before keeps its audio log, and a no-cue night must not
+        # end with a played line in it, whoever wrote it.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir) / "no_cue"
+            output_dir.mkdir()
+            (output_dir / "audio_playback.jsonl").write_text(
+                json.dumps({"cue_id": "cue-p1", "status": "played"}) + "\n", encoding="utf-8"
+            )
+            logs = await self._night(tmpdir, "no_cue")
+
+        criteria = {c["name"]: c for c in logs["payload"]["criteria"]}
+        self.assertEqual(logs["requests"], [])
+        self.assertEqual(
+            criteria["no_play_in_no_cue_arm"]["observed"], {"scheduler_plays": 0, "played_audio_rows": 1}
+        )
+        self.assertFalse(criteria["no_play_in_no_cue_arm"]["passed"])
+        self.assertFalse(logs["payload"]["passed"])
 
     def test_only_the_cue_and_sham_arms_reach_the_player(self):
         catalog, session, assignment, cue_library = protocol_fixture(include_tlr=True)

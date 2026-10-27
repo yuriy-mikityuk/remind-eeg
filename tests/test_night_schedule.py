@@ -226,6 +226,17 @@ class TestSealing(unittest.TestCase):
         self.assertFalse(check["commitment_matches"])
         self.assertIn("error", check)
 
+    def test_a_schedule_planned_again_under_its_name_fails_the_check(self):
+        context = night_arm_from_schedule(self.path, "night-001")
+        self.path.unlink()
+        self.sealed.unlink()
+        again = generate_night_schedule(9, 2, 1, schedule_id="series-a")
+        write_night_schedule(again, self.path)
+        # The new pair matches itself and gives the night its arm again, but its salt
+        # makes another commitment than the one the night started under.
+        self.assertEqual(again.arm_for("night-001"), context.arm)
+        self.assertEqual(context.schedule_check(), {"commitment_matches": False, "arm_matches": True})
+
 
 class TestNightArmContext(unittest.TestCase):
     def test_a_cueing_night_runs_one_of_three_arms(self):
