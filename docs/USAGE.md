@@ -25,11 +25,14 @@ Complete command and code reference for `muse-tmr`, organized by workflow stage.
 - [Cue library metadata](#cue-library-metadata)
 - [Pre-sleep puzzle session manager](#pre-sleep-puzzle-session-manager)
 - [TLR cue module](#tlr-cue-module)
+- [Protocol presets](#protocol-presets)
 - [REM-gated scheduler](#rem-gated-scheduler)
 - [Morning dream report](#morning-dream-report)
+- [Morning sound check](#morning-sound-check)
 - [Morning puzzle retest](#morning-puzzle-retest)
 - [Cued-vs-uncued analysis](#cued-vs-uncued-analysis)
 - [Cue-locked arousal proxies](#cue-locked-arousal-proxies)
+- [Protocol fidelity](#protocol-fidelity)
 - [Meditation complexity analysis](#meditation-complexity-analysis)
 - [Polar H10 companion recording](#polar-h10-companion-recording)
 - [Optics heart rate against the H10](#optics-heart-rate-against-the-h10)
@@ -419,7 +422,27 @@ muse-tmr plan-tlr-block data/cues/tlr_default.json \
   --post-block-pause-seconds 10
 ```
 
-`create-tlr-cue` writes a default generated TLR cue library. `train-tlr-cue` runs pre-sleep TLR cue familiarization through the audio player facade and writes structured JSONL training events. `plan-tlr-block` produces the configurable TLR cue block that the REM-gated scheduler runs before puzzle cues.
+`create-tlr-cue` writes a default generated TLR cue library. `train-tlr-cue` runs pre-sleep TLR cue familiarization through the audio player facade and writes structured JSONL training events. `plan-tlr-block` produces the configurable TLR cue block that the REM-gated scheduler runs before puzzle cues. `create-tlr-cue` and `plan-tlr-block` take `--protocol-preset` (next section): without the flags above the tone and the block come from the preset, `--volume-hint` never does, and both files record the preset under `metadata.protocol`.
+
+## Protocol presets
+
+```bash
+muse-tmr protocol-presets
+muse-tmr protocol-presets konkoly2021_northwestern
+muse-tmr plan-tlr-block data/cues/tlr_default.json --output data/protocol/tlr_block.json \
+  --protocol-preset konkoly2021_northwestern
+```
+
+`protocol-presets` lists the presets with version, whether they run, the first 12 characters of the content hash, how their source was checked and their title; with a name, or `--json`, it prints JSON. `--protocol-preset NAME` on `simulate-replay-cues`, `run-pilot4-cueing`, `run-pilot5-full-night`, `plan-tlr-block`, `create-tlr-cue`, `generate-puzzle-session` and `assign-puzzle-cues` takes the protocol settings from that preset, `remind_default_v1` (today's defaults) when it is left out. An explicit flag wins and is recorded as an override; a preset that cannot run (`konkoly2021_paris`, `sanders2019_puzzle_sws`) or an unknown name exits with code 2 first. Which flag sets what, the `protocol` block each run records and every preset: `docs/protocol_presets.md`.
+
+```python
+from muse_tmr.protocol import get_protocol_preset
+
+preset = get_protocol_preset("borghese2022_rem_home")
+preset.scheduler_config(enable_tlr_block=False)   # TmrSchedulerConfig
+preset.gate_overrides()                           # {"min_stable_seconds": 300.0}
+preset.manifest({"puzzle_cue_interval_seconds": 30.0})["effective_hash"]
+```
 
 ## REM-gated scheduler
 
@@ -467,6 +490,20 @@ muse-tmr record-dream-report data/protocol/night-001_puzzles.json \
 
 Dream reports save local JSON with lucid yes/no, cues-heard yes/no, confidence, free-text recall, and optional per-puzzle links. Each `--puzzle-link` is validated against the generated night puzzle session so reports can connect dream content back to the experimental puzzle IDs without making uncued assumptions.
 
+## Morning sound check
+
+```bash
+muse-tmr record-cue-recall data/protocol/night-001_puzzles.json \
+  --catalog data/protocol/puzzle_catalog.json \
+  --assignment data/protocol/night-001_assignment.json \
+  --cue-library data/cues/starter.json \
+  --calibration data/calibration/volume_calibration.json \
+  --output data/reports/night-001_cue_recall.json \
+  --backend system
+```
+
+Before the retest it plays each puzzle's sound, cued and uncued alike, in an order made from the session ID alone, and asks which puzzle it belongs to: a puzzle number, `r` to play it again, Enter for not sure. Sounds play through `AudioCuePlayer` at the cue's volume hint under the calibrated comfortable volume and `--hard-max-volume` (0.20); `--backend system` without `afplay` exits with code 2 unless `--allow-dry-run`, and every play goes to `night-001_cue_recall_audio.jsonl` (or `--audio-log`). It prints how many sounds were answered, never which were right or cued; the file keeps `cue_condition` per trial for `analyze-cued-uncued --cue-recall`. The app's Morning tab has the same step between the dream report and the retest. Generated-tone cues only, as in Pilot 4 and 5.
+
 ## Morning puzzle retest
 
 ```bash
@@ -497,7 +534,7 @@ muse-tmr analyze-cued-uncued data/protocol/night-001_puzzles.json \
   --markdown-output data/reports/night-001_analysis.md
 ```
 
-The analysis report compares cued and uncued solve rates, dream incorporation rates, mean retest duration/confidence, and scheduler cue timing. It is intentionally descriptive and records limitations such as small sample size or missing cue logs.
+The analysis report compares cued and uncued solve rates, dream incorporation rates, mean retest duration/confidence, and scheduler cue timing. It is intentionally descriptive and records limitations such as small sample size or missing cue logs. `--cue-recall data/reports/night-001_cue_recall.json` adds the morning sound check's recall rate by condition; without it the limitations name `cue_recall_missing`, and a check finished after the retest gives `cue_recall_after_retest`. `--protocol-metadata` takes the night's `protocol` block from its `metadata.json`, Pilot 4/5 summary or Pilot 3 report into `metadata.protocol`; without it the assignment's block is used when it has one.
 
 ## Cue-locked arousal proxies
 
@@ -517,6 +554,15 @@ report = asyncio.run(score_cue_arousal(Path("data/recordings/pilot4_low_volume_<
 report.save_outputs(Path("data/recordings/pilot4_low_volume_<timestamp>"))
 print(report.outcomes["arousal_proxy_per_cue"], report.outcomes["arousal_proxy_per_control"])
 ```
+
+## Protocol fidelity
+
+```bash
+muse-tmr protocol-fidelity data/recordings/pilot5_full_night_<timestamp>
+muse-tmr protocol-fidelity <recording> --pilot3-report data/reports/pilot3_replay_cue_plan.json
+```
+
+It compares a night's `scheduler_events.jsonl`, `audio_playback.jsonl`, `rem_gate_decisions.jsonl`, `awakening_events.jsonl` and `metadata.json` (or a Pilot 3 report's plan and epochs) with the preset the night recorded, or `--protocol-preset` another one: intervals between cues, cues per REM period (gate-open run), stable REM before the first cue, pause rules, the gain of the cues, cue length and the TLR block against its plan. It writes `protocol_fidelity.json` and `.md` into the directory, the report's directory or `--output-dir`, prints one status per check, and exits 0 whatever they are. Every report carries the `parameter_fidelity_is_not_result_fidelity` block. Checks and statuses: `docs/protocol_presets.md`; fields: `docs/data_model.md`.
 
 ## Meditation complexity analysis
 
@@ -565,11 +611,12 @@ Compares the heart rate the Muse takes from its optics with the H10's ECG R-peak
 ```bash
 muse-tmr app --source mock --host 127.0.0.1 --port 8765
 muse-tmr app --source amused --address "$MUSE_ADDR" --host 127.0.0.1 --port 8765 [--auto-update]
+muse-tmr app --source mock --cue-backend dry-run   # the Morning tab's sound check without sound
 muse-tmr stream --source amused --address "$MUSE_ADDR" --duration-seconds 30 --debug-stats
 .venv/bin/python scripts/install_macos_launcher.py --address "$MUSE_ADDR"
 ```
 
-The app is local-only. It shows live contact for `TP9`, `AF7`, `AF8` and `TP10` and records a session (`p1034`, up to 1 h), a night (`p21`, 8 h), a guided meditation, a meditation series or the calibration run. A start waits until all four channels have been good for 5 s (`--contact-stability-seconds`), and the server refuses a start before that. Each recording runs as its own `muse-tmr record` process under `caffeinate`, so closing the app or its terminal does not stop it, and its report is built from the app when it ends. `--auto-update` pulls a clean `main` checkout and restarts the app when it is idle. Live diagnostics: `/api/muse/diagnostics`. On macOS the launcher installer creates `~/Desktop/REMind.app`, which starts the app with `--auto-update`. The Recordings tab lists every recording with its reports, the EEG rate and lost subpackets, and the Morning tab takes the dream report and the blind retest of a puzzle night. Runbook: `docs/contact_setup_local_app.md`.
+The app is local-only. It shows live contact for `TP9`, `AF7`, `AF8` and `TP10` and records a session (`p1034`, up to 1 h), a night (`p21`, 8 h), a guided meditation, a meditation series or the calibration run. A start waits until all four channels have been good for 5 s (`--contact-stability-seconds`), and the server refuses a start before that. Each recording runs as its own `muse-tmr record` process under `caffeinate`, so closing the app or its terminal does not stop it, and its report is built from the app when it ends. `--auto-update` pulls a clean `main` checkout and restarts the app when it is idle. Live diagnostics: `/api/muse/diagnostics`. On macOS the launcher installer creates `~/Desktop/REMind.app`, which starts the app with `--auto-update`. The Recordings tab lists every recording with its reports, the EEG rate and lost subpackets, and the Morning tab takes the dream report, the sound check and the blind retest of a puzzle night. The sound check plays each puzzle's tone through `afplay` (`--cue-backend system`, the default, or `afplay`) at the cue's volume hint under the calibrated comfortable volume and the 0.20 cap, as `record-cue-recall` does; `--cue-backend dry-run` or `mock` makes it silent. Without `afplay`, `system` and `afplay` refuse every play and name the fix unless the app runs with `--allow-dry-run`, which plays them silently. Runbook: `docs/contact_setup_local_app.md`.
 
 ## Validation plan and pilots
 
@@ -610,7 +657,7 @@ muse-tmr simulate-replay-cues data/recordings/<pilot-session> \
   --scheduler-events-output data/reports/pilot3_scheduler_events.jsonl
 ```
 
-See `docs/pilot3_replay_cue_simulation.md` for the replay-only runbook. The simulator runs epochs, REM detection, the stable gate, arousal guard, and scheduler on a recording with mocked audio. It writes an inspectable cue plan and fails if any uncued puzzle receives a scheduler `play` event. No real audio is played. Pass the preset the night was recorded with (`source.metadata.preset` in its `metadata.json`); without it the gate and the arousal guard assume an optics preset. Without a recording, `muse-tmr demo` runs this command on a synthetic night with protocol files it writes itself (see above). On a night whose `metadata.json` says `synthetic: true` the report carries `"synthetic": true` and the note, and the line the command prints ends with it; the `--scheduler-events-output` lines are written as for any night.
+See `docs/pilot3_replay_cue_simulation.md` for the replay-only runbook. The simulator runs epochs, REM detection, the stable gate, arousal guard, and scheduler on a recording with mocked audio, with the protocol settings of `--protocol-preset` (default `remind_default_v1`, whose plan is the one this command made before presets existed); the report records the preset as `protocol`. It writes an inspectable cue plan and fails if any uncued puzzle receives a scheduler `play` event. No real audio is played. Pass the preset the night was recorded with (`source.metadata.preset` in its `metadata.json`); without it the gate and the arousal guard assume an optics preset. Without a recording, `muse-tmr demo` runs this command on a synthetic night with protocol files it writes itself (see above). On a night whose `metadata.json` says `synthetic: true` the report carries `"synthetic": true` and the note, and the line the command prints ends with it; the `--scheduler-events-output` lines are written as for any night.
 
 `--stride-seconds` (default 30) sets how far apart the 30 s epochs start; the gate counts the time between epoch starts, so its stable window and cooldown run in real time at any stride. The report's `metrics` carry `stride_seconds`, `first_gate_open_seconds` and `first_play_seconds`, counted from the first epoch's start to the end of the epoch whose decision first opened the gate or first planned a cue (`null` when it never happened). How they come out at strides of 30, 10 and 5 s on synthetic input: `docs/pilot3_replay_cue_simulation.md`.
 
@@ -652,7 +699,9 @@ muse-tmr log-pilot4-awakening data/recordings/pilot4_low_volume_<timestamp>/awak
   --notes "woke briefly; no clear cue recall"
 ```
 
-`--attributed-to-cue` (`yes`, `no`, `unsure`) records whether you think a cue woke you, and `--timestamp-seconds` places the marker at that many seconds from the night's first epoch instead of its UTC time (`--timestamp-utc`, by default now). Older markers without them still load.
+`--attributed-to-cue` (`yes`, `no`, `unsure`) records whether you think a cue woke you, and `--timestamp-seconds` places the marker at that many seconds from the night's first epoch instead of its UTC time (`--timestamp-utc`, by default now; a time without an offset is read as UTC by `score-cue-arousal` and `protocol-fidelity` alike). Older markers without them still load.
+
+`--protocol-preset` sets the gate's stable window and the scheduler's interval, cooldown and limit as in Pilot 3, and `metadata.json` and `pilot4_summary.json` (schema 3) record the preset as `protocol`. A preset sets no volume: `--hard-max-volume`, `--default-volume` and the calibration hold whatever the preset. `muse-tmr protocol-fidelity <night>` then compares the night with it.
 
 ### Pilot 5: full-night TLR plus puzzle cueing
 
@@ -673,4 +722,4 @@ muse-tmr run-pilot5-full-night \
   --default-volume 0.02
 ```
 
-See `docs/pilot5_full_night.md` for the full runbook. Pilot 5 requires the Pilot 4 safety setup plus a TLR block plan, writes `pilot5_summary.json`, and expects the morning dream report, blind puzzle retest, and cued-vs-uncued analysis before any behavioral interpretation. `--preset`, `--allow-dry-run` and the `--guard-min-*` gates work as in Pilot 4.
+See `docs/pilot5_full_night.md` for the full runbook. Pilot 5 requires the Pilot 4 safety setup plus a TLR block plan, writes `pilot5_summary.json`, and expects the morning dream report, the sound check, blind puzzle retest, and cued-vs-uncued analysis before any behavioral interpretation. `--preset`, `--protocol-preset`, `--allow-dry-run` and the `--guard-min-*` gates work as in Pilot 4; the TLR block comes from the plan file, so make it with the same `--protocol-preset` (a plan made with another one is named in a warning and under `protocol.inputs`).

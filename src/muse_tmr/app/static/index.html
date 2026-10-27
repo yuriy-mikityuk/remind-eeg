@@ -311,7 +311,7 @@
       <main class="screen morning-screen" id="screen-morning" hidden>
         <div class="work-head">
           <h1>After a puzzle night</h1>
-          <p>Write down the dream first, then give the puzzles another go. Nothing here says which ones were cued.</p>
+          <p>Write down the dream first, then match each sound to its puzzle, then give the puzzles another go. Nothing here says which ones were cued.</p>
         </div>
         <label class="night-picker">Night
           <select id="morning-night"></select>
@@ -344,6 +344,18 @@
             </label>
             <p class="form-error" id="dream-error" role="alert" hidden></p>
             <div class="form-actions"><button type="submit" class="primary">Save dream report</button></div>
+          </form>
+          <form class="panel morning-form" id="recall-form">
+            <h2>Which puzzle does this sound belong to?</h2>
+            <p class="muted">Before the retest: play each sound and pick the puzzle it went with last night, or Not sure.</p>
+            <p class="muted" id="recall-status"></p>
+            <p class="muted" id="recall-late" hidden>The retest is already saved, so this check comes after it; the analysis notes that.</p>
+            <ol class="recall-list" id="recall-list"></ol>
+            <label class="field">Notes
+              <input id="recall-notes" maxlength="500">
+            </label>
+            <p class="form-error" id="recall-error" role="alert" hidden></p>
+            <div class="form-actions"><button type="submit" class="primary" id="recall-save">Save sound check</button></div>
           </form>
           <form class="panel morning-form" id="retest-form">
             <h2>Blind retest</h2>

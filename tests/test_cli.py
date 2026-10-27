@@ -1070,6 +1070,10 @@ class TestAudioPreflightCli(unittest.TestCase):
             ],
         }
         required["run-pilot5-full-night"] = required["run-pilot4-cueing"] + ["--tlr-block", "block.json"]
+        required["record-cue-recall"] = [
+            "session.json", "--catalog", "catalog.json", "--assignment", "assignment.json",
+            "--cue-library", "cues.json", "--calibration", "calibration.json", "--output", "recall.json",
+        ]
         self.assertEqual(set(required), set(cli_main.AUDIO_COMMANDS))
         parser = build_parser()
         for command, argv in required.items():
@@ -1125,6 +1129,11 @@ class TestAudioPreflightCli(unittest.TestCase):
                 "run-pilot5-full-night": [
                     "run-pilot5-full-night", "--output-dir", str(Path(tmp) / "pilot5"), *night_inputs,
                     "--tlr-block", missing,
+                ],
+                "record-cue-recall": [
+                    "record-cue-recall", missing, "--catalog", missing, "--assignment", missing,
+                    "--cue-library", missing, "--calibration", missing,
+                    "--output", str(Path(tmp) / "recall.json"),
                 ],
             }
             with patch("muse_tmr.audio.audio_player.shutil.which", return_value=None), \

@@ -1404,12 +1404,44 @@ summary:focus-visible {
   color: var(--ink);
 }
 
-.retest-list {
+.retest-list,
+.recall-list {
   display: grid;
   gap: 12px;
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.recall-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  padding: 10px 12px;
+}
+
+.recall-item b {
+  min-width: 5.5em;
+}
+
+.recall-item button {
+  min-height: 32px;
+  padding: 0 12px;
+}
+
+.recall-item select {
+  flex: 1;
+  min-width: 12em;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--sheet);
+  color: var(--ink);
+  padding: 6px 8px;
+  font: inherit;
 }
 
 .retest-item {

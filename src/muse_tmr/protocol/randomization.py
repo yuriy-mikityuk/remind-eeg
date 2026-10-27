@@ -150,17 +150,22 @@ def assign_cued_uncued_puzzles(
     *,
     seed: int,
     cued_count: Optional[int] = None,
+    protocol: Optional[Mapping[str, object]] = None,
 ) -> PuzzleCueAssignment:
+    """Split the session; ``protocol`` is the preset block recorded in the metadata."""
     assignment = split_cued_uncued(session.puzzle_ids, seed=seed, cued_count=cued_count)
+    metadata: Dict[str, object] = {
+        "session_puzzle_count": len(session.puzzle_ids),
+        "requested_cued_count": cued_count,
+    }
+    if protocol:
+        metadata["protocol"] = dict(protocol)
     puzzle_assignment = PuzzleCueAssignment(
         session_id=session.session_id,
         cued_puzzle_ids=tuple(str(item) for item in assignment.cued),
         uncued_puzzle_ids=tuple(str(item) for item in assignment.uncued),
         seed=seed,
-        metadata={
-            "session_puzzle_count": len(session.puzzle_ids),
-            "requested_cued_count": cued_count,
-        },
+        metadata=metadata,
     )
     return puzzle_assignment.validate_against_session(session)
 

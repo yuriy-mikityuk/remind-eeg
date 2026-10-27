@@ -147,6 +147,23 @@ every cue; at a 30 s stride cues 180 s apart leave room for one. On a replay not
 a sound, so the report says `no_audio_played`: whatever flags at an injected cue is the
 recording's background, which is what its control measures too.
 
+## Protocol presets
+
+`--protocol-preset NAME` replays the night with a preset's gate window and scheduler
+settings (`docs/protocol_presets.md`); without it the replay uses `remind_default_v1`,
+today's defaults, and at a 30 s stride plans the same scheduler events as before presets
+existed. The report records the preset as `protocol`. Pilot 3 plans puzzle cues only, so
+the TLR settings of a preset show only in a Pilot 5 night. To see how the plan compares
+with the preset's paper:
+
+```bash
+.venv/bin/python -m muse_tmr.cli.main protocol-fidelity data/recordings/<pilot-session> \
+  --pilot3-report data/reports/pilot3_replay_cue_plan.json
+```
+
+It writes `protocol_fidelity.json` and `.md` next to the report. A plan plays nothing,
+so the report says `pilot3_plan_not_played` and has no gain to compare.
+
 ## Validate
 
 The command exits `0` only when:
@@ -169,7 +186,8 @@ Inspect `data/reports/pilot3_replay_cue_plan.json`:
   `--inject-cues-every-seconds` added, empty without it;
 - `metrics.uncued_puzzle_play_count`: must be `0`;
 - `audio_backend`: must be `mock`;
-- `audio_playback_executed`: must be `false`.
+- `audio_playback_executed`: must be `false`;
+- `protocol`: the preset the plan used, with its content hash.
 
 If `cue_plan` is empty but validation passes, the replay did not meet stable REM and
 safety conditions during the selected time range. That is an acceptable Pilot 3

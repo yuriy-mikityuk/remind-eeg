@@ -8,7 +8,7 @@ import json
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import AsyncIterator, Dict, Iterable, Mapping, Optional, Tuple
+from typing import AsyncIterator, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from muse_tmr.ble.muse_raw_stream import MuseRawStream
 
@@ -51,8 +51,9 @@ from muse_tmr.validation.gate_log import (
     write_rem_gate_decisions,
 )
 
-# 2 adds first_epoch_start, rem_gate_decisions_path and cue_arousal (#227).
-PILOT4_SCHEMA_VERSION = 2
+# 2 adds first_epoch_start, rem_gate_decisions_path and cue_arousal (#227); 3 adds
+# protocol, the preset block of the night (#231).
+PILOT4_SCHEMA_VERSION = 3
 # What the sleeper says about an awakening: did a cue wake them?
 AWAKENING_ATTRIBUTIONS = ("yes", "no", "unsure")
 
@@ -101,6 +102,9 @@ class Pilot4CueingConfig:
     require_tlr_block: bool = False
     # Score the night's cue-locked arousal proxies at its end (reports.cue_arousal).
     score_cue_arousal: bool = True
+    # The protocol preset block (ProtocolPreset.manifest()) metadata.json and the
+    # summary record; the configs above are what runs.
+    protocol: Mapping[str, object] = field(default_factory=dict)
 
     def validate(self) -> None:
         if self.duration_seconds <= 0:
@@ -169,6 +173,8 @@ class Pilot4CueingSummary:
     rem_gate_decisions_path: str = ""
     # The scorer's figures for this night (reports.cue_arousal), or its status.
     cue_arousal: Mapping[str, object] = field(default_factory=dict)
+    # The protocol preset block of the night, as in metadata.json.
+    protocol: Mapping[str, object] = field(default_factory=dict)
     generated_at_utc: str = ""
     schema_version: int = PILOT4_SCHEMA_VERSION
     pilot_id: str = "m8_pilot4_low_volume_rem_gated_cueing"
@@ -217,6 +223,7 @@ class Pilot4CueingSummary:
             "first_epoch_start": self.first_epoch_start,
             "rem_gate_decisions_path": self.rem_gate_decisions_path,
             "cue_arousal": dict(self.cue_arousal),
+            "protocol": dict(self.protocol) if self.protocol else None,
             "modality_counts": dict(self.modality_counts),
             "scheduler_event_type_counts": dict(self.scheduler_event_type_counts),
             "audio_status_counts": dict(self.audio_status_counts),
@@ -266,10 +273,10 @@ class AwakeningEvent:
     """A manual awakening marker.
 
     ``timestamp_seconds`` (optional) places it on the night's time base, seconds from the
-    first epoch's start like the scheduler events; without it the cue arousal scorer
-    places it by ``timestamp_utc``. ``attributed_to_cue`` (optional, ``yes``, ``no`` or
-    ``unsure``) is whether the sleeper thinks a cue woke them. Rows written before both
-    fields existed load as they are.
+    first epoch's start like the scheduler events; without it the cue arousal scorer and
+    the protocol fidelity report place it by ``timestamp_utc`` (``night_offset_seconds()``).
+    ``attributed_to_cue`` (optional, ``yes``, ``no`` or ``unsure``) is whether the sleeper
+    thinks a cue woke them. Rows written before both fields existed load as they are.
     """
 
     event_type: str = "awakening"
@@ -294,6 +301,22 @@ class AwakeningEvent:
                     f"attributed_to_cue must be one of: {', '.join(AWAKENING_ATTRIBUTIONS)}"
                 )
             object.__setattr__(self, "attributed_to_cue", attribution)
+
+    def night_offset_seconds(self, first_epoch_start: Optional[float]) -> Optional[float]:
+        """Where the marker falls on the night's time base: ``timestamp_seconds``, else
+        ``timestamp_utc`` minus ``first_epoch_start`` (Unix seconds), a time without an
+        offset read as UTC. None when neither places it."""
+        if self.timestamp_seconds is not None:
+            return self.timestamp_seconds
+        if first_epoch_start is None:
+            return None
+        try:
+            moment = dt.datetime.fromisoformat(self.timestamp_utc)
+        except (TypeError, ValueError):
+            return None
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=dt.timezone.utc)
+        return moment.timestamp() - first_epoch_start
 
     def to_dict(self) -> Dict[str, object]:
         payload: Dict[str, object] = {
@@ -373,7 +396,15 @@ async def run_pilot4_cueing_night(
     started_monotonic = time.monotonic()
     deadline = started_monotonic + config.duration_seconds
     metadata = await source.connect()
-    _write_metadata(metadata_path, metadata, config, calibration, started_at_dt, resolved_backend.name)
+    _write_metadata(
+        metadata_path,
+        metadata,
+        config,
+        calibration,
+        started_at_dt,
+        resolved_backend.name,
+        tlr_block_plan=tlr_block_plan,
+    )
     _append_jsonl(
         recording_events_path,
         {
@@ -564,6 +595,45 @@ def load_awakening_events(input_path: Path) -> Tuple[AwakeningEvent, ...]:
         for line in input_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     )
+
+
+def audio_for_plays(
+    plays: Sequence[Mapping[str, object]],
+    audio_path: Optional[Path],
+) -> Tuple[Tuple[Optional[Mapping[str, object]], ...], bool, bool]:
+    """Each scheduler play's line of ``audio_playback.jsonl``, in order; whether the log
+    was found; whether the matching broke off.
+
+    The player logs one line per play, in the order of the plays, and one more for an
+    emergency stop. A play whose line names another cue ends the matching: it and the
+    plays after it get none, and the mismatch is reported. The cue arousal scorer and
+    the protocol fidelity report both read a night's plays this way.
+    """
+    if audio_path is None or not Path(audio_path).expanduser().exists():
+        return tuple(None for _ in plays), False, False
+    entries = [
+        entry
+        for entry in _read_jsonl(Path(audio_path))
+        if not (entry.get("cue_id") == "emergency-stop" and entry.get("status") == "stopped")
+    ]
+    matched: List[Optional[Mapping[str, object]]] = []
+    position = 0
+    mismatch = False
+    for play in plays:
+        metadata = dict(play.get("metadata", {}) or {})
+        if metadata.get("synthetic_cue"):
+            matched.append(None)
+            continue
+        if mismatch or position >= len(entries) or entries[position].get("cue_id") != play.get("cue_id"):
+            mismatch = True
+            matched.append(None)
+            continue
+        matched.append(entries[position])
+        position += 1
+    real_plays = sum(1 for play in plays if not dict(play.get("metadata", {}) or {}).get("synthetic_cue"))
+    if position != len(entries) and real_plays:
+        mismatch = True
+    return tuple(matched), True, mismatch
 
 
 async def _score_own_night(
@@ -774,6 +844,7 @@ def _build_summary(
         first_play_seconds=state.first_play_seconds,
         first_epoch_start=state.first_epoch_start,
         rem_gate_decisions_path=str(rem_gate_decisions_path),
+        protocol=dict(config.protocol),
         pilot_id=config.pilot_id,
     )
 
@@ -882,10 +953,14 @@ def _write_metadata(
     calibration: VolumeCalibration,
     started_at: dt.datetime,
     resolved_backend_name: str,
+    *,
+    tlr_block_plan: Optional[TlrBlockPlan] = None,
 ) -> None:
     payload = {
         "started_at": started_at.isoformat(),
         "pilot_id": config.pilot_id,
+        "protocol": dict(config.protocol) if config.protocol else None,
+        "tlr_block_plan": tlr_block_plan.to_dict() if tlr_block_plan is not None else None,
         "source": {
             "source_name": metadata.source_name,
             "device_name": metadata.device_name,
@@ -910,6 +985,13 @@ def _append_jsonl(output_path: Path, payload: Mapping[str, object]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(dict(payload), sort_keys=True) + "\n")
+
+
+def _read_jsonl(path: Path) -> List[Dict[str, object]]:
+    path = Path(path).expanduser()
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def _event_type_counts(events: Iterable[TmrSchedulerEvent]) -> Dict[str, int]:

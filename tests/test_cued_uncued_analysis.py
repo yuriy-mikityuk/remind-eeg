@@ -2,22 +2,27 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from muse_tmr.cli.main import main
 from muse_tmr.protocol import (
     NightPuzzleSession,
+    PuzzleCatalog,
     PuzzleCueAssignment,
+    PuzzleTask,
     TmrSchedulerEvent,
     append_tmr_scheduler_events,
+    get_protocol_preset,
 )
 from muse_tmr.reports import (
     DreamPuzzleIncorporation,
     DreamReport,
     MorningRetest,
     MorningRetestResult,
+    build_cue_recall_test,
     build_cued_uncued_analysis,
+    cue_recall_order,
     load_cued_uncued_analysis,
 )
 
@@ -59,7 +64,41 @@ class TestCuedUncuedAnalysis(unittest.TestCase):
 
         self.assertIn("missing_dream_report", report.limitation_codes)
         self.assertIn("missing_scheduler_events", report.limitation_codes)
+        self.assertIn("cue_recall_missing", report.limitation_codes)
+        self.assertEqual(report.cue_recall, {"available": False})
         self.assertEqual(report.cue_timing["puzzle_play_event_count"], 0)
+
+    def test_the_sound_check_gives_recall_by_condition(self):
+        session, assignment, dream_report, retest = _analysis_inputs()
+        order = cue_recall_order(session)
+        # Every sound placed except p4's (uncued), which was not known: the two conditions
+        # differ, so a swap of cued and uncued shows.
+        answers = {index: (None if puzzle == "p4" else puzzle) for index, puzzle in enumerate(order, start=1)}
+        recall = build_cue_recall_test(
+            session, _catalog(), assignment, answers, completed_at_utc="2026-10-27T07:00:00+00:00"
+        )
+        report = build_cued_uncued_analysis(
+            session, assignment, retest, dream_report=dream_report, cue_recall=recall, min_group_size=1
+        )
+        self.assertEqual(report.cue_recall["recall_rate"], 0.75)
+        self.assertEqual(report.cue_recall["by_condition"]["cued"], {"trial_count": 2, "correct_count": 2, "recall_rate": 1.0})
+        self.assertEqual(report.cue_recall["by_condition"]["uncued"], {"trial_count": 2, "correct_count": 1, "recall_rate": 0.5})
+        self.assertEqual(report.cue_recall["recall_rate_difference_cued_minus_uncued"], 0.5)
+        self.assertTrue(report.cue_recall["before_retest"])
+        self.assertEqual({row.puzzle_id: row.cue_recalled for row in report.rows},
+                         {"p1": True, "p2": True, "p3": True, "p4": False})
+        self.assertNotIn("cue_recall_missing", report.limitation_codes)
+        self.assertNotIn("cue_recall_after_retest", report.limitation_codes)
+        self.assertIn("Sound check", report.to_markdown())
+        self.assertEqual(load_cued_uncued_analysis_round_trip(report).cue_recall, report.cue_recall)
+
+    def test_a_sound_check_after_the_retest_is_a_limitation(self):
+        session, assignment, _, retest = _analysis_inputs()
+        answers = {index: puzzle for index, puzzle in enumerate(cue_recall_order(session), start=1)}
+        late = build_cue_recall_test(session, _catalog(), assignment, answers, completed_at_utc="2026-10-27T09:00:00+00:00")
+        report = build_cued_uncued_analysis(session, assignment, retest, cue_recall=late)
+        self.assertFalse(report.cue_recall["before_retest"])
+        self.assertIn("cue_recall_after_retest", report.limitation_codes)
 
     def test_analysis_detects_uncued_scheduler_play_events(self):
         session, assignment, dream_report, retest = _analysis_inputs()
@@ -142,9 +181,54 @@ class TestCuedUncuedAnalysis(unittest.TestCase):
             markdown_exists = markdown_path.exists()
 
         self.assertEqual(code, 0)
-        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["schema_version"], 2)
         self.assertEqual(payload["condition_metrics"]["cued"]["solve_rate"], 0.5)
         self.assertTrue(markdown_exists)
+        self.assertNotIn("protocol", payload["metadata"])
+
+    def test_cli_takes_the_sound_check_and_the_protocol_block(self):
+        session, assignment, _, retest = _analysis_inputs()
+        block = get_protocol_preset("konkoly2026_puzzle").manifest()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            session.save(tmp_path / "session.json")
+            assignment.save(tmp_path / "assignment.json")
+            retest.save(tmp_path / "retest.json")
+            answers = {index: puzzle for index, puzzle in enumerate(cue_recall_order(session), start=1)}
+            build_cue_recall_test(
+                session, _catalog(), assignment, answers, completed_at_utc="2026-10-27T07:00:00+00:00"
+            ).save(tmp_path / "recall.json")
+            (tmp_path / "metadata.json").write_text(json.dumps({"protocol": block}), encoding="utf-8")
+            (tmp_path / "empty.json").write_text("{}", encoding="utf-8")
+            base = [
+                "analyze-cued-uncued", str(tmp_path / "session.json"),
+                "--assignment", str(tmp_path / "assignment.json"),
+                "--retest", str(tmp_path / "retest.json"),
+                "--output", str(tmp_path / "analysis.json"),
+            ]
+            with redirect_stdout(io.StringIO()):
+                code = main([*base, "--cue-recall", str(tmp_path / "recall.json"),
+                             "--protocol-metadata", str(tmp_path / "metadata.json")])
+            payload = json.loads((tmp_path / "analysis.json").read_text(encoding="utf-8"))
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                refused = main([*base, "--protocol-metadata", str(tmp_path / "empty.json")])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["metadata"]["protocol"]["content_hash"], block["content_hash"])
+        self.assertEqual(payload["metadata"]["protocol_source"], "metadata.json")
+        self.assertEqual(payload["cue_recall"]["recall_rate"], 1.0)
+        self.assertEqual(refused, 2)
+
+
+def load_cued_uncued_analysis_round_trip(report):
+    with tempfile.TemporaryDirectory() as tmp:
+        return load_cued_uncued_analysis(report.save(Path(tmp) / "analysis.json"))
+
+
+def _catalog():
+    return PuzzleCatalog(
+        puzzles=tuple(PuzzleTask(puzzle, f"Prompt {puzzle}", f"Answer {puzzle}", cue_id=f"cue-{puzzle}") for puzzle in ("p1", "p2", "p3", "p4"))
+    )
 
 
 def _analysis_inputs():
@@ -172,6 +256,7 @@ def _analysis_inputs():
     )
     retest = MorningRetest(
         session_id="night-001",
+        reported_at_utc="2026-10-27T08:00:00+00:00",
         results=(
             MorningRetestResult("p1", "answer 1", True, 12.0, 0.9, cue_id="cue-p1", cue_condition="cued"),
             MorningRetestResult("p2", "wrong", False, 24.0, 0.4, cue_id="cue-p2", cue_condition="cued"),

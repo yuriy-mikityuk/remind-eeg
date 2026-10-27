@@ -47,10 +47,12 @@ from muse_tmr.validation.gate_log import (
     REM_GATE_DECISIONS_FILENAME,
     GateDecisionRecord,
     GateOpenRun,
+    emitting_record,
     gate_open_runs,
     load_rem_gate_decisions,
+    run_at,
 )
-from muse_tmr.validation.pilot4 import AwakeningEvent, load_awakening_events
+from muse_tmr.validation.pilot4 import AwakeningEvent, audio_for_plays, load_awakening_events
 
 CUE_AROUSAL_SCHEMA_VERSION = 1
 AROUSAL_FLAGS = ("alpha", "beta", "emg", "imu", "hr")
@@ -652,7 +654,7 @@ def _night_inputs(
             Path(gate_log_path).expanduser() if gate_log_path else report
         )
         audio_path = Path(audio_log_path).expanduser() if audio_log_path else None
-        audio, found, mismatch = _audio_for_plays(plays, audio_path)
+        audio, found, mismatch = audio_for_plays(plays, audio_path)
         awakenings = _awakenings(awakening_events_path, None)
         return _NightInputs(
             plays=plays,
@@ -671,7 +673,7 @@ def _night_inputs(
     plays = tuple(event for event in _read_jsonl(events_path) if event.get("event_type") == "play")
     sources["scheduler_events"] = events_path.name if events_path.exists() else None
     audio_path = Path(audio_log_path).expanduser() if audio_log_path else recording_dir / "audio_playback.jsonl"
-    audio, found, mismatch = _audio_for_plays(plays, audio_path)
+    audio, found, mismatch = audio_for_plays(plays, audio_path)
     sources["audio_log"] = audio_path.name if found else None
     gate_source = Path(gate_log_path).expanduser() if gate_log_path else recording_dir
     gate_records = load_rem_gate_decisions(gate_source)
@@ -735,43 +737,6 @@ def _awakenings(path: Optional[Path], recording_dir: Optional[Path]) -> Optional
     return load_awakening_events(path)
 
 
-def _audio_for_plays(
-    plays: Sequence[Mapping[str, object]],
-    audio_path: Optional[Path],
-) -> Tuple[Tuple[Optional[Mapping[str, object]], ...], bool, bool]:
-    """Each scheduler play's line of ``audio_playback.jsonl``, in order.
-
-    The player logs one line per play, in the order of the plays, and one more for an
-    emergency stop. A play whose line names another cue ends the matching: it and the
-    plays after it get none, and the mismatch is reported.
-    """
-    if audio_path is None or not audio_path.exists():
-        return tuple(None for _ in plays), False, False
-    entries = [
-        entry
-        for entry in _read_jsonl(audio_path)
-        if not (entry.get("cue_id") == "emergency-stop" and entry.get("status") == "stopped")
-    ]
-    matched: List[Optional[Mapping[str, object]]] = []
-    position = 0
-    mismatch = False
-    for play in plays:
-        metadata = dict(play.get("metadata", {}) or {})
-        if metadata.get("synthetic_cue"):
-            matched.append(None)
-            continue
-        if mismatch or position >= len(entries) or entries[position].get("cue_id") != play.get("cue_id"):
-            mismatch = True
-            matched.append(None)
-            continue
-        matched.append(entries[position])
-        position += 1
-    real_plays = sum(1 for play in plays if not dict(play.get("metadata", {}) or {}).get("synthetic_cue"))
-    if position != len(entries) and real_plays:
-        mismatch = True
-    return tuple(matched), True, mismatch
-
-
 def _cue_targets(inputs: _NightInputs, first_epoch_start: float, config: CueArousalConfig) -> List[_Target]:
     records = sorted(inputs.gate_records, key=lambda record: (record.timestamp_seconds, record.index))
     starts = [record.timestamp_seconds for record in records]
@@ -779,7 +744,7 @@ def _cue_targets(inputs: _NightInputs, first_epoch_start: float, config: CueArou
     for play, audio in zip(inputs.plays, inputs.audio):
         metadata = dict(play.get("metadata", {}) or {})
         scheduled = float(play["timestamp_seconds"])
-        record = _emitting_record(records, starts, scheduled)
+        record = emitting_record(records, scheduled, starts=starts)
         if metadata.get("decision_seconds") is not None:
             offset = float(metadata["decision_seconds"])
         elif record is not None:
@@ -806,18 +771,6 @@ def _cue_targets(inputs: _NightInputs, first_epoch_start: float, config: CueArou
             )
         )
     return targets
-
-
-def _emitting_record(
-    records: Sequence[GateDecisionRecord],
-    starts: Sequence[float],
-    scheduled_seconds: float,
-) -> Optional[GateDecisionRecord]:
-    """The epoch whose decision played a cue the scheduler logged at ``scheduled_seconds``:
-    the first epoch starting at or after it. A puzzle cue is logged at its epoch's start, a
-    TLR cue at its planned time, which the next epoch to start plays."""
-    position = bisect.bisect_left(starts, scheduled_seconds - _TIME_TOLERANCE_SECONDS)
-    return records[position] if position < len(records) else None
 
 
 def _cue_info(play: Mapping[str, object], audio: Optional[Mapping[str, object]]) -> Dict[str, object]:
@@ -945,18 +898,13 @@ def _awakening_offsets(
     placed = []
     notes = {"from_utc": 0, "unplaced": 0}
     for event in awakenings:
-        if event.timestamp_seconds is not None:
-            placed.append((event.timestamp_seconds, event.attributed_to_cue))
-            continue
-        try:
-            moment = dt.datetime.fromisoformat(event.timestamp_utc)
-        except ValueError:
+        offset = event.night_offset_seconds(first_epoch_start)
+        if offset is None:
             notes["unplaced"] += 1
             continue
-        if moment.tzinfo is None:
-            moment = moment.replace(tzinfo=dt.timezone.utc)
-        placed.append((moment.timestamp() - first_epoch_start, event.attributed_to_cue))
-        notes["from_utc"] += 1
+        if event.timestamp_seconds is None:
+            notes["from_utc"] += 1
+        placed.append((offset, event.attributed_to_cue))
     return sorted(placed, key=lambda item: item[0]), notes
 
 
@@ -1472,7 +1420,7 @@ def _with_night_context(
     awakenings: Optional[Sequence[Tuple[float, Optional[str]]]],
     config: CueArousalConfig,
 ) -> CueArousalWindow:
-    run = _run_at(runs, window.offset_seconds) if window.gate_open else None
+    run = run_at(runs, window.offset_seconds) if window.gate_open else None
     awakening = None
     if window.kind == "cue" and awakenings is not None and window.offset_seconds is not None:
         later = [
@@ -1499,20 +1447,6 @@ def _with_night_context(
         awakening_in_seconds=awakening,
         cue=window.cue,
     )
-
-
-def _run_at(runs: Sequence[GateOpenRun], offset: Optional[float]) -> Optional[GateOpenRun]:
-    """The gate-open run the gate was in at ``offset``; a decision time is compared with
-    the run's own decision times, so float rounding is tolerated."""
-    if offset is None:
-        return None
-    tolerance = _TIME_TOLERANCE_SECONDS
-    for run in runs:
-        if offset < run.start_seconds - tolerance:
-            continue
-        if offset < run.end_seconds - tolerance or (not run.closed and offset <= run.end_seconds + tolerance):
-            return run
-    return None
 
 
 def _flag_counts(windows: Sequence[CueArousalWindow]) -> Dict[str, Dict[str, object]]:

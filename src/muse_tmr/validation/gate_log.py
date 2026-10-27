@@ -6,7 +6,9 @@ and ``gate_open_runs()`` turns them into gate-open runs. A gate-open run is what
 cue arousal scorer and the protocol fidelity report (Initiative 7) call a REM period: the
 epochs in a row whose decision left the gate open. It starts when the first of them was
 decided, the end of that epoch, and ends when the first decision after them closed the
-gate. Defined here once so both read REM periods the same way.
+gate. Defined here once so both read REM periods the same way, and so is where a
+scheduler ``play`` happened (``emitting_record()``) and which run it fell in
+(``run_at()``).
 
 Times are seconds from the start of the night's first epoch, the time base of the
 scheduler's ``timestamp_seconds``.
@@ -14,6 +16,7 @@ scheduler's ``timestamp_seconds``.
 
 from __future__ import annotations
 
+import bisect
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +24,8 @@ from typing import Iterable, Mapping, Optional, Sequence, Tuple, Union
 
 REM_GATE_DECISIONS_FILENAME = "rem_gate_decisions.jsonl"
 GATE_LOG_SCHEMA_VERSION = 1
+# Decision times are sums of floats; this much apart they are the same moment.
+TIME_TOLERANCE_SECONDS = 1e-6
 
 
 @dataclass(frozen=True)
@@ -221,6 +226,40 @@ def gate_open_runs(records: Sequence[GateDecisionRecord]) -> Tuple[GateOpenRun, 
 def load_gate_open_runs(source: GateLogSource) -> Tuple[GateOpenRun, ...]:
     """``gate_open_runs()`` of what ``load_rem_gate_decisions(source)`` reads."""
     return gate_open_runs(load_rem_gate_decisions(source))
+
+
+def emitting_record(
+    records: Sequence[GateDecisionRecord],
+    scheduled_seconds: float,
+    *,
+    starts: Optional[Sequence[float]] = None,
+) -> Optional[GateDecisionRecord]:
+    """The epoch whose decision played a cue the scheduler logged at ``scheduled_seconds``.
+
+    It is the first epoch starting at or after that time: a puzzle cue is logged at its
+    epoch's start, a TLR cue at its planned time, which the next epoch to start plays.
+    ``records`` must be in time order; ``starts`` (their ``timestamp_seconds``) saves
+    building that list on every call. None when no epoch starts that late.
+    """
+    if starts is None:
+        starts = [record.timestamp_seconds for record in records]
+    position = bisect.bisect_left(starts, scheduled_seconds - TIME_TOLERANCE_SECONDS)
+    return records[position] if position < len(records) else None
+
+
+def run_at(runs: Sequence[GateOpenRun], seconds: Optional[float]) -> Optional[GateOpenRun]:
+    """The gate-open run the gate was in at ``seconds``, a decision time compared with
+    the run's own decision times, so float rounding is tolerated."""
+    if seconds is None:
+        return None
+    for run in runs:
+        if seconds < run.start_seconds - TIME_TOLERANCE_SECONDS:
+            continue
+        if seconds < run.end_seconds - TIME_TOLERANCE_SECONDS or (
+            not run.closed and seconds <= run.end_seconds + TIME_TOLERANCE_SECONDS
+        ):
+            return run
+    return None
 
 
 def _records_from_pilot3(report: Mapping[str, object]) -> Tuple[GateDecisionRecord, ...]:

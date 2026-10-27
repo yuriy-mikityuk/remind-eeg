@@ -110,6 +110,18 @@ off) turn the HR rules off on epochs of low PPG quality, logged as `hr_rule_skip
 leave them off for a night until `docs/optics_agreement.md` has a paired table that
 supports a value.
 
+`--protocol-preset` takes the gate's stable window and the scheduler's interval,
+cooldown and limit from a preset (`docs/protocol_presets.md`). Pilot 4 and 5 keep
+`remind_default_v1`, today's defaults, unless the flag is given: which protocol a real
+night runs is the experimenter's choice. A preset sets no volume, so
+`--default-volume`, `--hard-max-volume` and the calibration cap hold as above.
+`metadata.json` and `pilot4_summary.json` record the preset as `protocol`, and in the
+morning `protocol-fidelity` compares the night with it:
+
+```bash
+.venv/bin/python -m muse_tmr.cli.main protocol-fidelity "$OUTDIR"
+```
+
 ## Emergency Stop
 
 The summary prints an `emergency_stop` path. Creating that file blocks future playback
@@ -134,9 +146,9 @@ If you wake during or after the pilot and want to mark it:
 ```
 
 `--attributed-to-cue` (`yes`, `no` or `unsure`) records whether you think a cue woke
-you. The marker gets the current time in UTC, or `--timestamp-utc`; `--timestamp-seconds`
-places it on the night's time base instead, seconds from the first epoch as in
-`scheduler_events.jsonl`. Use short factual notes. Keep the file local unless you
+you. The marker gets the current time in UTC, or `--timestamp-utc` (a time without an
+offset is read as UTC); `--timestamp-seconds` places it on the night's time base instead,
+seconds from the first epoch as in `scheduler_events.jsonl`. Use short factual notes. Keep the file local unless you
 intentionally sanitize it.
 
 ## Cue Arousal Proxies
@@ -172,7 +184,8 @@ The output directory contains:
 - `audio_playback.jsonl`;
 - `awakening_events.jsonl`;
 - `cue_arousal_events.jsonl`, `cue_arousal_report.json`, `cue_arousal_report.md`;
-- `pilot4_summary.json`.
+- `pilot4_summary.json`;
+- `protocol_fidelity.json`, `protocol_fidelity.md` once `protocol-fidelity` ran on it.
 
 The summary passes only when:
 
