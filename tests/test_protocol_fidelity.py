@@ -255,8 +255,8 @@ class GateSequenceTest(unittest.TestCase):
         self.assertEqual(tlr["status"], "differs")
         self.assertEqual(tlr["plan"], {"repetitions": 3, "interval_seconds": 8.0})
         self.assertEqual(
-            tlr["periods"],
-            [{"rem_period": 0, "cues": 3, "complete": True, "planned_intervals_seconds": [8.0, 8.0],
+            tlr["blocks"],
+            [{"rem_period": 0, "block": 0, "cues": 3, "complete": True, "planned_intervals_seconds": [8.0, 8.0],
               "played_intervals_seconds": [30.0, 0.0], "back_to_back": 1}],
         )
 
@@ -264,8 +264,8 @@ class GateSequenceTest(unittest.TestCase):
         report = build_protocol_fidelity(night)
         tlr = report.checks["tlr_block"]
         self.assertEqual(tlr["status"], "as_planned")
-        self.assertEqual(tlr["periods"][0]["cues"], 10)
-        self.assertEqual(set(tlr["periods"][0]["played_intervals_seconds"]), {30.0})
+        self.assertEqual(tlr["blocks"][0]["cues"], 10)
+        self.assertEqual(set(tlr["blocks"][0]["played_intervals_seconds"]), {30.0})
         self.assertEqual(report.checks["inter_cue_intervals"]["streams"]["tlr"]["status"], "as_published")
         self.assertEqual(report.checks["cues_per_rem_period"]["streams"]["tlr"]["per_period"], [10])
         self.assertEqual(report.checks["cue_duration"]["streams"]["tlr"]["status"], "as_published")
@@ -274,8 +274,35 @@ class GateSequenceTest(unittest.TestCase):
         night = write_night(self.root / "short", [0.9] * 8 + [0.1] * 2, preset="konkoly2021_northwestern", tlr=True)
         tlr = build_protocol_fidelity(night).checks["tlr_block"]
         self.assertEqual(tlr["status"], "differs")
-        self.assertEqual([(row["cues"], row["complete"]) for row in tlr["periods"]], [(7, False)])
-        self.assertEqual(set(tlr["periods"][0]["played_intervals_seconds"]), {30.0})
+        self.assertEqual([(row["cues"], row["complete"]) for row in tlr["blocks"]], [(7, False)])
+        self.assertEqual(set(tlr["blocks"][0]["played_intervals_seconds"]), {30.0})
+
+    def test_a_guard_pause_starts_a_new_block_in_the_same_period(self):
+        # One gate-open run; the guard pauses at the sixth epoch, after the default's TLR
+        # block and both cued puzzles, and the scheduler plays the TLR block again.
+        night = write_night(self.root / "default", [0.9] * 16, tlr=True, guard={5: motion_pause(5)})
+        report = build_protocol_fidelity(night)
+        self.assertEqual(report.summary["rem_periods"], 1)
+        tlr = report.checks["tlr_block"]
+        self.assertEqual(
+            [(row["rem_period"], row["block"], row["cues"], row["complete"], row["planned_intervals_seconds"])
+             for row in tlr["blocks"]],
+            [(0, 0, 3, True, [8.0, 8.0]), (0, 1, 3, True, [8.0, 8.0])],
+        )
+        self.assertEqual(tlr["observed"], {"periods": 1, "blocks": 2, "cues": 6})
+        counts = report.checks["cues_per_rem_period"]
+        self.assertEqual(counts["streams"]["tlr"]["per_period"], [6])
+        self.assertEqual(counts["streams"]["tlr"]["per_block"], [[3, 3]])
+        self.assertEqual(counts["streams"]["puzzle"]["per_block"], [[2]])
+        # The default plays one TLR block per REM block, which it did.
+        self.assertEqual(counts["status"], "as_published")
+
+        # A block longer than the published limit still differs.
+        night = write_night(
+            self.root / "long", [0.9] * 12, preset="konkoly2021_nijmegen", overrides={"tlr_repetitions": 12}, tlr=True
+        )
+        counts = build_protocol_fidelity(night).checks["cues_per_rem_period"]["streams"]["tlr"]
+        self.assertEqual((counts["status"], counts["per_block"], counts["blocks_over_max"]), ("differs", [[12]], 1))
 
     def test_the_stable_window_against_the_published_start(self):
         probabilities = [0.2, 0.9, 0.9, 0.9, 0.9]
@@ -419,7 +446,7 @@ class PlayedCuesOnlyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report.summary["plays_blocked_or_skipped"], {"tlr": 1, "puzzle": 2})
         tlr = report.checks["tlr_block"]
         self.assertEqual(tlr["status"], "differs")
-        self.assertEqual([(row["cues"], row["complete"]) for row in tlr["periods"]], [(1, False)])
+        self.assertEqual([(row["cues"], row["complete"]) for row in tlr["blocks"]], [(1, False)])
         self.assertEqual(report.checks["volume_ramp"]["periods"][0]["first_gain"], 0.04)
 
 

@@ -259,6 +259,7 @@ def build_protocol_fidelity(
         limitations.append("no_audio_log")
 
     placed, not_played = _place_plays(night)
+    pause_times = _guard_pause_times(night)
     if sum(not_played.values()):
         limitations.append("plays_blocked_or_skipped")
     if night.audio_mismatch:
@@ -267,12 +268,12 @@ def build_protocol_fidelity(
     stride = _stride(night.records)
     checks = {
         "inter_cue_intervals": _interval_check(preset, placed, night.runs),
-        "cues_per_rem_period": _count_check(preset, placed, night.runs),
+        "cues_per_rem_period": _count_check(preset, placed, night.runs, pause_times),
         "stable_rem_before_first_cue": _stable_check(preset, placed, night.runs, stride),
         "pause_rules": _pause_check(preset, night, placed, limitations),
         "volume_ramp": _ramp_check(preset, placed, night),
         "cue_duration": _duration_check(preset, placed),
-        "tlr_block": _tlr_check(preset, placed, night),
+        "tlr_block": _tlr_check(preset, placed, night, pause_times),
     }
     plays_outside = sum(1 for play in placed if play.run is None)
     summary = {
@@ -553,6 +554,40 @@ def _by_run(plays: Sequence[_Play]) -> Dict[int, List[_Play]]:
     return grouped
 
 
+def _guard_pause_times(night: _Night) -> List[float]:
+    """When the arousal guard paused the scheduler, each at the decision of its epoch."""
+    records = sorted(night.records, key=lambda record: (record.timestamp_seconds, record.index))
+    starts = [record.timestamp_seconds for record in records]
+    times = []
+    for event in night.events:
+        if event.get("event_type") == "pause" and "arousal_guard_pause" in (event.get("reason_codes") or ()):
+            record = emitting_record(records, float(event["timestamp_seconds"]), starts=starts)
+            if record is not None:
+                times.append(record.decision_seconds)
+    return sorted(times)
+
+
+def _by_block(plays: Sequence[_Play], pause_times: Sequence[float]) -> List[Tuple[int, int, List[_Play]]]:
+    """The plays of each REM period by the scheduler's REM block, as (period, block,
+    plays) in time order, blocks without plays left out.
+
+    A guard pause ends the scheduler's block; the next cue of the same REM period starts
+    a new one, with a new TLR block and up to ``max_puzzle_cues_per_block`` puzzle cues.
+    A play's block is the number of guard pauses in its period before it.
+    """
+    grouped: Dict[Tuple[int, int], List[_Play]] = {}
+    for play in plays:
+        if play.run is None:
+            continue
+        block = sum(
+            1
+            for at in pause_times
+            if play.run.start_seconds - TIME_TOLERANCE_SECONDS <= at < play.decision_seconds
+        )
+        grouped.setdefault((play.run.index, block), []).append(play)
+    return [(period, block, items) for (period, block), items in sorted(grouped.items())]
+
+
 def _interval_check(preset: ProtocolPreset, plays: Sequence[_Play], runs: Sequence[GateOpenRun]) -> Dict[str, object]:
     timings = [timing for timing in preset.timing if timing.interval_seconds is not None]
     if not timings:
@@ -598,34 +633,41 @@ def _interval_check(preset: ProtocolPreset, plays: Sequence[_Play], runs: Sequen
     }
 
 
-def _count_check(preset: ProtocolPreset, plays: Sequence[_Play], runs: Sequence[GateOpenRun]) -> Dict[str, object]:
+def _count_check(
+    preset: ProtocolPreset,
+    plays: Sequence[_Play],
+    runs: Sequence[GateOpenRun],
+    pause_times: Sequence[float],
+) -> Dict[str, object]:
     streams = {}
     statuses = []
     for timing in preset.timing:
+        stream_plays = _stream_plays(plays, timing.stream)
         counts = [
-            len([play for play in _stream_plays(plays, timing.stream) if play.run is not None and play.run.index == run.index])
+            len([play for play in stream_plays if play.run is not None and play.run.index == run.index])
             for run in runs
         ]
+        blocks = _by_block(stream_plays, pause_times)
+        per_block = [[len(items) for period, _, items in blocks if period == run.index] for run in runs]
+        block_counts = [len(items) for _, _, items in blocks]
+        maximum = timing.max_cues_per_rem_period
         with_cues = [count for count in counts if count > 0]
-        if timing.max_cues_per_rem_period is None:
+        if maximum is None:
             status = "not_published"
         elif not with_cues:
             status = "no_cues"
-        elif any(count > timing.max_cues_per_rem_period for count in with_cues):
+        elif any(count > maximum for count in block_counts):
             status = "differs"
         else:
             status = "as_published"
         statuses.append(status)
         streams[timing.stream] = {
             "status": status,
-            "published_max": timing.max_cues_per_rem_period,
+            "published_max": maximum,
             "per_period": counts,
+            "per_block": per_block,
             "periods_with_cues": len(with_cues),
-            "periods_over_max": (
-                0
-                if timing.max_cues_per_rem_period is None
-                else sum(1 for count in with_cues if count > timing.max_cues_per_rem_period)
-            ),
+            "blocks_over_max": 0 if maximum is None else sum(1 for count in block_counts if count > maximum),
             "mean_in_periods_with_cues": _round(statistics.mean(with_cues)) if with_cues else None,
             "note": timing.note,
         }
@@ -636,6 +678,10 @@ def _count_check(preset: ProtocolPreset, plays: Sequence[_Play], runs: Sequence[
         "observed": {stream: row["per_period"] for stream, row in streams.items()},
         "published": {stream: row["published_max"] for stream, row in streams.items()},
         "streams": streams,
+        "note": (
+            "the published limit is compared per REM block: a guard pause ends the scheduler's block and the "
+            "next cue of the same REM period starts a new one; per_period counts the whole REM period"
+        ),
     }
 
 
@@ -735,7 +781,7 @@ def _pause_check(
     if night.awakenings_unplaced:
         limitations.append("awakening_markers_unplaced")
     outside = sum(1 for play in plays if play.run is None)
-    after_arousal = _cues_after_guard_pause_in_period(night, plays, records, starts)
+    after_arousal = _cues_after_guard_pause_in_period(plays, _guard_pause_times(night))
     stops_on_arousal = "arousal" in rules.stops_on
     violations = (
         sum(1 for row in guard_rows if not row["honoured"])
@@ -791,13 +837,7 @@ def _pause_check(
     }
 
 
-def _cues_after_guard_pause_in_period(night, plays, records, starts) -> int:
-    pause_times = []
-    for event in night.events:
-        if event.get("event_type") == "pause" and "arousal_guard_pause" in (event.get("reason_codes") or ()):
-            record = emitting_record(records, float(event["timestamp_seconds"]), starts=starts)
-            if record is not None:
-                pause_times.append(record.decision_seconds)
+def _cues_after_guard_pause_in_period(plays: Sequence[_Play], pause_times: Sequence[float]) -> int:
     count = 0
     for play in plays:
         if play.run is None:
@@ -882,7 +922,12 @@ def _duration_check(preset: ProtocolPreset, plays: Sequence[_Play]) -> Dict[str,
     }
 
 
-def _tlr_check(preset: ProtocolPreset, plays: Sequence[_Play], night: _Night) -> Dict[str, object]:
+def _tlr_check(
+    preset: ProtocolPreset,
+    plays: Sequence[_Play],
+    night: _Night,
+    pause_times: Sequence[float],
+) -> Dict[str, object]:
     tlr = [play for play in plays if play.stream == "tlr"]
     plan = night.tlr_plan
     if not tlr and plan is None:
@@ -891,15 +936,19 @@ def _tlr_check(preset: ProtocolPreset, plays: Sequence[_Play], night: _Night) ->
     repetitions = _optional_int(config.get("repetitions"))
     interval = _optional_float(config.get("interval_seconds"))
     rows = []
-    for index, in_run in sorted(_by_run(tlr).items()):
-        logged = [float(play.event["timestamp_seconds"]) for play in in_run]
-        played = [play.decision_seconds for play in in_run]
+    # One row per TLR block: after a guard pause the scheduler plays the block again from
+    # its first cue in the same REM period.
+    for period, block, in_block in _by_block(tlr, pause_times):
+        logged = [float(play.event["timestamp_seconds"]) for play in in_block]
+        played = [play.decision_seconds for play in in_block]
         rows.append(
             {
-                "rem_period": index,
-                "cues": len(in_run),
-                # False when the period ended, or the night did, before the plan's last cue.
-                "complete": None if repetitions is None else len(in_run) == repetitions,
+                "rem_period": period,
+                "block": block,
+                "cues": len(in_block),
+                # False when a guard pause, the end of the period or of the night came
+                # before the plan's last cue.
+                "complete": None if repetitions is None else len(in_block) == repetitions,
                 "planned_intervals_seconds": [_round(b - a) for a, b in zip(logged, logged[1:])],
                 "played_intervals_seconds": [_round(b - a) for a, b in zip(played, played[1:])],
                 "back_to_back": sum(1 for a, b in zip(played, played[1:]) if b - a <= TIME_TOLERANCE_SECONDS),
@@ -918,13 +967,13 @@ def _tlr_check(preset: ProtocolPreset, plays: Sequence[_Play], night: _Night) ->
     timing = preset.timing_for("tlr")
     return {
         "status": status,
-        "observed": {"periods": len(rows), "cues": len(tlr)},
+        "observed": {"periods": len({row["rem_period"] for row in rows}), "blocks": len(rows), "cues": len(tlr)},
         "published": None
         if timing is None
         else {"interval_seconds": list(timing.interval_seconds) if timing.interval_seconds else None,
               "max_cues_per_rem_period": timing.max_cues_per_rem_period},
         "plan": {"repetitions": repetitions, "interval_seconds": interval} if plan is not None else None,
-        "periods": rows,
+        "blocks": rows,
         "note": "planned: the scheduler's logged times; played: the decisions of the epochs that played them",
     }
 

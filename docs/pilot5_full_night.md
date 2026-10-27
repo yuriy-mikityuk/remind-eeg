@@ -237,8 +237,9 @@ Compare the night with its protocol preset:
 .venv/bin/python -m muse_tmr.cli.main protocol-fidelity "$OUTDIR"
 ```
 
-Its `tlr_block` check shows how the TLR cues played against the plan: at a 30 s stride
-cues planned closer than 30 s play back to back.
+Its `tlr_block` check shows how each TLR block played against the plan: at a 30 s stride
+cues planned closer than 30 s play back to back, and after an arousal guard pause the
+scheduler plays the block again in the same REM period.
 
 ## Outputs
 

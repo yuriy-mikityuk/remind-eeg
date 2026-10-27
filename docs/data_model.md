@@ -905,6 +905,7 @@ once saved, the answers by number.
 - `CueSpec`: a cue as published, by stream (`tlr`, `puzzle` or `any`): description,
   duration, frequencies
 - `CueTiming`: a stream's published interval range and limit of cues per REM period
+  (the fidelity report compares the limit per scheduler REM block)
 - `PauseRules`: REM before the first cue and before resuming, pauses by trigger
   (movement, alpha, blink, poor_signal, heart_rate, arousal), pauses that lasted until a
   sign was gone, the pause after an awakening, what stopped cueing
