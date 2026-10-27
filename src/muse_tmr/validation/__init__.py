@@ -1,5 +1,16 @@
 """Validation helpers for M8 pilot workflows."""
 
+from muse_tmr.validation.gate_log import (
+    GATE_LOG_SCHEMA_VERSION,
+    REM_GATE_DECISIONS_FILENAME,
+    GateDecisionRecord,
+    GateOpenRun,
+    gate_decision_record,
+    gate_open_runs,
+    load_gate_open_runs,
+    load_rem_gate_decisions,
+    write_rem_gate_decisions,
+)
 from muse_tmr.validation.pilot1 import (
     DEFAULT_PILOT1_MIN_DURATION_SECONDS,
     DEFAULT_PILOT1_REQUIRED_MODALITIES,
@@ -21,18 +32,24 @@ from muse_tmr.validation.pilot3 import (
     simulate_replay_cue_plan,
 )
 from muse_tmr.validation.pilot4 import (
+    AWAKENING_ATTRIBUTIONS,
     AwakeningEvent,
     Pilot4Criterion,
     Pilot4CueingConfig,
     Pilot4CueingSummary,
     append_awakening_event,
+    load_awakening_events,
     run_pilot4_cueing_night,
 )
 
 __all__ = [
+    "AWAKENING_ATTRIBUTIONS",
     "DEFAULT_PILOT1_MIN_DURATION_SECONDS",
     "DEFAULT_PILOT1_REQUIRED_MODALITIES",
     "DEFAULT_PILOT2_HARD_MAX_VOLUME",
+    "GATE_LOG_SCHEMA_VERSION",
+    "GateDecisionRecord",
+    "GateOpenRun",
     "Pilot1Criterion",
     "Pilot1ValidationReport",
     "Pilot2Criterion",
@@ -44,10 +61,17 @@ __all__ = [
     "Pilot4Criterion",
     "Pilot4CueingConfig",
     "Pilot4CueingSummary",
+    "REM_GATE_DECISIONS_FILENAME",
     "append_awakening_event",
+    "gate_decision_record",
+    "gate_open_runs",
+    "load_awakening_events",
+    "load_gate_open_runs",
+    "load_rem_gate_decisions",
     "run_pilot4_cueing_night",
     "simulate_cue_plan_from_epochs",
     "simulate_replay_cue_plan",
     "validate_pilot2_calibration",
     "validate_pilot1_recording",
+    "write_rem_gate_decisions",
 ]

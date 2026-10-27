@@ -60,6 +60,7 @@ def run_fast_tests():
         'tests.test_pilot2_validation',
         'tests.test_pilot3_replay_simulation',
         'tests.test_pilot4_cueing',
+        'tests.test_cue_arousal',
         'tests.test_first_cue_latency',
         'tests.test_complexity_features',
         'tests.test_meditation_analysis',

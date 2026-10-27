@@ -41,6 +41,8 @@ from muse_tmr.protocol.tmr_scheduler import (
 )
 
 PILOT3_SCHEMA_VERSION = 1
+# What an injected cue is called in its play event (--inject-cues-every-seconds, #227).
+SYNTHETIC_CUE = "synthetic_cue"
 
 
 @dataclass(frozen=True)
@@ -96,11 +98,15 @@ class Pilot3ReplayCueSimulationReport:
     generated_at_utc: str = ""
     schema_version: int = PILOT3_SCHEMA_VERSION
     pilot_id: str = "m8_pilot3_replay_cue_simulation"
+    # play events injected into gate-open epochs to check where the cue arousal scorer
+    # puts its windows; never from the scheduler and never in scheduler_events or cue_plan.
+    injected_cues: Tuple[TmrSchedulerEvent, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "criteria", tuple(self.criteria))
         object.__setattr__(self, "epoch_results", tuple(self.epoch_results))
         object.__setattr__(self, "scheduler_events", tuple(self.scheduler_events))
+        object.__setattr__(self, "injected_cues", tuple(self.injected_cues))
         if not self.generated_at_utc:
             object.__setattr__(self, "generated_at_utc", _utc_now())
 
@@ -131,6 +137,7 @@ class Pilot3ReplayCueSimulationReport:
             "metrics": dict(self.metrics),
             "cue_plan": [event.to_dict() for event in self.cue_plan],
             "scheduler_events": [event.to_dict() for event in self.scheduler_events],
+            "injected_cues": [event.to_dict() for event in self.injected_cues],
             "epochs": [result.to_dict() for result in self.epoch_results],
         }
 
@@ -164,6 +171,7 @@ async def simulate_replay_cue_plan(
     gate_config: Optional[RemGateConfig] = None,
     scheduler_config: Optional[TmrSchedulerConfig] = None,
     arousal_guard_config: Optional[ArousalGuardConfig] = None,
+    inject_cues_every_seconds: Optional[float] = None,
 ) -> Pilot3ReplayCueSimulationReport:
     epoch_config = epoch_config or EpochConfig()
     replay = ReplaySession(
@@ -192,6 +200,7 @@ async def simulate_replay_cue_plan(
         scheduler_config=scheduler_config,
         arousal_guard_config=arousal_guard_config,
         stride_seconds=epoch_config.stride_seconds,
+        inject_cues_every_seconds=inject_cues_every_seconds,
     )
 
 
@@ -208,6 +217,7 @@ def simulate_cue_plan_from_epochs(
     scheduler_config: Optional[TmrSchedulerConfig] = None,
     arousal_guard_config: Optional[ArousalGuardConfig] = None,
     stride_seconds: Optional[float] = None,
+    inject_cues_every_seconds: Optional[float] = None,
 ) -> Pilot3ReplayCueSimulationReport:
     """Run the detector, gate, guard and scheduler over consecutive epochs of one session.
 
@@ -216,10 +226,18 @@ def simulate_cue_plan_from_epochs(
     ``stride_seconds`` is the stride the epochs were built with and counts for the first
     epoch; None takes the gap between the first two epoch starts, or the epoch length
     when there is only one.
+
+    ``inject_cues_every_seconds`` adds a ``synthetic_cue`` play event to a gate-open epoch
+    whenever that many seconds have passed since the last one, decided like a scheduler
+    play at the end of the epoch, so the cue arousal scorer's windows can be checked on a
+    replayed night. They go into ``injected_cues`` only: the scheduler never sees them and
+    the scheduler events stay as they are without them.
     """
     assignment.validate_against_session(session)
     _validate_scheduled_cues(catalog, assignment, cue_library)
     stride_seconds = _resolve_stride_seconds(epochs, stride_seconds)
+    if inject_cues_every_seconds is not None and inject_cues_every_seconds <= 0:
+        raise ValueError("inject_cues_every_seconds must be positive")
 
     detector = detector or HeuristicRemDetector()
     gate = StableRemGate(gate_config or RemGateConfig())
@@ -237,6 +255,8 @@ def simulate_cue_plan_from_epochs(
     first_start_time = epochs[0].start_time if epochs else 0.0
     epoch_results = []
     scheduler_events = []
+    injected_cues = []
+    last_injected_seconds: Optional[float] = None
     rem_tracker = new_rem_event_tracker()
     previous_start_time = None
 
@@ -265,6 +285,16 @@ def simulate_cue_plan_from_epochs(
             guard_decision=guard_decision,
         )
         scheduler_events.extend(events)
+        if inject_cues_every_seconds is not None and gate_decision.gate_open:
+            decision_seconds = timestamp_seconds + epoch.duration_seconds
+            if (
+                last_injected_seconds is None
+                or decision_seconds - last_injected_seconds >= inject_cues_every_seconds - 1e-6
+            ):
+                injected_cues.append(
+                    _injected_cue(timestamp_seconds, decision_seconds, epoch.index, inject_cues_every_seconds)
+                )
+                last_injected_seconds = decision_seconds
         epoch_results.append(
             Pilot3EpochResult(
                 index=epoch.index,
@@ -285,6 +315,8 @@ def simulate_cue_plan_from_epochs(
         assignment=assignment,
         stride_seconds=stride_seconds,
     )
+    metrics["injected_cue_count"] = len(injected_cues)
+    metrics["inject_cues_every_seconds"] = inject_cues_every_seconds
     criteria = _build_criteria(metrics, audio_playback_executed=False)
     return Pilot3ReplayCueSimulationReport(
         recording_input=recording_input,
@@ -295,6 +327,30 @@ def simulate_cue_plan_from_epochs(
         metrics=metrics,
         audio_backend="mock",
         audio_playback_executed=False,
+        injected_cues=tuple(injected_cues),
+    )
+
+
+def _injected_cue(
+    timestamp_seconds: float,
+    decision_seconds: float,
+    epoch_index: int,
+    every_seconds: float,
+) -> TmrSchedulerEvent:
+    """A play event for the cue arousal scorer, tagged so it never reads as a real cue."""
+    return TmrSchedulerEvent(
+        event_type="play",
+        timestamp_seconds=timestamp_seconds,
+        cue_id=SYNTHETIC_CUE,
+        protocol="synthetic",
+        reason_codes=("rem_gate_open", SYNTHETIC_CUE),
+        metadata={
+            SYNTHETIC_CUE: True,
+            "decision_seconds": decision_seconds,
+            "epoch_index": epoch_index,
+            "inject_cues_every_seconds": every_seconds,
+            "audio_backend": "mock",
+        },
     )
 
 
@@ -339,7 +395,7 @@ def _build_metrics(
     scheduler_events: Tuple[TmrSchedulerEvent, ...],
     assignment: PuzzleCueAssignment,
     stride_seconds: float,
-) -> Mapping[str, object]:
+) -> Dict[str, object]:
     event_type_counts: Dict[str, int] = {}
     play_by_puzzle: Dict[str, int] = {}
     for event in scheduler_events:
@@ -368,6 +424,9 @@ def _build_metrics(
     return {
         "epoch_count": len(epochs),
         "stride_seconds": stride_seconds,
+        # The first epoch's start in the frames' clock (Unix seconds), what every
+        # timestamp_seconds here counts from; None without epochs.
+        "first_epoch_start": epochs[0].start_time if epochs else None,
         "first_gate_open_seconds": (
             _decision_seconds(first_gate_open) if first_gate_open is not None else None
         ),

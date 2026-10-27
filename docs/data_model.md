@@ -558,6 +558,33 @@ reason codes cap confidence so single high-probability spikes do not open the ga
 themselves. On an EEG-only preset (`p21`) missing PPG is expected, so the gate is built
 with `optics_capable=False` and missing-cardiac reason codes do not lower confidence.
 
+### Gate log and REM periods
+
+Pilot 4 and 5 append each epoch's decision to `rem_gate_decisions.jsonl` in the output
+directory (#227); the scheduler drops a decision once it has used it. A Pilot 3 report
+keeps the same decisions in `epochs[].gate_decision`. `muse_tmr.validation.gate_log` reads
+both: `load_rem_gate_decisions(source)` takes an output directory, the JSONL file, a
+Pilot 3 report or its dict and returns `GateDecisionRecord`s, `write_rem_gate_decisions()`
+writes or appends them. One line:
+
+| Field | Content |
+|---|---|
+| `schema_version` | 1. |
+| `index` | The epoch index. |
+| `timestamp_seconds`, `duration_seconds` | The epoch's start, seconds from the first epoch's start (the scheduler's time base), and its length. |
+| `decision_seconds` | Their sum: when the decision exists. |
+| `gate_open`, `state` | As in `RemGateDecision`. |
+| `p_rem`, `confidence` | The prediction's probability and the gate's capped confidence. |
+| `stable_seconds`, `cooldown_remaining_seconds`, `reason_codes` | As in `RemGateDecision`. |
+
+`gate_open_runs(records)` and `load_gate_open_runs(source)` give the gate-open runs, the
+REM periods of the cue arousal scorer and of the protocol fidelity report that follows
+it (Initiative 7): consecutive epochs whose decision left the gate open. A
+`GateOpenRun` starts at the first one's `decision_seconds` and ends at the
+`decision_seconds` of the first decision after them that closed the gate (`closed`
+true), or at the last open one's when the log ends open (`closed` false). It is the
+gate's REM, not a scored REM period.
+
 ## Audio Playback
 
 `muse_tmr.audio.audio_player.AudioCuePlayer` is the low-volume playback facade for
@@ -835,6 +862,69 @@ limitations such as `small_n`, `missing_scheduler_events`, or `uncued_cue_play_o
 
 Puzzle protocol files may contain private puzzle content, responses, and night/session
 metadata, so `data/protocol/` is gitignored.
+
+## Pilot Time Base And Awakening Markers
+
+`pilot4_summary.json` and `pilot5_summary.json` are schema 2 since #227. They add
+`first_epoch_start`, the first epoch's start in the frames' clock (Unix seconds, `null`
+without an epoch), which every `timestamp_seconds` of the night counts from;
+`rem_gate_decisions_path`; and `cue_arousal`, the scorer's block below. Schema 1
+summaries have none of the three and still load: the scorer then takes the recording's
+first frame, where the first epoch of a full replay starts, and says
+`time_base_inferred`. A Pilot 3 report's `metrics` add `first_epoch_start` the same way,
+`injected_cue_count` and `inject_cues_every_seconds`, and the report adds
+`injected_cues`: with `--inject-cues-every-seconds N`, a `play` event with
+`cue_id` and reason code `synthetic_cue`, `protocol` `synthetic` and
+`metadata.decision_seconds` for a gate-open epoch whenever N seconds have passed since
+the last one. The scheduler never sees them; `scheduler_events` and `cue_plan` stay as
+they are without them.
+
+An `awakening_events.jsonl` row (`AwakeningEvent`) has `event_type`, `timestamp_utc` and
+`notes`, and since #227 may add `timestamp_seconds` (on the night's time base) and
+`attributed_to_cue` (`yes`, `no` or `unsure`), written only when given;
+`load_awakening_events()` reads old and new rows. `log-pilot4-awakening` takes them as
+`--timestamp-seconds` and `--attributed-to-cue`.
+
+## Cue Arousal Reports
+
+`muse_tmr.reports.cue_arousal` (`score-cue-arousal`, and Pilot 4 and 5 at the end of a
+night) writes three files, by default into the night's directory (#227;
+`docs/safety_outcomes.md` has the definitions). They stay local, like the night.
+
+`cue_arousal_events.jsonl` holds one `CueArousalWindow` a line, cues and controls in time
+order:
+
+| Field | Content |
+|---|---|
+| `kind`, `index` | `cue` or `control`, and its number among them. `paired_index` is the other half of its pair, `null` for an unpaired cue. |
+| `offset_seconds`, `time` | The moment scored, from the first epoch's start and in the recording's clock (Unix seconds). For a cue, the end of the epoch whose decision played it. |
+| `gate_open`, `rem_period_index`, `seconds_since_gate_open`, `rem_period_ends_in_seconds` | The gate state at that moment, its gate-open run, the time since the run began and, when the run closed, the time until it did. |
+| `awakening_in_seconds` | For a cue, the first awakening marker within 120 s after it, else `null`. |
+| `flags` | `alpha`, `beta`, `emg`, `imu`, `hr`: `true` or `false`, `null` where the window could not be scored; `any`. |
+| `values` | `eeg_coverage_baseline`, `eeg_coverage_post`, `eeg_channels_used`, `<band>_baseline_power`, `<band>_post_power` (µV²) and `<band>_rise` for `alpha`, `beta`, `emg`; `imu_coverage`, `movement_events`, `arousal_movement_events`, `peak_motion_level`; `hr_values_baseline`, `hr_values_post`, `hr_values_skipped`, `hr_baseline_bpm`, `hr_post_max_bpm`, `hr_jump_bpm`, `hr_quality`. |
+| `quality_flags` | `eeg_gap`, `eeg_unusable`, `imu_gap`, `ppg_absent`, `hr_unavailable`. |
+| `cue` | A cue's own logs, empty for a control: `cue_id`, `protocol`, `puzzle_id`, `scheduler_timestamp_seconds`, `synthetic_cue`, `guard_action` and `guard_volume_multiplier` from its play event, `puzzle_cue_index`, `tlr_event_index`, `inter_cue_interval_seconds`, `audio_status` and `audio_backend` from its line of `audio_playback.jsonl`, `requested_volume`, `effective_volume`, `volume_multiplier` and their `volume_source` (`audio_playback.jsonl`, `scheduler_event` or `null`), `played` and `audible`. |
+
+`cue_arousal_report.json`, version 1 (`CueArousalReport`, `load_cue_arousal_report()`):
+
+| Field | Content |
+|---|---|
+| `schema_version`, `report`, `recording`, `generated_at_utc` | 1, `cue_arousal`, the directory's name, the time it was written. |
+| `synthetic`, `note` | `true` and "synthetic input, not sleep" when the replayed recording's `metadata.json` says `synthetic: true`. |
+| `outcomes` | `cue_count`, `played_cue_count`, `synthetic_cue_count`, `audible_cue_count`, `scored_cue_count`, `control_count`, `scored_control_count`, `paired_count`; `arousal_proxy_per_cue`, `arousal_proxy_per_control` and `arousal_proxy_difference` by flag; `flag_counts` (flagged and scored per flag, cues and controls); `paired_any`; `movement_events_per_cue`, `movement_events_per_control`; `cue_attributed_awakening_rate`, `awakening_attribution_counts`, `awakening_count`; `rem_period_count`, `cued_rem_period_count`, `rem_periods_with_disruption_fraction`; `rem_termination_within_60s_of_cue_rate`, `rem_termination_within_60s_of_control_rate`. A rate is `null` without a denominator. |
+| `dose_tables` | `effective_volume`, `inter_cue_interval`, `cue_index`: rows of `bin`, `cues`, `any_flagged`, `any_scored`, `any_rate` and `flag_rates`. |
+| `rem_periods` | Each gate-open run with its cues, controls, cues with `any` and whether it was disrupted. |
+| `limitations` | `code`, `severity`, `message`, `metadata`, as in the cued-vs-uncued analysis. Always `thresholds_unfitted`, `arousal_proxy_only`, `software_gain`, `descriptive_only`; the others in `docs/safety_outcomes.md`. |
+| `config` | `CueArousalConfig` with its IMU and PPG configs, and `unfitted_thresholds`. |
+| `metadata` | `first_epoch_start`, `time_base` (`logged` or `inferred_from_first_frame`), `optics_capable`, the replayed recording's name and which input files were read. |
+| `windows` | The lines of `cue_arousal_events.jsonl`. |
+
+`cue_arousal_report.md` has the summary table, the dose tables and the limitations. The
+`cue_arousal` block of a Pilot 4/5 summary has `status` (`scored` or `failed` with
+`error`), the counts and rates of `outcomes` named above, the limitation codes and the
+three paths. `score-cue-arousal` on the night's directory rewrites it with the report it
+writes there (`write_summary_block()`); a schema 1 summary has no block and is left as it
+is.
 
 ## Optics Agreement Reports
 

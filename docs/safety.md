@@ -84,6 +84,17 @@ and only uses real audio when an operator explicitly selects a backend such as
 `system`. Its output directory includes scheduler, arousal, audio, awakening, and
 emergency-stop artifacts for post-run review.
 
+The guard only decides before a cue. What followed each cue is measured afterwards:
+at the end of a Pilot 4 or 5 night, and with `muse-tmr score-cue-arousal` on any night,
+`muse_tmr.reports.cue_arousal` scores the 10 s after every cue against the 20 s before it
+for an alpha, beta or EMG-band rise, an arousal-proxy movement and a heart-rate jump,
+and does the same at a quiet control moment of the same gate state for each cue
+(`docs/safety_outcomes.md`, #227). The night's summary carries the per-cue and
+per-control rates as `cue_arousal`. They are arousal proxies, not scored arousals, from
+UNFITTED thresholds, and the volume they are tabled by is a software gain. Nothing reads
+them during the night: they change no cue, and no validator fails on them. Turning them
+into a volume set-point waits for real nights.
+
 A night that asks for sound does not run silently by accident. `system` and `afplay`
 need macOS `afplay`; when it is not on PATH, `run-pilot4-cueing`,
 `run-pilot5-full-night`, `train-tlr-cue` and `play-test-cue` exit with code 2 and say
