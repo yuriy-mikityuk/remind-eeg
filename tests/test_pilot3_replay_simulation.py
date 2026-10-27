@@ -27,6 +27,7 @@ from muse_tmr.protocol import (
     TmrSchedulerConfig,
     get_protocol_preset,
     load_night_schedule,
+    unseal_night_schedule,
 )
 from muse_tmr.testing import generate_night
 from muse_tmr.validation import pilot3 as pilot3_module
@@ -809,6 +810,57 @@ class TestPilot3Arms(unittest.TestCase):
         code, report, _, text = self._run("tampered", "--night-schedule", str(schedule_path), "--night-id", "night-001")
         self.assertEqual((code, report), (2, None))
         self.assertIn("does not match the commitment", text)
+
+    def test_analyze_nof1_reads_the_reports_of_a_replayed_series(self):
+        """The Pilot 3 reports of a sealed series, as the runner writes them, stand for its
+        nights in analyze-nof1 once the series is unsealed (#228): replay, not sleep."""
+        schedule_path = self.root / "schedules" / "replayed.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli_main([
+                "plan-night-schedule", "--blocks", "1", "--seed", "8", "--output", str(schedule_path),
+            ]), 0)
+        protocol_dir = self.root / "replayed_protocol"
+        protocol_dir.mkdir()
+        (self.root / "replayed_reports").mkdir()
+        summaries = []
+        for night in load_night_schedule(schedule_path).nights:
+            session = NightPuzzleSession(session_id=night.night_id, puzzle_ids=("p1", "p2", "p3", "p4"), puzzle_count=4)
+            assignment = PuzzleCueAssignment(
+                session_id=night.night_id, cued_puzzle_ids=("p1", "p3"), uncued_puzzle_ids=("p2", "p4"), seed=17
+            )
+            session.save(protocol_dir / f"{night.night_id}_puzzles.json")
+            assignment.save(protocol_dir / f"{night.night_id}_assignment.json")
+            code, report, _, _ = self._run(
+                f"replayed_{night.night_id}",
+                "--night-schedule", str(schedule_path), "--night-id", night.night_id,
+                "--session", str(protocol_dir / f"{night.night_id}_puzzles.json"),
+                "--assignment", str(protocol_dir / f"{night.night_id}_assignment.json"),
+            )
+            self.assertEqual(code, 0)
+            summaries += ["--summary", str(self.root / f"replayed_{night.night_id}" / "report.json")]
+        command = [
+            "analyze-nof1", str(schedule_path),
+            "--protocol-dir", str(protocol_dir),
+            "--reports-dir", str(self.root / "replayed_reports"),
+            "--recordings-dir", str(self.root / "replayed_recordings"),
+            *summaries,
+            "--output", str(self.root / "replayed_nof1.json"),
+        ]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli_main(command), 2)  # still sealed
+        unseal_night_schedule(schedule_path)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli_main(command), 0)
+        payload = json.loads((self.root / "replayed_nof1.json").read_text(encoding="utf-8"))
+        for night in payload["nights"]:
+            self.assertEqual((night["summary_kind"], night["summary_arm"]), ("pilot3_report", night["arm"]))
+            self.assertEqual(
+                (night["plays"], night["virtual_plays"]), (0, 2) if night["arm"] == "no_cue" else (2, 0), night["arm"]
+            )
+        codes = [item["code"] for item in payload["limitations"]]
+        self.assertNotIn("arm_mismatch", codes)
+        self.assertIn("missing_night_data", codes)
+        self.assertEqual(payload["schedule"]["seal"], "matches")
 
 
 if __name__ == "__main__":

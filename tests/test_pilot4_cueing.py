@@ -41,6 +41,7 @@ from muse_tmr.protocol import (
     night_arm_from_schedule,
     plan_tlr_block,
     sealed_path_for,
+    unseal_night_schedule,
     write_night_schedule,
 )
 from muse_tmr.cli import main as cli_main
@@ -1636,6 +1637,49 @@ class TestPilot5ArmsFromTheCommandLine(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("does not match the commitment", text)
         self.assertFalse((self.root / "never").exists())
+
+    def test_analyze_nof1_finds_the_summaries_a_sealed_series_writes(self):
+        """analyze-nof1 finds each night's pilot5_summary.json by night ID and commitment
+        and reads its plays, its scored arousal block and its awakening file (#228). A
+        schedule of its own: unsealing the class's would change the other tests' nights."""
+        series = self.root / "nof1_series.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli_main.main([
+                "plan-night-schedule", "--blocks", "1", "--seed", "21", "--output", str(series),
+            ]), 0)
+        schedule = load_night_schedule(series)
+        for night in schedule.nights:
+            code, text = self._run(f"nof1_recordings/{night.night_id}", "--night-schedule", str(series), "--night-id", night.night_id)
+            self.assertEqual(code, 0, text)
+        (self.root / "nof1_empty").mkdir()
+        unseal_night_schedule(series)
+        output = self.root / "nof1.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli_main.main([
+                "analyze-nof1", str(series),
+                "--protocol-dir", str(self.root / "nof1_empty"),
+                "--reports-dir", str(self.root / "nof1_empty"),
+                "--recordings-dir", str(self.root / "nof1_recordings"),
+                "--output", str(output),
+            ]), 0)
+        payload = json.loads(output.read_text(encoding="utf-8"))
+        for night in payload["nights"]:
+            self.assertEqual((night["summary_kind"], night["summary_arm"]), ("pilot_summary", night["arm"]))
+            self.assertEqual(
+                Path(night["inputs"]["summary"]), self.root / "nof1_recordings" / night["night_id"] / "pilot5_summary.json"
+            )
+            self.assertEqual(night["values"]["awakening_markers"], 0.0)
+            if night["arm"] == "no_cue":
+                self.assertEqual(night["plays"], 0)
+                self.assertGreater(night["virtual_plays"], 0)
+            else:
+                self.assertGreater(night["plays"], 0)
+                self.assertEqual(night["virtual_plays"], 0)
+                self.assertEqual(night["inputs"]["arousal_scoring"], "summary")
+                self.assertIsNotNone(night["arousal_proxy_per_cue"]["any"])
+        codes = [item["code"] for item in payload["limitations"]]
+        self.assertNotIn("arm_mismatch", codes)
+        self.assertNotIn("missing_arousal_scoring", codes)
 
 
 def _night_logs(summary):
