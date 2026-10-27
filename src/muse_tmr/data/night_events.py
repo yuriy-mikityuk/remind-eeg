@@ -431,6 +431,15 @@ def notes_for(metadata: Mapping[str, object]) -> Tuple[str, ...]:
     return tuple(notes)
 
 
+def recorded_with_muse(metadata: Mapping[str, object]) -> bool:
+    """Whether the night comes from a Muse S Athena, so that an export may name the
+    headband, its reference and its full scale: every night REMind records or generates,
+    and the imports of the apps that read one. Not a night imported from an EDF, whose
+    device the import does not record (a BOAS headband night is a Bitbrain one)."""
+    block = metadata.get("import")
+    return not (isinstance(block, Mapping) and block.get("format") == "edf")
+
+
 def _first_epoch_start(recording_dir: Path) -> Optional[float]:
     for name in PILOT_SUMMARY_FILENAMES:
         path = recording_dir / name

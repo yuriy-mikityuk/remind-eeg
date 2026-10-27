@@ -57,6 +57,7 @@ from muse_tmr.data.night_events import (
     ensure_exportable,
     load_metadata,
     notes_for,
+    recorded_with_muse,
     stage_label,
 )
 from muse_tmr.data.sample_types import EEGSample, IMUSample, MuseFrame, PPGSample
@@ -269,12 +270,15 @@ def write_edf_plus(
     notes: Sequence[str] = (),
     synthetic: bool = False,
     streams: Sequence[str] = EXPORT_STREAMS,
+    muse_headband: bool = True,
 ) -> EdfExportResult:
     """Write ``recording`` as one EDF+C file (see the module docstring).
 
     ``annotations`` are placed by their host time on the EEG sample clock and clamped to
-    the file's span. ``notes`` go in as annotations at 0 s. ValueError for a
-    ``discontinuous`` recording: edfio writes EDF+C only.
+    the file's span. ``notes`` go in as annotations at 0 s. Without ``muse_headband``,
+    for a night whose device is not known (``night_events.recorded_with_muse()``), no
+    transducer field names the headband and the equipment code is ``X``. ValueError for
+    a ``discontinuous`` recording: edfio writes EDF+C only.
     """
     edfio = _edfio()
     if recording.config.gap_policy != "zero_fill":
@@ -322,11 +326,11 @@ def write_edf_plus(
                 encoded.digital,
                 stream_rate,
                 label=str(label)[:16],
-                transducer_type=EEG_TRANSDUCER if name == "eeg" else f"Muse S Athena {name}",
+                transducer_type=_transducer(name) if muse_headband else "",
                 physical_dimension=_STREAM_UNITS[name],
                 physical_range=encoded.physical_range,
                 digital_range=encoded.digital_range,
-                prefiltering="unknown (headband firmware)",
+                prefiltering="unknown (headband firmware)" if muse_headband else "unknown",
             )
             signals.append(signal)
             infos.append(
@@ -347,7 +351,13 @@ def write_edf_plus(
     gap_count = sum(1 for _, _, text in timed if text == GAP_TEXT)
     start_date, start_time, start_moment = _start_parts(recording.t0)
     patient = edfio.Patient(additional=SYNTHETIC_SUBFIELDS) if synthetic else edfio.Patient()
-    recording_field = _recording_field(edfio, start_date, eeg.measured_rate_hz, recording.config.gap_policy)
+    recording_field = _recording_field(
+        edfio,
+        start_date,
+        eeg.measured_rate_hz,
+        recording.config.gap_policy,
+        EQUIPMENT_CODE if muse_headband else "X",
+    )
     edf = edfio.Edf(
         signals,
         patient=patient,
@@ -378,11 +388,15 @@ def write_edf_plus(
     )
 
 
-def _recording_field(edfio, start_date: dt.date, measured_rate_hz: float, gap_policy: str):
+def _transducer(stream: str) -> str:
+    return EEG_TRANSDUCER if stream == "eeg" else f"Muse S Athena {stream}"
+
+
+def _recording_field(edfio, start_date: dt.date, measured_rate_hz: float, gap_policy: str, equipment_code: str):
     subfields = list(_recording_subfields(measured_rate_hz, gap_policy))
     while True:
         try:
-            return edfio.Recording(startdate=start_date, equipment_code=EQUIPMENT_CODE, additional=tuple(subfields))
+            return edfio.Recording(startdate=start_date, equipment_code=equipment_code, additional=tuple(subfields))
         except ValueError:
             if not subfields:
                 raise
@@ -497,6 +511,7 @@ def export_edf(
         annotations=annotations,
         notes=notes_for(metadata),
         synthetic=metadata.get("synthetic") is True,
+        muse_headband=recorded_with_muse(metadata),
     )
 
 

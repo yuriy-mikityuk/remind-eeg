@@ -13,9 +13,11 @@ import unittest
 from pathlib import Path
 
 from muse_tmr.data.bids_export import EEG_REFERENCE, export_bids
-from muse_tmr.data.edf_io import edf_available
-from muse_tmr.data.night_events import SealedNightError, read_hypnogram
+from muse_tmr.data.edf_io import edf_available, resolve_channel_map
+from muse_tmr.data.import_recording import import_recording
+from muse_tmr.data.night_events import SealedNightError, read_hypnogram, recorded_with_muse
 from tests.exchange_synthetic import labelled_night
+from tests.test_edf_io import write_boas_like_edf
 
 SKIP_REASON = 'needs the [edf] extra: pip install "remind-eeg[edf]"'
 
@@ -129,6 +131,62 @@ class TestBidsExport(unittest.TestCase):
         with self.assertRaises(SealedNightError):
             export_bids(night, root)
         self.assertFalse(root.exists())
+
+
+@unittest.skipUnless(edf_available(), SKIP_REASON)
+class TestAnImportedEdf(unittest.TestCase):
+    """A BOAS-shaped headband EDF (made-up values) imported and exported again: the import
+    does not record the device, so the export names none, where the real file's sidecar
+    says Bitbrain IKON Sleep against the left mastoid."""
+
+    @classmethod
+    def setUpClass(cls):
+        import edfio
+
+        cls.edfio = edfio
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name)
+        source = root / "sub-3_task-Sleep_acq-headband_eeg.edf"
+        write_boas_like_edf(source)
+        cls.imported = root / "imported"
+        import_recording(source, "edf", cls.imported, channel_map=resolve_channel_map("boas-headband"))
+        cls.root = root / "bids"
+        export_bids(cls.imported, cls.root, subject="b03", session="boas")
+        cls.eeg_dir = cls.root / "sub-b03" / "ses-boas" / "eeg"
+        cls.stem = "sub-b03_ses-boas_task-sleep"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_the_sidecar_names_no_device(self):
+        sidecar = json.loads((self.eeg_dir / f"{self.stem}_eeg.json").read_text())
+
+        for key in ("EEGReference", "Manufacturer", "ManufacturersModelName", "CapManufacturer",
+                    "CapManufacturersModelName", "EEGPlacementScheme"):
+            self.assertEqual(sidecar[key], "n/a", key)
+        self.assertNotIn("EEGFullScale", sidecar)
+        self.assertIn("imported: edf", sidecar["TaskDescription"])
+        self.assertEqual((sidecar["EEGChannelCount"], sidecar["MISCChannelCount"]), (2, 1))
+
+    def test_channels_and_edf_name_no_device(self):
+        rows = _tsv(self.eeg_dir / f"{self.stem}_channels.tsv")
+        self.assertEqual([row["name"] for row in rows][:2], ["AF7", "AF8"])
+        self.assertFalse([row for row in rows if "Muse" in row["description"] or "headband" in row["description"]])
+        pulse, = [row for row in rows if row["name"] == "HB_PULSE"]
+        self.assertEqual((pulse["type"], pulse["units"]), ("MISC", "n/a"))
+
+        edf = self.edfio.read_edf(self.eeg_dir / f"{self.stem}_eeg.edf", lazy_load_data=False)
+        self.assertNotIn("Muse", edf.local_recording_identification)
+        self.assertEqual(edf.recording.equipment_code, "X")
+        self.assertEqual({signal.transducer_type for signal in edf.signals}, {""})
+
+    def test_only_a_night_imported_from_an_edf_loses_the_headband(self):
+        cases = (({}, True), ({"synthetic": True}, True), ({"import": {"format": "muselsl-csv"}}, True),
+                 ({"import": {"format": "decoded-frames"}}, True), ({"import": {"format": "edf"}}, False))
+        for metadata, expected in cases:
+            with self.subTest(metadata=metadata):
+                self.assertEqual(recorded_with_muse(metadata), expected)
 
 
 if __name__ == "__main__":

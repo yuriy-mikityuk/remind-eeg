@@ -6,7 +6,9 @@
 - ``_channels.tsv`` with each signal's type (EEG, ACCEL, GYRO, MISC for optics), unit
   and rate;
 - ``_eeg.json`` with the required fields, ``EEGReference`` "Fpz (vendor-stated,
-  unverified)" and the 1450 uV full scale marked vendor-stated and unverified;
+  unverified)" and the 1450 uV full scale marked vendor-stated and unverified; for a
+  night imported from an EDF, whose device the import does not record, the reference,
+  manufacturer, model, cap and placement are "n/a" and there is no full scale;
 - ``_events.tsv`` with the cue, gate, guard, audio and recording events and the zero
   fills, and ``_acq-scoring_events.tsv`` with the stages, the second events file sleep
   datasets that pass the validator use, since BIDS has no sleep scoring file yet;
@@ -43,6 +45,7 @@ from muse_tmr.data.night_events import (
     NightAnnotation,
     ensure_exportable,
     notes_for,
+    recorded_with_muse,
     stage_label,
 )
 
@@ -62,6 +65,23 @@ _DESCRIPTIONS = {
     "gyro": "headband gyroscope",
     "optics": "headband optics, raw normalised counts",
 }
+# A night imported from an EDF: its values are what the import made of the file's, and
+# nothing is known of the device.
+_IMPORTED_EDF_DESCRIPTIONS = {
+    "eeg": "EEG imported from an EDF; device and reference not recorded",
+    "accel": "accelerometer imported from an EDF",
+    "gyro": "gyroscope imported from an EDF",
+    "optics": "pulse or optics channel imported from an EDF, in that file's unit",
+}
+_MUSE_DEVICE = {
+    "EEGReference": EEG_REFERENCE,
+    "Manufacturer": "InteraXon",
+    "ManufacturersModelName": "Muse S Athena",
+    "CapManufacturer": "InteraXon",
+    "CapManufacturersModelName": "Muse S Athena headband",
+    "EEGPlacementScheme": "10-20 positions TP9, AF7, AF8 and TP10 (vendor-stated)",
+}
+_UNKNOWN_DEVICE = {key: "n/a" for key in _MUSE_DEVICE}
 _EVENT_TYPES = {
     "recording": "A recorder or pilot runner event from events.jsonl.",
     "scheduler_play": "A cue the REM-gated scheduler played (scheduler_events.jsonl).",
@@ -167,6 +187,7 @@ def export_bids(
     eeg_dir.mkdir(parents=True, exist_ok=True)
     stem = f"sub-{subject}_ses-{session}_task-{task}"
     notes = notes_for(metadata)
+    muse = recorded_with_muse(metadata)
 
     edf_result = write_edf_plus(
         recording,
@@ -174,9 +195,10 @@ def export_bids(
         annotations=annotations,
         notes=notes,
         synthetic=synthetic,
+        muse_headband=muse,
     )
     files: List[Path] = [eeg_dir / f"{stem}_eeg.edf"]
-    files.append(_write_channels(eeg_dir / f"{stem}_channels.tsv", recording, edf_result))
+    files.append(_write_channels(eeg_dir / f"{stem}_channels.tsv", edf_result, muse))
     files.append(
         _write_sidecar(eeg_dir / f"{stem}_eeg.json", recording, edf_result, metadata, task, power_line_frequency, notes)
     )
@@ -213,7 +235,8 @@ def _check_root(root: Path, synthetic: bool) -> None:
         raise ValueError(f"{root} holds a {kind} dataset; a synthetic night and a recorded one never share a root")
 
 
-def _write_channels(path: Path, recording: ContinuousRecording, edf_result: EdfExportResult) -> Path:
+def _write_channels(path: Path, edf_result: EdfExportResult, muse: bool) -> Path:
+    descriptions = _DESCRIPTIONS if muse else _IMPORTED_EDF_DESCRIPTIONS
     rows = []
     for signal in edf_result.signals:
         rows.append(
@@ -222,7 +245,7 @@ def _write_channels(path: Path, recording: ContinuousRecording, edf_result: EdfE
                 _CHANNEL_TYPES[signal.stream],
                 _CHANNEL_UNITS[signal.stream],
                 signal.rate_hz,
-                _DESCRIPTIONS[signal.stream],
+                descriptions[signal.stream],
                 "good",
             )
         )
@@ -248,18 +271,20 @@ def _write_sidecar(
     elif imported:
         description = f"A night imported into REMind: {imported.get('banner')}."
     eeg = recording.eeg
+    muse = recorded_with_muse(metadata)
+    device = _MUSE_DEVICE if muse else _UNKNOWN_DEVICE
     payload: Dict[str, object] = {
         "TaskName": task,
         "TaskDescription": description,
-        "EEGReference": EEG_REFERENCE,
+        "EEGReference": device["EEGReference"],
         "SamplingFrequency": eeg.nominal_rate_hz,
         "PowerLineFrequency": power_line_frequency if power_line_frequency is not None else "n/a",
         "SoftwareFilters": "n/a",
         "HardwareFilters": "n/a",
-        "Manufacturer": "InteraXon",
-        "ManufacturersModelName": "Muse S Athena",
-        "CapManufacturer": "InteraXon",
-        "CapManufacturersModelName": "Muse S Athena headband",
+        "Manufacturer": device["Manufacturer"],
+        "ManufacturersModelName": device["ManufacturersModelName"],
+        "CapManufacturer": device["CapManufacturer"],
+        "CapManufacturersModelName": device["CapManufacturersModelName"],
         "SoftwareVersions": f"REMind {__version__}",
         "EEGChannelCount": types.count("EEG"),
         "ECGChannelCount": 0,
@@ -269,10 +294,11 @@ def _write_sidecar(
         "TriggerChannelCount": 0,
         "RecordingDuration": edf_result.duration_seconds,
         "RecordingType": "continuous",
-        "EEGPlacementScheme": "10-20 positions TP9, AF7, AF8 and TP10 (vendor-stated)",
+        "EEGPlacementScheme": device["EEGPlacementScheme"],
         "EEGGround": "n/a",
-        # REMind's own keys; BIDS allows keys it does not define in a sidecar.
-        "EEGFullScale": FULL_SCALE_NOTE,
+        # REMind's own keys; BIDS allows keys it does not define in a sidecar. The full
+        # scale is the headband's, unknown for a night imported from an EDF.
+        **({"EEGFullScale": FULL_SCALE_NOTE} if muse else {}),
         "MeasuredSamplingFrequency": eeg.measured_rate_hz if math.isfinite(eeg.measured_rate_hz) else None,
         "GapPolicy": (
             f"{recording.config.gap_policy}: samples that never arrived are zeros in the EDF; a frame more than "
@@ -363,12 +389,14 @@ def _write_root(root: Path, subject: str, synthetic: bool, metadata: Mapping[str
         lines = [
             "# REMind nights",
             "",
-            "Nights recorded with a Muse S Athena headband and exported by `muse-tmr export-bids`.",
-            "Each session has the EDF+, its channels, the night's cue, gate and guard events and,",
-            "where there is one, a hypnogram in the `acq-scoring` events file.",
+            "Nights exported by `muse-tmr export-bids`. Each session has the EDF+, its channels,",
+            "the night's cue, gate and guard events and, where there is one, a hypnogram in the",
+            "`acq-scoring` events file.",
             "",
-            "The 1450 uV full scale of the EEG is vendor-stated and unverified, and so is its",
-            "reference near Fpz. Subject IDs are pseudonyms chosen at export.",
+            "A session recorded with a Muse S Athena headband says so in its `_eeg.json`, with the",
+            "1450 uV full scale of the EEG and its reference near Fpz, both vendor-stated and",
+            "unverified. A night imported from an EDF has n/a there: the import does not record",
+            "its device. Subject IDs are pseudonyms chosen at export.",
         ]
         if synthetic:
             lines[0] = "# REMind synthetic nights"
