@@ -22,9 +22,11 @@ canonical JSON (``committed_payload()``: sorted keys, no spaces) followed by the
 can be shared before the series without giving an arm away, and ``unseal()`` checks the
 schedule against it before it records ``unsealed_at_utc``.
 
-Sealing hides the arms from the tools, not from whoever opens the file: at n = 1 the
-experimenter cannot be blind. The runners read a night's arm with ``arm_for()`` and never
-print it, and the app's Morning tab never reads a schedule.
+The runners read a night's arm with ``arm_for()`` and never print it, and the app's
+Morning tab never reads a schedule. A night's summary, logs and reports do name it, so
+the runbook (docs/nof1_protocol.md) keeps them closed until the series is unsealed:
+nothing hides the arms from whoever opens those files, and at n = 1 the experimenter
+cannot be blind.
 """
 
 from __future__ import annotations

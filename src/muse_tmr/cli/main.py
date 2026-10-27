@@ -40,7 +40,10 @@ NIGHT_ARM_CHOICES = ("cue", "sham", "no_cue")
 # The protocol roles of a cue: muse_tmr.audio.cue_library.CUE_PROTOCOLS.
 CUE_PROTOCOL_CHOICES = ("puzzle", "tlr", "test", "generic", "sham")
 # What a runner prints in place of its cue counts on a night with an arm.
-BLINDED_NOTE = "blinded night: plays, counts and volumes are in the summary; open it after the morning forms"
+BLINDED_NOTE = (
+    "blinded night: plays, counts and volumes are in the summary, which names the arm; "
+    "in a sealed series leave it closed until unseal-night-schedule has run"
+)
 ALLOW_DRY_RUN_HELP = "Run silently on dry-run when afplay is missing, instead of exiting with code 2."
 # `muse-tmr status` prints it and `muse-tmr --help` ends with it (#232).
 BANNER = f"REMind {__version__}: n = 1 research software, not a medical device"

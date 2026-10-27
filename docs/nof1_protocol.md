@@ -82,10 +82,15 @@ every arm, and so is the night's `protocol` block. A sham play keeps the length 
 volume hint of the cue it stands in for and plays through the same `AudioCuePlayer`,
 backend and calibrated cap; a no-cue night sends nothing to the player.
 
-Do not open the night's summary or logs before the morning forms are saved: they name the
-arm (`arm` in `pilot5_summary.json`, `night_arm` in `metadata.json`, `arm` on each event
-of a sham or no-cue night and each audio line of a sham night, and reasons such as
-`sham_arm`).
+Leave everything the night wrote closed until the series is unsealed (section 5), not
+just until the morning: `pilot5_summary.json`, `metadata.json`, the logs, and the
+`cue_arousal_report.*` and `protocol_fidelity.*` files. They name the arm (`arm`,
+`night_arm`, reasons such as `sham_arm`) and the cued puzzles (`puzzle_id` on every play).
+Every block holds one night of each arm, so the arms of the nights already run narrow
+down the ones still to come, and a night's cued puzzles would unblind its delayed
+retests. The runner's last line names no arm and says whether the night passed. If
+something makes you open a night's files early, note when: the nights after that are not
+blind.
 
 ## 3. The morning
 
@@ -132,7 +137,7 @@ In the Morning tab pick "A week later" or "Ten days later" above the retest; it 
 
 ## 5. Unsealing
 
-After the last morning form and the last delayed retest:
+After the last delayed retest of the last night:
 
 ```bash
 muse-tmr unseal-night-schedule data/protocol/night_schedules/<schedule-id>.json
@@ -146,7 +151,9 @@ unsealing records it in its `metadata.json` (`night_arm.schedule_unsealed_at_utc
 `protocol-fidelity` and `score-cue-arousal` run on every arm. On a sham night they read
 the sham plays like any others and add `sham_arm`; on a no-cue night they find no cues,
 say `no_cue_arm`, and the fidelity summary counts the night's `virtual_plays`. Both
-print the arm, so run them after the morning forms.
+print the arm, so run them on the nights of a series only after unsealing. That holds for
+scoring a night again after `log-pilot4-awakening` too: log the awakenings in the
+morning, which prints no arm, and score them after unsealing.
 
 What does not exist yet (#228): a per-arm analysis of a series, blind coding of dream
 incorporation by a second rater, and a preregistration template. `analyze-cued-uncued`
