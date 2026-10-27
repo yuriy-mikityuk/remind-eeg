@@ -95,6 +95,7 @@ class RegistryTest(unittest.TestCase):
              "--cue-library", "l", "--output", "o.json"],
             ["plan-tlr-block", "cues.json", "--output", "plan.json"],
             ["create-tlr-cue", "--output", "cue.json"],
+            ["create-cue-library", "--output", "cues.json"],
             ["generate-puzzle-session", "catalog.json", "--output", "s.json", "--session-id", "n"],
             ["assign-puzzle-cues", "s.json", "--output", "a.json", "--seed", "1"],
         ]
@@ -356,6 +357,34 @@ class CliLoaderTest(unittest.TestCase):
                 "scheduler_cooldown_seconds": 60.0,
             },
         )
+
+    def test_the_cue_library_takes_the_presets_tlr_cue(self):
+        """One library for training, the plan and the night holds the preset's TLR tone (#264)."""
+        from muse_tmr.audio import default_cue_library, validate_cue_library_file
+
+        starter = default_cue_library().to_dict()
+        with tempfile.TemporaryDirectory() as tmp:
+            library_path, tlr_path = Path(tmp) / "starter.json", Path(tmp) / "tlr.json"
+            self._run("create-cue-library", "--output", str(library_path))
+            self.assertEqual(json.loads(library_path.read_text(encoding="utf-8")), starter)
+            for preset in runnable_presets():
+                with self.subTest(preset=preset.name):
+                    output = self._run("create-cue-library", "--output", str(library_path), "--protocol-preset", preset.name)
+                    self._run("create-tlr-cue", "--output", str(tlr_path), "--protocol-preset", preset.name)
+                    library = json.loads(library_path.read_text(encoding="utf-8"))
+                    tlr_cue = json.loads(tlr_path.read_text(encoding="utf-8"))["cues"][0]
+                    # The cue create-tlr-cue makes, in the starter's place; the other cues stay.
+                    self.assertEqual([cue["cue_id"] for cue in library["cues"]], [cue["cue_id"] for cue in starter["cues"]])
+                    by_id = {cue["cue_id"]: cue for cue in library["cues"]}
+                    self.assertEqual(by_id.pop("tlr_soft_tone"), tlr_cue)
+                    self.assertEqual(by_id, {cue["cue_id"]: cue for cue in starter["cues"] if cue["cue_id"] != "tlr_soft_tone"})
+                    self.assertEqual(
+                        (tlr_cue["frequency_hz"], tlr_cue["duration_seconds"], tlr_cue["volume_hint"]),
+                        (preset.runner.tlr_tone_frequency_hz, preset.runner.tlr_tone_duration_seconds, 0.05),
+                    )
+                    self.assertEqual(tlr_cue["metadata"]["protocol"]["name"], preset.name)
+                    self.assertIn(f"protocol={preset.name}", output)
+                    self.assertTrue(validate_cue_library_file(library_path).is_valid)
 
     def test_without_a_preset_the_tlr_files_are_todays(self):
         with tempfile.TemporaryDirectory() as tmp:
