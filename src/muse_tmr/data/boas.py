@@ -279,7 +279,7 @@ def load_boas_hypnogram(night: Union[BoasNight, Path]) -> Tuple[BoasEpochLabel, 
     the REM annotation labels: 0 ``wake``, 1 to 3 ``nrem``, 4 ``probable_rem`` and 8, -2
     or a missing value ``unknown``. ValueError when the headband events file lists other
     onsets or another number of epochs, or when the epochs do not start at 0 s and follow
-    one another without a gap.
+    one another without a gap, 30 s each.
     """
     night = night if isinstance(night, BoasNight) else boas_night(Path(night))
     psg = _read_tsv(night.psg_events)
@@ -295,11 +295,15 @@ def load_boas_hypnogram(night: Union[BoasNight, Path]) -> Tuple[BoasEpochLabel, 
     for index, row in enumerate(psg):
         onset = _float(row.get("onset"), night.psg_events, index)
         duration = _float(row.get("duration"), night.psg_events, index)
-        if abs(onset - expected_onset) > _TOLERANCE_SECONDS or duration <= 0:
+        if abs(onset - expected_onset) > _TOLERANCE_SECONDS:
             raise ValueError(
                 f"{night.recording_id}: PSG epoch {index} starts at {onset} s, not {expected_onset} s; "
                 "its epochs must start at 0 s and follow one another"
             )
+        # The README says every epoch is 30 s, and the detector's epoch k is paired with
+        # the one at 30 k s.
+        if abs(duration - BOAS_EPOCH_SECONDS) > _TOLERANCE_SECONDS:
+            raise ValueError(f"{night.recording_id}: PSG epoch {index} lasts {duration} s, not {BOAS_EPOCH_SECONDS:g} s")
         reference_ai = None
         if headband is not None:
             other = headband[index]

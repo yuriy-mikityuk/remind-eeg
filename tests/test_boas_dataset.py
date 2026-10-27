@@ -149,6 +149,16 @@ class HypnogramTest(TemporaryLayout):
         with self.assertRaisesRegex(ValueError, "follow one another"):
             load_boas_hypnogram(self.root / "sub-3")
 
+    def test_epochs_must_be_30_s(self):
+        for name in ("psg", "headband"):
+            path = self.root / "sub-3" / "eeg" / f"sub-3_task-Sleep_acq-{name}_events.tsv"
+            lines = _events(path)
+            last = lines[-1].split("\t")
+            last[1] = "20"
+            path.write_text("\n".join(lines[:-1] + ["\t".join(last)]) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "lasts 20.0 s, not 30 s"):
+            load_boas_hypnogram(self.root / "sub-3")
+
     def test_the_psg_events_need_stage_hum(self):
         path = self.root / "sub-3" / "eeg" / "sub-3_task-Sleep_acq-psg_events.tsv"
         path.write_text(path.read_text(encoding="utf-8").replace("stage_hum", "stage_x"), encoding="utf-8")
