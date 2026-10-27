@@ -158,9 +158,10 @@ The night then runs the arm the sealed schedule gives it: `cue` as above, `sham`
 untrained sound in place of every TLR and puzzle cue, or `no_cue` with nothing played.
 The command never prints the arm. Leave `pilot5_summary.json`, `metadata.json`, the logs
 and the `cue_arousal_report.*` and `protocol_fidelity.*` files closed, and do not run
-`score-cue-arousal` or `protocol-fidelity` on the night, until the last delayed retest of
-the series is saved and `unseal-night-schedule` has run. They name the arm, and the arms
-of earlier nights narrow down the later ones (`docs/nof1_protocol.md`). On a no-cue night
+`score-cue-arousal`, `protocol-fidelity` or `analyze-cued-uncued --scheduler-events` on
+the night, until the last delayed retest of the series is saved and
+`unseal-night-schedule` has run. They name the arm, and the arms of earlier nights
+narrow down the later ones (`docs/nof1_protocol.md`). On a no-cue night
 `tlr_block_played` passes on the block's virtual plays.
 
 ## Emergency Stop
@@ -273,7 +274,9 @@ a rater with `export-blind-coding` and record the codes with
 prefers them to the dream report's own links.
 
 Generate analysis (add `--retest` for each delayed wave and `--coding` for each rater's
-sheet once they exist):
+sheet once they exist). On a night of a sealed series run it only after
+`unseal-night-schedule`: with `--scheduler-events` it prints the arm and writes it into
+the report.
 
 ```bash
 .venv/bin/python -m muse_tmr.cli.main analyze-cued-uncued \

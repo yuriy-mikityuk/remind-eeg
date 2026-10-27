@@ -133,11 +133,12 @@ of one night per arm in a counterbalanced order, washout nights between them, an
 companion file with only the commitment, the sha256 of the schedule's canonical JSON and
 a random salt. The runners read a night's arm from it and never print it, and the
 Morning tab never reads it. A night's summary, logs and reports do name the arm, and so
-do `protocol-fidelity` and `score-cue-arousal`, so the runbook keeps them closed until
-the series is unsealed. Nothing hides the arms from whoever opens those files: at n = 1
-the experimenter cannot be blind. Runbook: [`nof1_protocol.md`](nof1_protocol.md), which
-also covers the preregistration (`prereg-template`), blind coding of the dream reports
-and the per-arm analysis (`analyze-nof1`).
+do `protocol-fidelity`, `score-cue-arousal` and `analyze-cued-uncued` with
+`--scheduler-events`, so the runbook keeps them closed until the series is unsealed.
+Nothing hides the arms from whoever opens those files: at n = 1 the experimenter cannot
+be blind. Runbook: [`nof1_protocol.md`](nof1_protocol.md), which also covers the
+preregistration (`prereg-template`), blind coding of the dream reports and the per-arm
+analysis (`analyze-nof1`).
 
 ## Arousal Guard
 

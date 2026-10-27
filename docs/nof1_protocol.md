@@ -116,10 +116,11 @@ blind.
 
 ## 3. The morning
 
-Use the app's Morning tab or the CLI as in Pilot 5. The page never learns which puzzles
-were cued or which arm the night had: it reads no schedule and no night log, and the sound
-check plays every puzzle's sound in an order made from the session ID alone, the same in
-every arm.
+Use the app's Morning tab or the CLI as in Pilot 5, but leave Pilot 5's
+`analyze-cued-uncued` step until the series is unsealed (section 6). The page never
+learns which puzzles were cued or which arm the night had: it reads no schedule and no
+night log, and the sound check plays every puzzle's sound in an order made from the
+session ID alone, the same in every arm.
 
 The dream report (schema 2) asks, besides lucidity and recall:
 
