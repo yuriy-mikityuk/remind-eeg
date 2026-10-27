@@ -512,6 +512,17 @@ codes, normalized feature scores, and raw feature values. The default label is
 `load_rem_annotations()` validates labels from CSV or JSON. `rem_training_rows()`
 returns training-ready rows and excludes `unknown` labels by default.
 
+Labels from outside come in on the same four values (#226). The BOAS dataset (OpenNeuro
+ds005555) codes its PSG consensus `stage_hum` 0 W, 1 to 3 N1 to N3, 4 REM, 8 PSG
+disconnection and −2 artefact; `muse_tmr.data.boas.load_boas_hypnogram()` maps 0 to
+`wake`, 1 to 3 to `nrem`, 4 to `probable_rem` and 8, −2 or a missing value to `unknown`,
+and returns one `BoasEpochLabel` per 30 s epoch with `stage_hum`, the label,
+`reference_stage_ai` (the headband events file's `stage_ai`) and `psg_stage_ai`. These
+are plain rows: `muse_tmr.annotations` imports the models, which `muse_tmr.data` must
+not. `validate-external` joins them to the detector's epochs, in `epochs.csv` of each
+night with the annotation columns `p_rem`, `feature_score_*` and `feature_value_*`
+(`docs/validation_external.md`).
+
 ## Personal REM Models
 
 `muse_tmr.models.ml_rem_detector` trains a personal REM classifier from labeled
@@ -530,6 +541,21 @@ versioned JSON artifact with:
 `probable_rem` is the positive class. `wake` and `nrem` are negative classes.
 `unknown` rows are skipped. A loaded `PersonalRemModel` returns `RemPrediction` with
 `source="personal"` and remains separate from cue playback decisions.
+
+The artifact is version 2 since #226 and adds `training_data`: the annotation file's
+name and sha256 and the recordings it holds (directory names), or for the model
+`validate-external` trains the dataset, its version and DOI, the sha256 of the splits,
+the fold, the label source and the recordings and participants of the fit fold. Version 1
+artifacts still load, with `training_data` None; another version is refused.
+`train_personal_rem_classifier(init=...)` (`train-rem-classifier --init`) warm-starts from
+an artifact with the same `feature_names` in the same order: its coefficients and bias,
+carried over to the new data's feature means and scales so that the start predicts what
+it predicts, are where the descent starts and what the L2 penalty pulls toward, and
+`training_data.init` records its version, training time and `training_data`.
+`EEG_PERSONAL_REM_FEATURES` are the features of an EEG-only epoch, which the BOAS model
+uses: `p_rem`, the scores of `low_delta_power`, `theta_alpha_ratio` and
+`rem_event_density`, the values behind them and `eeg_coverage`. Each comes from its own
+epoch and the REM-event tracker's past, so the model never reads a later epoch.
 
 ## REM Stable Gate
 
@@ -569,6 +595,18 @@ detector's earlier weights, before the eye-movement proxy went to 0; re-grid pen
 (#116). Kappa and epoch counts are only in PR #115 / #116 (see [`numbers.md`](numbers.md)).
 The optics pair is provisional until a night with REM on an optics preset is recorded
 (#116).
+
+`boas_v1` is a named threshold set beside the presets' pairs (`presets.named_gate_thresholds`,
+#226). It is opt-in, through `validate-external --gate-thresholds`, and no live command
+reads it; `preset_gate_thresholds()` never returns it, since a preset also says whether
+optics stream. It holds no values until the BOAS run: until then `validate-external`
+takes the pair its own fit step wrote (`fit.json`), the one of the grid with the highest
+pooled κ on the fit fold. When `presets.py` holds it, it carries the sha256 of the
+`splits.json` it was fitted on, and `validate-external` refuses it on other splits.
+`rem_metrics.simulate_gate(..., imu_capable=False)` runs the gate on input whose IMU is
+left out by design, as the BOAS harness feeds the detector the headband EEG alone: the
+missing-IMU reason codes then do not cap confidence, as `optics_capable=False` does for
+the cardiac ones.
 
 Motion/arousal reason codes close the gate and start cooldown. Low feature-support
 reason codes cap confidence so single high-probability spikes do not open the gate by

@@ -42,7 +42,7 @@ The pictures show the app on example data.
 - **Standard data exchange:** `export-edf` and `export-bids` write a night as EDF+ or EEG-BIDS with its cue, gate, guard and stage events as annotations, `muse_tmr.data.mne_export.to_raw()` hands it to MNE, and `import` reads nights from muse-lsl, OpenMuse, BrainFlow and Mind Monitor CSVs, EDF files such as the BOAS headband nights, and `decoded_frames.jsonl`, for reports and replay simulation only ([`docs/formats.md`](docs/formats.md), [`docs/import.md`](docs/import.md))
 - **Local app, REMind:** live contact check per sensor, session, night, guided-meditation and calibration recordings that start once the contact holds and run as their own process, a recordings page with the reports and EEG numbers, and auto-update from `main`
 - **Reproducible validation:** five staged pilots, each with a runbook and an automated validator
-- **Engineering hygiene:** 59 CLI commands, pytest suite with CI on GitHub Actions, and a privacy-aware gitignore — volume calibration, puzzle content, and dream reports never leave the machine
+- **Engineering hygiene:** 60 CLI commands, pytest suite with CI on GitHub Actions, and a privacy-aware gitignore — volume calibration, puzzle content, and dream reports never leave the machine
 
 ## Install
 
@@ -149,7 +149,7 @@ The timing settings can come from a protocol preset: the parameters of one paper
 
 The REM detector ships in two layers. A transparent **heuristic baseline** (`HeuristicRemDetector`) scores each epoch from EEG/IMU/PPG feature rows and returns `P_REM` with human-readable reason codes — no ML, fully inspectable. On top of it, `annotate-template` exports per-epoch CSVs overlaid with `P_REM` and features for manual labeling (`wake` / `nrem` / `probable_rem`), or labels them from another stager's hypnogram (`--from-hypnogram`), and `train-rem-classifier` fits a **class-balanced logistic regression** on those labels. The saved artifact is versioned JSON containing the coefficients, **calibration metrics, feature importance, and training metrics** — so every model used at night is auditable. By design, model probabilities never reach the audio path directly; only the stable gate plus arousal guard can authorize a cue.
 
-There is no PSG ground truth here, so `scripts/validate_rem_detection.py` replays a night through the detector and the gate and scores them against an automated stager (YASA or GSSC). The gate thresholds were raised after that check: the detector runs hot, and at the old 0.70/0.45 the gate stayed open about 75% of a night. They now depend on the recording preset: 0.90/0.85 on the EEG-only `p21`, 0.80/0.70 on optics presets, provisional. The `p21` pair was tuned in-sample on one EEG-only night (`overnight_20260707`, n=1) against GSSC, an automated proxy, and fitted and reported on the same night; kappa and epoch counts are only in [PR #115](https://github.com/yuriy-mikityuk/remind-eeg/pull/115) and [#116](https://github.com/yuriy-mikityuk/remind-eeg/issues/116). GSSC was trained mostly on C3, C4, F3, F4 (NSRR PSG); there is no published evaluation of it on forehead-only EEG. Every figure and its source: [`docs/numbers.md`](docs/numbers.md).
+None of the maintainer's nights has a PSG, so `scripts/validate_rem_detection.py` replays a night through the detector and the gate and scores them against an automated stager (YASA or GSSC). The gate thresholds were raised after that check: the detector runs hot, and at the old 0.70/0.45 the gate stayed open about 75% of a night. They now depend on the recording preset: 0.90/0.85 on the EEG-only `p21`, 0.80/0.70 on optics presets, provisional. The `p21` pair was tuned in-sample on one EEG-only night (`overnight_20260707`, n=1) against GSSC, an automated proxy, and fitted and reported on the same night; kappa and epoch counts are only in [PR #115](https://github.com/yuriy-mikityuk/remind-eeg/pull/115) and [#116](https://github.com/yuriy-mikityuk/remind-eeg/issues/116). GSSC was trained mostly on C3, C4, F3, F4 (NSRR PSG); there is no published evaluation of it on forehead-only EEG. `muse-tmr validate-external` scores the detector, the gate, a personal model, GSSC and YASA against the consensus of three PSG scorers on the open BOAS dataset (OpenNeuro ds005555), with every night of a participant in one fold: a Bitbrain Ikon headband referenced to the mastoid, not a Muse. Its run over the 128 nights is pending ([`docs/validation_external.md`](docs/validation_external.md)), and `train-rem-classifier --init` can start a personal model from the one that run trains. Every figure and its source: [`docs/numbers.md`](docs/numbers.md).
 
 ## Validation pilots
 
@@ -169,7 +169,7 @@ The same headband also runs guided A/B meditation sessions from the local app: a
 
 ## CLI overview
 
-59 commands under one `muse-tmr` entry point. Full invocations with all flags: [`docs/USAGE.md`](docs/USAGE.md).
+60 commands under one `muse-tmr` entry point. Full invocations with all flags: [`docs/USAGE.md`](docs/USAGE.md).
 
 | Group | Commands |
 | ----- | -------- |
@@ -183,7 +183,7 @@ The same headband also runs guided A/B meditation sessions from the local app: a
 | Morning & analysis | `record-dream-report` · `record-cue-recall` · `record-puzzle-retest` · `analyze-cued-uncued` · `export-blind-coding` · `record-incorporation-coding` · `compare-incorporation-codings` |
 | N-of-1 series | `plan-night-schedule` · `show-night-schedule` · `prereg-template` · `unseal-night-schedule` · `analyze-nof1` |
 | Meditation (side track) | `meditation-plan` · `analyze-meditation` · `aggregate-meditation` · `calibration-run` · `calibration-guide` · `calibration-report` |
-| Pilots & validation | `validate-pilot1-recording` · `validate-pilot2-calibration` · `simulate-replay-cues` · `run-pilot4-cueing` · `log-pilot4-awakening` · `run-pilot5-full-night` · `score-cue-arousal` · `protocol-fidelity` |
+| Pilots & validation | `validate-pilot1-recording` · `validate-pilot2-calibration` · `simulate-replay-cues` · `run-pilot4-cueing` · `log-pilot4-awakening` · `run-pilot5-full-night` · `score-cue-arousal` · `protocol-fidelity` · `validate-external` |
 | Synthetic nights | `demo` · `synthesize-night` |
 
 ## Testing

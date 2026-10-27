@@ -22,6 +22,7 @@ Complete command and code reference for `muse-tmr`, organized by workflow stage.
 - [Personal REM classifier](#personal-rem-classifier)
 - [REM stable gate](#rem-stable-gate)
 - [Checking the REM detector against a reference stager](#checking-the-rem-detector-against-a-reference-stager)
+- [The REM detector against PSG consensus (BOAS)](#the-rem-detector-against-psg-consensus-boas)
 - [Low-volume test cue player](#low-volume-test-cue-player)
 - [Pre-sleep volume calibration](#pre-sleep-volume-calibration)
 - [Cue library metadata](#cue-library-metadata)
@@ -330,6 +331,13 @@ muse-tmr train-rem-classifier data/annotations/<session>_rem_labels.csv \
 
 The trainer skips `unknown` labels, treats `probable_rem` as the positive class, and treats `wake`/`nrem` as the negative class. The saved JSON artifact is versioned and includes class-balanced logistic coefficients, calibration metrics, feature importance, and training metrics. Personal model probabilities still do not trigger audio directly; stable gates and safety layers decide whether a cue is allowed.
 
+```bash
+muse-tmr train-rem-classifier data/annotations/<session>_rem_labels.csv \
+  --init data/validation_public/boas/boas_v1_personal_rem_model.json --output data/models/personal_rem_model.json
+```
+
+`--init` warm-starts from another artifact, such as the one `validate-external` trains on BOAS: training starts from its coefficients and the L2 penalty pulls toward them instead of toward 0, so a few labelled nights adjust that model rather than replace it. It takes the artifact's features; a `--feature` set that differs is refused. Artifacts are version 2: `training_data` names the annotation file and its sha256, the recordings (directory names only) and, with `--init`, the artifact started from and what it was trained on. Version 1 artifacts still load.
+
 ## REM stable gate
 
 ```python
@@ -377,6 +385,28 @@ For refitting the detector (#225) the summary, the metrics JSON and the HTML als
 ```
 
 The names are those of `DEFAULT_REM_WEIGHTS`; the ones not named keep their default, and then all are divided by their sum so they add up to 1, like the defaults. `provenance.weights` has the weights used and `provenance.weight_overrides` the ones given. The pilots always use the defaults. All of these are agreement with an automated proxy, not REM accuracy.
+
+`--labels` scores the night against labels instead of a stager (#226): annotate-template rows (`.csv`, `.json`), a hypnogram that `annotate-template --from-hypnogram` reads, or a BOAS night directory, whose PSG consensus `stage_hum` is read. The recording can be a BOAS night too; its headband EEG is replayed alone, and the gate does not count the missing IMU as low confidence (`docs/validation_external.md`).
+
+```bash
+.venv/bin/python scripts/validate_rem_detection.py ~/Datasets/openneuro/ds005555/sub-3 \
+  --labels ~/Datasets/openneuro/ds005555/sub-3 --preset p21 [--reference gssc]
+.venv/bin/python scripts/validate_rem_detection.py data/recordings/<session> --labels rows.csv --preset p21
+```
+
+Without `--reference` no stager runs; `reference.tool` is `external` and `kappa_definition` names the labels. Epochs the labels call `unknown` are left out. `labels_metrics` adds precision at recall 0.80 of `p_rem`, the minutes the gate was open outside the labels' REM and the latency from each REM run's start to the gate's first open decision in it. With `--reference` the stager is scored against the same labels too (`stager_vs_labels`). `provenance` now also holds `labels_source` (`boas:stage_hum` or `labels:<file>`), `labels_file_sha256`, `dataset_version` (BOAS's `1.1.3`) and `stride_seconds`. On a run against a stager the three labels fields are None and `stride_seconds` is the epoch length; that run's output is otherwise what it was.
+
+## The REM detector against PSG consensus (BOAS)
+
+```bash
+muse-tmr validate-external --dataset boas --root ~/Datasets/openneuro/ds005555 \
+  --splits data/validation_public/boas/splits.json --make-splits --seed 0 \
+  --output-dir data/validation_public/boas \
+  --reference gssc --gssc-python .venv-gssc/bin/python \
+  --reference yasa --yasa-python .venv-yasa/bin/python --jobs 4
+```
+
+Scores the REM detector and the gate against the consensus of three PSG scorers on the open BOAS dataset (OpenNeuro ds005555), for the report fold of participant-grouped splits: the heuristic with each `--gate-thresholds` set (`p21`, and `boas_v1`, which the run fits on the fit fold), a personal model trained on the fit fold, GSSC and YASA (`--reference`), and the headband's own `stage_ai` for context. It writes per-night files and `metrics.json` into `--output-dir`; of these only `splits.json` and `metrics.json` may be committed. A stopped run goes on where it stopped; `--rescore` starts over and `--nights sub-3,sub-4` runs part of the dataset. Needs the `[edf]` extra, and the stager venvs for `--reference`. The headband is a Bitbrain Ikon referenced to the mastoid, not a Muse, and the detector gets its EEG alone. Splits, files, metrics and what the numbers cannot say: [`validation_external.md`](validation_external.md).
 
 ## Low-volume test cue player
 
