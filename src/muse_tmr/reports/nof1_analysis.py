@@ -381,7 +381,7 @@ def build_nof1_analysis(
     schedule: NightSchedule,
     nights: Iterable[Nof1NightInputs],
     *,
-    seal: str = "matches",
+    seal: str = "not_checked",
     seed: int = DEFAULT_SEED,
     permutations: int = DEFAULT_PERMUTATIONS,
     min_nights_per_arm: int = DEFAULT_MIN_NIGHTS_PER_ARM,
@@ -392,7 +392,10 @@ def build_nof1_analysis(
 ) -> Nof1AnalysisReport:
     """The per-arm description of an unsealed series. ``nights`` are the inputs of its
     block nights (``load_series_inputs()``); a night left out counts as one without
-    data. ScheduleStillSealed for a schedule ``unseal-night-schedule`` has not unsealed."""
+    data. ScheduleStillSealed for a schedule ``unseal-night-schedule`` has not unsealed.
+    ``seal`` is what the report says of the schedule against its sealed companion:
+    ``matches`` once the caller has checked it with ``verify_seal()``, as
+    ``analyze-nof1`` does, else ``not_checked``."""
     if schedule.sealed:
         raise ScheduleStillSealed(
             f"night schedule {schedule.schedule_id} is still sealed: run `muse-tmr unseal-night-schedule` on it "

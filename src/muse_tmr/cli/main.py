@@ -4261,6 +4261,7 @@ def _analyze_nof1(args: argparse.Namespace) -> int:
         report = build_nof1_analysis(
             schedule,
             nights,
+            seal="matches",
             seed=args.seed,
             permutations=args.permutations,
             min_nights_per_arm=args.min_nights_per_arm,

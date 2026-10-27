@@ -965,7 +965,7 @@ agreement is 1) with `kappa_note`, and `yes_counts` per rater.
 | Field | Content |
 |---|---|
 | `report`, `schema_version`, `analysis_id`, `generated_at_utc` | `nof1_analysis`, 1, `<schedule-id>-nof1-analysis`. With a synthetic night, `synthetic: true` and the note. |
-| `schedule` | `schedule_id`, `created_at_utc`, `seed`, `blocks`, `washout_nights`, `arms`, `sham_cue_id`, `night_count`, `commitment_sha256`, `seal`, `unsealed_at_utc`, and the nights' distinct `protocol_effective_hashes`. |
+| `schedule` | `schedule_id`, `created_at_utc`, `seed`, `blocks`, `washout_nights`, `arms`, `sham_cue_id`, `night_count`, `commitment_sha256`, `seal` (`matches` once `analyze-nof1` has checked the schedule against its sealed companion, `not_checked` from `build_nof1_analysis()` alone), `unsealed_at_utc`, and the nights' distinct `protocol_effective_hashes`. |
 | `settings` | `seed`, `permutations`, `interval` (0.95), `min_nights_per_arm`, `primary_outcome`, `primary_contrast`, `reference_set` (`schedule_design`, or `within_block` for a schedule `plan-night-schedule` could not have drawn), `possible_orders`, `method` (`exact` or `monte_carlo`), `relabelings`, `outside_possible`, `software_version`. |
 | `outcomes` | Each outcome's definition. |
 | `nights` | Each block night: `night_id`, `position`, `block`, `arm` (the schedule's), `first_night`, `has_data`, `synthetic`, `summary_arm`, `summary_kind`, `started_at`, `summary_passed`, `failed_criteria`, `protocol_effective_hash`, `plays`, `virtual_plays`, `inputs` (what was found), `incorporation_source`, `arousal_proxy_per_cue` and `values`, one per outcome, `null` when missing. |

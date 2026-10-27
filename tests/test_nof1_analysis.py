@@ -391,6 +391,9 @@ class TestCommand(_SeriesTest):
         payload = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(payload["report"], "nof1_analysis")
         self.assertEqual(payload["schedule"]["commitment_sha256"], series.schedule.commitment_sha256())
+        # The command checked the seal; the library cannot know unless told.
+        self.assertEqual(payload["schedule"]["seal"], "matches")
+        self.assertEqual(_analyse(series).schedule["seal"], "not_checked")
         self.assertEqual(payload["settings"]["primary_contrast"], "cue-no_cue")
         self.assertEqual(payload["reporting_checklist_counts"], {"auto": 4, "partial": 12, "manual": 12})
         self.assertTrue(markdown.exists())
