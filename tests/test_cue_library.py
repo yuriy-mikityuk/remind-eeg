@@ -6,13 +6,14 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from muse_tmr.audio import (
+    CUE_PROTOCOLS,
     CueLibrary,
     CueMetadata,
     default_cue_library,
     load_cue_library,
     validate_cue_library_file,
 )
-from muse_tmr.cli.main import main
+from muse_tmr.cli.main import CUE_PROTOCOL_CHOICES, main
 
 
 class TestCueLibrary(unittest.TestCase):
@@ -156,6 +157,8 @@ class TestCueLibraryCli(unittest.TestCase):
                     "--protocol",
                     "puzzle",
                 ])
+            with redirect_stdout(io.StringIO()) as sham_output:
+                sham_exit = main(["list-cues", str(library_path), "--protocol", "sham"])
 
         report = json.loads(validate_output.getvalue())
         self.assertEqual(create_exit, 0)
@@ -164,6 +167,11 @@ class TestCueLibraryCli(unittest.TestCase):
         self.assertTrue(report["is_valid"])
         self.assertIn("puzzle_soft_tone", list_output.getvalue())
         self.assertNotIn("tlr_soft_tone", list_output.getvalue())
+        self.assertEqual(sham_exit, 0)
+        self.assertEqual(sham_output.getvalue().split()[0], "sham_soft_tone")
+        self.assertNotIn("puzzle_soft_tone", sham_output.getvalue())
+        # list-cues filters by every protocol a cue can have.
+        self.assertEqual(CUE_PROTOCOL_CHOICES, CUE_PROTOCOLS)
 
     def test_validate_cue_library_cli_fails_on_missing_sound_file(self):
         with tempfile.TemporaryDirectory() as tmp:

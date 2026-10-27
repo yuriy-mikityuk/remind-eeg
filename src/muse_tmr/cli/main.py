@@ -37,6 +37,8 @@ PROTOCOL_PRESET_COMMANDS = (
 PROTOCOL_PRESET_DEFAULT_HELP = "Default: the protocol preset's."
 # The arms a cueing night runs: muse_tmr.protocol.night_schedule.CUEING_ARMS (#228).
 NIGHT_ARM_CHOICES = ("cue", "sham", "no_cue")
+# The protocol roles of a cue: muse_tmr.audio.cue_library.CUE_PROTOCOLS.
+CUE_PROTOCOL_CHOICES = ("puzzle", "tlr", "test", "generic", "sham")
 # What a runner prints in place of its cue counts on a night with an arm.
 BLINDED_NOTE = "blinded night: plays, counts and volumes are in the summary; open it after the morning forms"
 ALLOW_DRY_RUN_HELP = "Run silently on dry-run when afplay is missing, instead of exiting with code 2."
@@ -595,7 +597,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_cues_parser = subparsers.add_parser("list-cues", help="List cues from a cue metadata library.")
     list_cues_parser.add_argument("input", type=Path, help="Input cue library .json path.")
-    list_cues_parser.add_argument("--protocol", choices=("puzzle", "tlr", "test", "generic"))
+    list_cues_parser.add_argument("--protocol", choices=CUE_PROTOCOL_CHOICES)
     list_cues_parser.add_argument("--tag")
 
     presets_parser = subparsers.add_parser(

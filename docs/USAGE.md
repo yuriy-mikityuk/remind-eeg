@@ -373,7 +373,7 @@ muse-tmr validate-cue-library data/cues/starter.json
 muse-tmr list-cues data/cues/starter.json --protocol puzzle
 ```
 
-Cue libraries are JSON metadata catalogs for `sound`, `generated_tone`, and `silence` cues. They carry duration, protocol role (`puzzle`, `tlr`, `test`, or `generic`), tags, optional volume hints, and private sound file paths. Sound cue files under `cues/private/` or `data/cues/audio/` are gitignored by default; validation detects missing files before a sleep session.
+Cue libraries are JSON metadata catalogs for `sound`, `generated_tone`, and `silence` cues. They carry duration, protocol role (`puzzle`, `tlr`, `test`, `generic`, or `sham` for the untrained sound of a sham night), tags, optional volume hints, and private sound file paths. Sound cue files under `cues/private/` or `data/cues/audio/` are gitignored by default; validation detects missing files before a sleep session.
 
 ## Pre-sleep puzzle session manager
 
