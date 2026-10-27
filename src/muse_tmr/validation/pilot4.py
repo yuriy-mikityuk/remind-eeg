@@ -46,7 +46,7 @@ from muse_tmr.protocol.tmr_scheduler import (
     tlr_cue_ids_of,
     validate_sham_cue,
 )
-from muse_tmr.protocol.tlr_protocol import TlrBlockPlan
+from muse_tmr.protocol.tlr_protocol import TlrBlockPlan, tlr_tone_mismatch
 from muse_tmr.sources.base_source import BaseMuseSource, MuseSourceMetadata
 from muse_tmr.validation.gate_log import (
     REM_GATE_DECISIONS_FILENAME,
@@ -790,8 +790,8 @@ def _cue_stood_in_for(
     tlr_block_plan: Optional[TlrBlockPlan],
 ) -> Optional[str]:
     """The cue the cue arm plays where a sham night plays ``event``: its puzzle's cue, or
-    the TLR plan's cue at its place in the block. The plan's length can differ from that
-    library cue's, and the cue arm plays the library cue's."""
+    the TLR plan's cue at its place in the block. The cue arm plays that library cue for
+    its own length, which since #264 a night only starts with when it is the plan's."""
     if event.protocol == "puzzle" and event.puzzle_id is not None:
         return catalog.get_puzzle(event.puzzle_id).cue_id
     if event.protocol == "tlr" and tlr_block_plan is not None:
@@ -1055,6 +1055,11 @@ def _validate_pilot4_cues(
             raise ValueError(f"TLR block supports generated_tone cues only: {cue.cue_id}")
         if cue.frequency_hz is None:
             raise ValueError(f"TLR generated cue must include frequency_hz: {cue.cue_id}")
+    # The night plays its library's tone; it must be the one the plan was made with
+    # (#264). Checked in every arm, so a refusal says nothing about the arm.
+    mismatch = tlr_tone_mismatch(tlr_block_plan, cue_library)
+    if mismatch is not None:
+        raise ValueError(mismatch)
 
 
 def _write_metadata(

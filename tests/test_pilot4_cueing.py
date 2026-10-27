@@ -1023,6 +1023,99 @@ class TestOneProtocolHash(unittest.TestCase):
         self.assertIn(tlr_block["status"], ("as_planned", "differs"))
 
 
+class TestPresetTlrToneFromTheCommandLine(unittest.TestCase):
+    """#264: a preset's TLR tone from create-tlr-cue was trained, but the night played the
+    starter library's. The runbook's steps on the command line, over a replayed EEG-only
+    night with mock audio."""
+
+    PRESET = "konkoly2021_nijmegen"
+
+    def _run(self, *argv, code=0):
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+            self.assertEqual(cli_main.main([str(item) for item in argv]), code, stderr.getvalue())
+        return stderr.getvalue()
+
+    def _night(self, root, library, **expect):
+        """Train on ``library``'s TLR cue, plan from it with --training and run the night on
+        the starter library; the night's backend, or None when it refused."""
+        from tests.test_pilot3_replay_simulation import write_eeg_only_recording
+
+        catalog, session, assignment, cue_library = protocol_fixture()
+        files = {
+            "catalog": catalog.save(root / "catalog.json"),
+            "session": session.save(root / "session.json"),
+            "assignment": assignment.save(root / "assignment.json"),
+        }
+        # The fixture's puzzle cues join the night's library, as a user's own would.
+        starter = CueLibrary.load(root / "starter.json")
+        replace(starter, cues=starter.cues + cue_library.cues).save(root / "starter.json")
+        self._run("train-tlr-cue", library, "--output", root / "training.json", "--event-log",
+                  root / "training.jsonl", "--backend", "mock")
+        self._run("plan-tlr-block", library, "--output", root / "plan.json", "--protocol-preset", self.PRESET,
+                  *expect.get("plan_args", ()))
+        self._run("calibrate-volume", "--device-name", "Speaker", "--output", root / "calibration.json",
+                  "--detectable-volume", "0.01", "--identifiable-volume", "0.02", "--comfortable-volume", "0.04")
+        recording = root / "recording"
+        write_eeg_only_recording(recording, ["nrem"] * 2 + ["rem"] * 6)
+        backend = MockAudioBackend()
+        build_source = mock.Mock(return_value=ReplaySession(ReplayConfig(input_path=recording, speed=0.0)))
+        with mock.patch.object(cli_main, "_build_source", build_source), mock.patch.object(
+            pilot4_module, "resolve_audio_backend", return_value=mock.Mock(backend=backend)
+        ):
+            stderr = self._run(
+                "run-pilot5-full-night", "--output-dir", root / "night", "--catalog", files["catalog"],
+                "--session", files["session"], "--assignment", files["assignment"],
+                "--cue-library", root / "starter.json", "--tlr-block", root / "plan.json",
+                "--calibration", root / "calibration.json", "--backend", "mock", "--preset", "p21",
+                "--protocol-preset", self.PRESET, "--duration-seconds", "300", "--allow-short",
+                code=expect.get("code", 0),
+            )
+        if expect.get("code", 0):
+            self.assertEqual(build_source.call_count, 0)
+            self.assertFalse((root / "night").exists())
+            return None, stderr
+        return backend, stderr
+
+    def test_the_tone_from_create_tlr_cue_stops_the_night(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self._run("create-cue-library", "--output", root / "starter.json")
+            self._run("create-tlr-cue", "--output", root / "tlr.json", "--protocol-preset", self.PRESET)
+            _, stderr = self._night(root, root / "tlr.json", code=2)
+
+        self.assertIn("tlr_soft_tone at 396 Hz for 1 s", stderr)
+        self.assertIn("600 Hz for 0.65 s from cue library tlr_default", stderr)
+        self.assertIn(f"create-cue-library --protocol-preset {self.PRESET}", stderr)
+
+    def test_one_library_plays_the_trained_tone(self):
+        from muse_tmr.reports.protocol_fidelity import build_protocol_fidelity
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self._run("create-cue-library", "--output", root / "starter.json", "--protocol-preset", self.PRESET)
+            backend, _ = self._night(
+                root, root / "starter.json", plan_args=("--training", root / "training.json")
+            )
+            training = json.loads((root / "training.json").read_text(encoding="utf-8"))
+            plan = json.loads((root / "plan.json").read_text(encoding="utf-8"))
+            tone = build_protocol_fidelity(root / "night").checks["tlr_tone"]
+
+        played = {
+            (request.frequency_hz, request.duration_seconds)
+            for request in backend.requests
+            if request.cue_id == "tlr_soft_tone"
+        }
+        self.assertEqual(played, {(600.0, 0.65)})
+        self.assertEqual(
+            training["tone"],
+            {"cue_id": "tlr_soft_tone", "frequency_hz": 600.0, "duration_seconds": 0.65, "library_id": "starter"},
+        )
+        self.assertEqual(plan["tone"], training["tone"])
+        self.assertEqual(plan["metadata"]["training"]["session_id"], "tlr-training")
+        self.assertEqual((tone["status"], tone["observed"]["frequency_hz"]), ("as_published", 600.0))
+
+
 ARMS = ("cue", "sham", "no_cue")
 SHAM_CUE = CueMetadata(
     "sham_soft_tone", "generated_tone", 1.0, protocol="sham", frequency_hz=330.0, volume_hint=0.05,
@@ -1042,9 +1135,12 @@ class TestPilot5Arms(unittest.IsolatedAsyncioTestCase):
 
     async def _night(self, tmpdir, arm, *, tlr_cue=None, night_arm=None, source=None):
         catalog, session, assignment, cue_library = protocol_fixture(include_tlr=True)
-        cue_library = replace(cue_library, cues=cue_library.cues + (SHAM_CUE,))
+        tlr_cue = tlr_cue or default_tlr_cue()
+        # The night's library holds the TLR cue the plan is made with, as it must (#264).
+        cues = tuple(cue for cue in cue_library.cues if cue.cue_id != tlr_cue.cue_id)
+        cue_library = replace(cue_library, cues=cues + (tlr_cue, SHAM_CUE))
         tlr_plan = plan_tlr_block(
-            tlr_cue or default_tlr_cue(),
+            tlr_cue,
             config=TlrBlockConfig(repetitions=2, interval_seconds=0.0, post_block_pause_seconds=0.0),
         )
         backend = MockAudioBackend()
@@ -1158,14 +1254,16 @@ class TestPilot5Arms(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("no_cues", quiet["payload"]["cue_arousal"]["limitations"])
 
     async def test_a_sham_sound_lasts_as_long_as_the_cue_the_cue_arm_plays(self):
-        # A TLR plan made from another file's tlr_soft_tone says 0.65 s, while the cue arm
-        # plays the night's library cue of that ID for its own 1 s.
-        short = replace(default_tlr_cue(), duration_seconds=0.65)
+        # A preset's TLR tone of 0.65 s in the night's library and the plan: the cue arm
+        # plays it for 0.65 s, and the sham sound, 1 s long on its own, for as long. A plan
+        # whose length differs from the library cue's no longer runs (#264, below).
+        short = replace(default_tlr_cue(), frequency_hz=600.0, duration_seconds=0.65)
         with tempfile.TemporaryDirectory() as tmpdir:
             nights = {arm: await self._night(tmpdir, arm, tlr_cue=short) for arm in ("cue", "sham")}
 
         cue, sham = nights["cue"]["requests"], nights["sham"]["requests"]
-        self.assertEqual([request.duration_seconds for request in cue][:2], [1.0, 1.0])
+        self.assertEqual([(request.frequency_hz, request.duration_seconds) for request in cue][:2], [(600.0, 0.65)] * 2)
+        self.assertEqual(SHAM_CUE.duration_seconds, 1.0)
         self.assertEqual(
             [request.duration_seconds for request in sham],
             [request.duration_seconds for request in cue],
@@ -1293,6 +1391,69 @@ class TestPilot5Arms(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("generated_tone", str(raised.exception))
                 self.assertFalse((Path(tmpdir) / "night").exists())
                 self.assertEqual(source.stop_calls, 0)
+
+    async def _tlr_night(self, output_dir, arm, plan, source):
+        catalog, session, assignment, cue_library = protocol_fixture(include_tlr=True)
+        config = pilot4_config(
+            output_dir,
+            duration_seconds=60.0,
+            enable_tlr_block=True,
+            pilot_id="m8_pilot5_full_night_tlr_puzzle_cueing",
+            summary_filename="pilot5_summary.json",
+            require_tlr_block=True,
+        )
+        if arm is not None:
+            config = replace(config, night_arm=_arm_context(arm))
+        return await run_pilot4_cueing_night(
+            source,
+            config=config,
+            catalog=catalog,
+            session=session,
+            assignment=assignment,
+            cue_library=replace(cue_library, cues=cue_library.cues + (SHAM_CUE,)),
+            calibration=VolumeCalibration("Sleep Headphones", 0.01, 0.02, 0.04),
+            backend=MockAudioBackend(),
+            tlr_block_plan=plan,
+        )
+
+    async def test_a_plan_made_with_another_tone_stops_the_night_before_it_starts(self):
+        # #264: the plan was made from a preset's 600 Hz tlr_soft_tone of 0.65 s, the
+        # night's library has the starter's 396 Hz one of 1 s. A plan from before the plan
+        # kept its tone still has the length in its events. Every arm, before any file.
+        preset_tone = replace(default_tlr_cue(), frequency_hz=600.0, duration_seconds=0.65)
+        plan = plan_tlr_block(
+            preset_tone,
+            config=TlrBlockConfig(repetitions=2),
+            metadata={"protocol": {"name": "konkoly2021_nijmegen"}},
+        )
+        plans = {
+            "tone": (plan, "create-cue-library --protocol-preset konkoly2021_nijmegen"),
+            "schema 1": (replace(plan, tone=None, schema_version=1), "Plan the block again"),
+            "frequency": (plan_tlr_block(replace(default_tlr_cue(), frequency_hz=600.0)), "create-cue-library"),
+        }
+        for label, (stale, fix) in plans.items():
+            for arm in (None,) + ARMS:
+                with self.subTest(plan=label, arm=arm), tempfile.TemporaryDirectory() as tmpdir:
+                    source = FakeMuseSource(rem_frames(2))
+                    with self.assertRaises(ValueError) as raised:
+                        await self._tlr_night(Path(tmpdir) / "night", arm, stale, source)
+                    self.assertIn("tlr_soft_tone at 396 Hz for 1 s", str(raised.exception))
+                    self.assertIn(fix, str(raised.exception))
+                    self.assertFalse((Path(tmpdir) / "night").exists())
+                    self.assertEqual(source.stop_calls, 0)
+
+        # A plan from before #264 whose cues are as long as the library's still runs.
+        old = replace(
+            plan_tlr_block(
+                default_tlr_cue(),
+                config=TlrBlockConfig(repetitions=2, interval_seconds=0.0, post_block_pause_seconds=0.0),
+            ),
+            tone=None,
+            schema_version=1,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary = await self._tlr_night(Path(tmpdir) / "night", None, old, FakeMuseSource(rem_frames(5)))
+        self.assertEqual(summary.tlr_cue_play_count, 2)
 
     def test_a_config_names_one_arm(self):
         config = pilot4_config(Path("unused"))
@@ -1437,6 +1598,31 @@ class TestPilot5ArmsFromTheCommandLine(unittest.TestCase):
             printed.add(text)
         self.assertEqual(len(printed), 1, printed)
         self.assertIn("sham cue sham_sound must be a generated_tone", printed.pop())
+
+    def test_another_tlr_tone_stops_every_sealed_night_alike(self):
+        from muse_tmr.audio import load_cue_library
+
+        # The plan was made with the 396 Hz tone of 1 s; this library has a preset's.
+        library = load_cue_library(self.root / "cues.json")
+        cues = tuple(
+            replace(cue, frequency_hz=600.0, duration_seconds=0.65) if cue.cue_id == "tlr_soft_tone" else cue
+            for cue in library.cues
+        )
+        replace(library, cues=cues).save(self.root / "cues_other_tone.json")
+        printed = set()
+        for night in self.schedule.nights:
+            name = f"tone_{night.night_id}"
+            code, text = self._run(
+                name,
+                "--cue-library", str(self.root / "cues_other_tone.json"),
+                "--night-schedule", str(self.root / "series.json"),
+                "--night-id", night.night_id,
+            )
+            self.assertEqual(code, 2, text)
+            self.assertFalse((self.root / name).exists())
+            printed.add(text)
+        self.assertEqual(len(printed), 1, printed)
+        self.assertIn("tlr_soft_tone at 600 Hz for 0.65 s", printed.pop())
 
     def test_a_changed_schedule_stops_the_night_before_any_file(self):
         changed = self.root / "changed.json"

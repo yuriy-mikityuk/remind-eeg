@@ -663,7 +663,9 @@ private audio files. A cue has:
 
 `muse-tmr create-cue-library --output <catalog.json>` creates a starter metadata
 catalog with puzzle, TLR, silence-control and sham (`sham_soft_tone`, a 330 Hz tone
-tagged `untrained`) cues. `validate-cue-library` checks
+tagged `untrained`) cues; with `--protocol-preset NAME` its `tlr_soft_tone` is the cue
+`create-tlr-cue --protocol-preset NAME` makes, with the preset block under
+`metadata.protocol` (#264). `validate-cue-library` checks
 metadata and, by default, verifies that `sound` cue paths exist relative to the catalog
 directory before a session starts. `list-cues` filters by protocol or tag.
 
@@ -714,11 +716,20 @@ reactivation:
 
 - `TlrCueConfig`: default generated cue settings
 - `TlrTrainingConfig`: pre-sleep repetition count, interval, volume, and backend name
-- `TlrTrainingSession`: training summary with one event per cue presentation
+- `TlrTrainingSession`: training summary with one event per cue presentation and, since
+  schema 2, the `tone` it played
 - `TlrTrainingEvent`: playback status, requested/effective volume, reason codes, and scheduled offset
 - `TlrBlockConfig`: REM block repetitions, interval, post-block pause, and enabled flag
 - `TlrBlockPlan`: cue offsets, `puzzle_cue_start_offset_seconds` and `metadata`, which
   holds the protocol preset block the plan was made with (`metadata.protocol`, #231)
+  and, with `plan-tlr-block --training`, the training it was checked against
+  (`metadata.training`: `session_id`, `completed_at_utc`); since schema 2, the `tone` it
+  was made with
+- `TlrTone` (#264): `cue_id`, `frequency_hz` (`null` for a TLR cue that is not a
+  generated tone), `duration_seconds` and `library_id`, the cue library the cue came from
+
+Plans and training summaries of schema 1 have no `tone` and still load; written again,
+an old plan stays as it was.
 
 `muse-tmr create-tlr-cue` writes a `CueLibrary` containing a generated TLR cue.
 `train-tlr-cue` plays or dry-runs the cue through `AudioCuePlayer` and writes both a
@@ -726,6 +737,13 @@ summary JSON and JSONL training events. It plays `--volume`, else the cue's
 `volume_hint`, else the player's default, as Pilot 4 and 5 choose a cue's volume; a hint
 of 0 counts as a hint since #255. `plan-tlr-block` writes the TLR block that
 future scheduler code should insert before puzzle cues when the REM gate opens.
+
+A night plays the cue its own cue library has under each block event's cue ID, for that
+cue's length. `tlr_tone_mismatch(plan, cue_library)` says why that would not be the
+plan's tone, checking a schema 2 plan's frequency and length and a schema 1 plan's
+event lengths; `run_pilot4_cueing_night()` raises with it, and `run-pilot5-full-night`
+exits with code 2 with it, before any file is written. `training_tone_mismatch()` is the
+same check of a training summary against a cue, for `plan-tlr-block --training`.
 
 ## TMR Scheduler Events
 
@@ -962,7 +980,7 @@ directory or the Pilot 3 report's (#231):
 | `inputs` | Which files were read. |
 | `summary` | `rem_periods`, `rem_periods_with_cues`, `plays` by stream (the plays the player played), `plays_blocked_or_skipped` by stream (left out of every check), `plays_outside_rem_periods`, `uncued_puzzle_play_count`, `stride_seconds`, the night's `arm` (from its summary or `metadata.json`, `null` without one) and `virtual_plays` by stream, a no-cue night's skips where a cue night would have played. |
 | `rem_periods` | Each gate-open run with its plays by stream, `first_cue_seconds_after_gate_open` and `stable_rem_seconds_at_first_cue`. |
-| `checks` | `inter_cue_intervals`, `cues_per_rem_period`, `stable_rem_before_first_cue`, `pause_rules`, `volume_ramp`, `cue_duration`, `tlr_block`: each a `status` with `observed` and `published` and its detail. |
+| `checks` | `inter_cue_intervals`, `cues_per_rem_period`, `stable_rem_before_first_cue`, `pause_rules`, `volume_ramp`, `cue_duration`, `tlr_block` and, since #264, `tlr_tone` (the TLR plan's `tone` in `metadata.json` against the preset's `tlr_tone_frequency_hz` and `tlr_tone_duration_seconds`): each a `status` with `observed` and `published` and its detail. |
 | `deviations` | The preset's platform deviations. |
 | `limitations` | Codes: `synthetic_input`, `no_protocol_block`, `preset_changed_since_night`, `night_overrode_preset_settings`, `compared_with_another_preset`, `unknown_preset_in_night`, `no_gate_log`, `no_scheduler_events`, `no_audio_log`, `audio_log_mismatch`, `plays_blocked_or_skipped`, `pilot3_plan_not_played`, `awakening_markers_unplaced`, `sham_arm` and `no_cue_arm` (#228). |
 

@@ -4,11 +4,11 @@ It reads what the night logged, ``scheduler_events.jsonl``, ``audio_playback.jso
 ``rem_gate_decisions.jsonl``, ``awakening_events.jsonl`` and ``metadata.json``, or a
 Pilot 3 report's plan and epochs, and compares them with the preset the night ran:
 the intervals between cues, the cues per REM period, the stable REM before the first
-cue, whether the pause rules held, the volume of the cues in a period, the cue length
-and the TLR block against its plan. A scheduler play the player blocked (after an
-emergency stop) or skipped made no sound, so it is left out of every check and only
-counted; each play is paired with its line of the audio log by ``audio_for_plays()``,
-as the cue arousal scorer pairs them.
+cue, whether the pause rules held, the volume of the cues in a period, the cue length,
+the TLR block against its plan and the TLR tone. A scheduler play the player blocked
+(after an emergency stop) or skipped made no sound, so it is left out of every check and
+only counted; each play is paired with its line of the audio log by
+``audio_for_plays()``, as the cue arousal scorer pairs them.
 
 A REM period here is a gate-open run as ``muse_tmr.validation.gate_log`` defines it
 (``load_gate_open_runs()``), the same as for the cue arousal scorer; a cue is placed at
@@ -61,8 +61,9 @@ SUMMARY_FILENAMES = ("pilot4_summary.json", "pilot5_summary.json")
 STREAMS = ("tlr", "puzzle")
 # A cue decided at the end of a 30 s epoch, when no gate log says how long its epoch was.
 _DEFAULT_EPOCH_SECONDS = 30.0
-# Two cue lengths this close are the same.
+# Two cue lengths this close are the same, and two tone frequencies this close.
 _DURATION_TOLERANCE_SECONDS = 0.01
+_FREQUENCY_TOLERANCE_HZ = 1e-6
 
 # Always in the report: what matching a paper's parameters does not show.
 PARAMETER_FIDELITY_IS_NOT_RESULT_FIDELITY = {
@@ -296,6 +297,7 @@ def build_protocol_fidelity(
         "volume_ramp": _ramp_check(preset, placed, night),
         "cue_duration": _duration_check(preset, placed),
         "tlr_block": _tlr_check(preset, placed, night, pause_times),
+        "tlr_tone": _tone_check(preset, placed, night),
     }
     plays_outside = sum(1 for play in placed if play.run is None)
     summary = {
@@ -1022,6 +1024,62 @@ def _tlr_check(
         "plan": {"repetitions": repetitions, "interval_seconds": interval} if plan is not None else None,
         "blocks": rows,
         "note": "planned: the scheduler's logged times; played: the decisions of the epochs that played them",
+    }
+
+
+def _tone_check(preset: ProtocolPreset, plays: Sequence[_Play], night: _Night) -> Dict[str, object]:
+    """The TLR tone of the night against the preset's (#264).
+
+    The audio log names the cue, not its tone; the tone is the TLR plan's in
+    ``metadata.json``, which a night only starts with when its cue library holds that tone
+    under the plan's cue ID. A plan from before #264 records none. A preset whose paper
+    had no TLR cue keeps REMind's default tone, which no paper published.
+    """
+    tlr = [play for play in plays if play.stream == "tlr"]
+    plan = night.tlr_plan
+    if not tlr and plan is None:
+        return {"status": "not_used", "observed": None, "published": None}
+    tone = dict((plan or {}).get("tone") or {})
+    frequency = _optional_float(tone.get("frequency_hz"))
+    duration = _optional_float(tone.get("duration_seconds"))
+    spec = preset.cue_spec("tlr")
+    published = (
+        None
+        if spec is None
+        else {
+            "frequency_hz": preset.runner.tlr_tone_frequency_hz,
+            "duration_seconds": preset.runner.tlr_tone_duration_seconds,
+        }
+    )
+    if published is None:
+        status = "not_published"
+    elif frequency is None or duration is None:
+        status = "not_available"
+    elif not tlr:
+        status = "no_cues"
+    elif (
+        abs(frequency - published["frequency_hz"]) <= _FREQUENCY_TOLERANCE_HZ
+        and abs(duration - published["duration_seconds"]) <= _DURATION_TOLERANCE_SECONDS
+    ):
+        status = "as_published"
+    else:
+        status = "differs"
+    described = spec or preset.cue_spec("any")
+    return {
+        "status": status,
+        "observed": (
+            None
+            if frequency is None or duration is None
+            else {"cue_id": tone.get("cue_id"), "frequency_hz": frequency, "duration_seconds": duration}
+        ),
+        "published": published,
+        "described": None if described is None else described.description,
+        "note": (
+            "observed: the TLR plan's tone, which the night played under the plan's cue ID (a sham night played the "
+            "sham sound for as long instead); published: the tone of the preset's TLR cue as create-cue-library and "
+            "create-tlr-cue make it with --protocol-preset, which stands in for the paper's cue where that was not "
+            "one tone, and none where the paper had no TLR cue"
+        ),
     }
 
 

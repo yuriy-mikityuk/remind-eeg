@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Tuple
@@ -16,8 +17,71 @@ from muse_tmr.audio import (
     TestCue,
 )
 
+# The schema of a TLR cue's metadata, and of plans and trainings written before #264.
 TLR_PROTOCOL_SCHEMA_VERSION = 1
+# 2 adds ``tone``, the TLR tone a plan was made with or a training played (#264).
+TLR_BLOCK_PLAN_SCHEMA_VERSION = 2
+TLR_TRAINING_SCHEMA_VERSION = 2
 DEFAULT_TLR_CUE_ID = "tlr_soft_tone"
+# Two tones this close in frequency and length are the same tone.
+_TONE_TOLERANCE = 1e-6
+
+
+@dataclass(frozen=True)
+class TlrTone:
+    """The TLR tone a block plan was made with, or a training played (#264).
+
+    ``frequency_hz`` is None for a TLR cue that is not a generated tone. ``library_id``
+    is the cue library the cue came from, "" when not known.
+    """
+
+    cue_id: str
+    frequency_hz: Optional[float]
+    duration_seconds: float
+    library_id: str = ""
+
+    @classmethod
+    def of_cue(cls, cue: CueMetadata, *, library_id: str = "") -> "TlrTone":
+        return cls(
+            cue_id=cue.cue_id,
+            frequency_hz=cue.frequency_hz,
+            duration_seconds=cue.duration_seconds,
+            library_id=library_id,
+        )
+
+    def differs_from(self, cue: CueMetadata) -> bool:
+        """Whether ``cue`` sounds otherwise: another frequency or another length."""
+        return not (
+            _same(self.frequency_hz, cue.frequency_hz) and _same(self.duration_seconds, cue.duration_seconds)
+        )
+
+    def describe(self) -> str:
+        return describe_tone(self.frequency_hz, self.duration_seconds)
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "cue_id": self.cue_id,
+            "frequency_hz": self.frequency_hz,
+            "duration_seconds": self.duration_seconds,
+            "library_id": self.library_id,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> "TlrTone":
+        frequency = payload.get("frequency_hz")
+        return cls(
+            cue_id=str(payload["cue_id"]),
+            frequency_hz=None if frequency is None else float(frequency),
+            duration_seconds=float(payload["duration_seconds"]),
+            library_id=str(payload.get("library_id", "") or ""),
+        )
+
+
+def describe_tone(frequency_hz: Optional[float], duration_seconds: float) -> str:
+    """'600 Hz for 0.65 s', or 'a sound of 1 s' without a frequency."""
+    if frequency_hz is None:
+        return f"a sound of {duration_seconds:g} s"
+    return f"{frequency_hz:g} Hz for {duration_seconds:g} s"
 
 
 @dataclass(frozen=True)
@@ -136,7 +200,9 @@ class TlrTrainingSession:
     events: Tuple[TlrTrainingEvent, ...]
     started_at_utc: str = ""
     completed_at_utc: str = ""
-    schema_version: int = TLR_PROTOCOL_SCHEMA_VERSION
+    schema_version: int = TLR_TRAINING_SCHEMA_VERSION
+    # The tone the training played; None in a training saved before schema 2.
+    tone: Optional[TlrTone] = None
 
     def __post_init__(self) -> None:
         if not self.session_id.strip():
@@ -154,7 +220,7 @@ class TlrTrainingSession:
         return len(self.events)
 
     def to_dict(self) -> Dict[str, object]:
-        return {
+        payload: Dict[str, object] = {
             "schema_version": self.schema_version,
             "session_id": self.session_id,
             "cue_id": self.cue_id,
@@ -163,6 +229,9 @@ class TlrTrainingSession:
             "config": self.config.to_dict(),
             "events": [event.to_dict() for event in self.events],
         }
+        if self.tone is not None:
+            payload["tone"] = self.tone.to_dict()
+        return payload
 
     def save(self, output_path: Path) -> Path:
         output_path = output_path.expanduser()
@@ -186,6 +255,7 @@ class TlrTrainingSession:
                 TlrTrainingEvent.from_dict(item)
                 for item in payload.get("events", ())
             ),
+            tone=_tone_from(payload.get("tone")),
         )
 
     @classmethod
@@ -269,9 +339,13 @@ class TlrBlockPlan:
     config: TlrBlockConfig
     events: Tuple[TlrBlockEvent, ...]
     total_duration_seconds: float
-    schema_version: int = TLR_PROTOCOL_SCHEMA_VERSION
-    # The protocol preset block the plan was made with ("protocol"), among others.
+    schema_version: int = TLR_BLOCK_PLAN_SCHEMA_VERSION
+    # The protocol preset block the plan was made with ("protocol") and the training it
+    # was checked against ("training"), among others.
     metadata: Mapping[str, object] = field(default_factory=dict)
+    # The tone the plan was made with; None in a plan saved before schema 2, whose
+    # events keep only its length.
+    tone: Optional[TlrTone] = None
 
     def __post_init__(self) -> None:
         if not self.cue_id.strip():
@@ -285,7 +359,7 @@ class TlrBlockPlan:
         return self.total_duration_seconds
 
     def to_dict(self) -> Dict[str, object]:
-        return {
+        payload: Dict[str, object] = {
             "schema_version": self.schema_version,
             "cue_id": self.cue_id,
             "config": self.config.to_dict(),
@@ -294,6 +368,9 @@ class TlrBlockPlan:
             "puzzle_cue_start_offset_seconds": self.puzzle_cue_start_offset_seconds,
             "metadata": dict(self.metadata),
         }
+        if self.tone is not None:
+            payload["tone"] = self.tone.to_dict()
+        return payload
 
     def save(self, output_path: Path) -> Path:
         output_path = output_path.expanduser()
@@ -316,6 +393,7 @@ class TlrBlockPlan:
             ),
             total_duration_seconds=float(payload.get("total_duration_seconds", 0.0)),
             metadata=dict(payload.get("metadata", {}) or {}),
+            tone=_tone_from(payload.get("tone")),
         )
 
     @classmethod
@@ -362,7 +440,9 @@ def train_tlr_cue(
     config: Optional[TlrTrainingConfig] = None,
     session_id: str = "tlr-training",
     event_log_path: Optional[Path] = None,
+    library_id: str = "",
 ) -> TlrTrainingSession:
+    """Play ``cue`` before sleep; the session records its tone and ``library_id``."""
     config = config or TlrTrainingConfig()
     _validate_training_cue(cue)
     # As in Pilot 4 and 5: the cue's hint, or the player's default (None) without one.
@@ -392,6 +472,7 @@ def train_tlr_cue(
         events=tuple(events),
         started_at_utc=started_at,
         completed_at_utc=completed_at,
+        tone=TlrTone.of_cue(cue, library_id=library_id),
     )
     if event_log_path is not None:
         write_tlr_events(session.events, event_log_path)
@@ -403,12 +484,15 @@ def plan_tlr_block(
     *,
     config: Optional[TlrBlockConfig] = None,
     metadata: Optional[Mapping[str, object]] = None,
+    library_id: str = "",
 ) -> TlrBlockPlan:
-    """The REM TLR block for ``cue``; ``metadata`` (the preset block, say) goes into the plan."""
+    """The REM TLR block for ``cue``; ``metadata`` (the preset block, say) goes into the
+    plan, and so does the cue's tone, with ``library_id``, the library it came from."""
     config = config or TlrBlockConfig()
     metadata = dict(metadata or {})
     if cue.protocol != "tlr":
         raise ValueError("TLR block cue must use protocol='tlr'")
+    tone = TlrTone.of_cue(cue, library_id=library_id)
     if not config.enabled:
         return TlrBlockPlan(
             cue_id=cue.cue_id,
@@ -416,6 +500,7 @@ def plan_tlr_block(
             events=(),
             total_duration_seconds=0.0,
             metadata=metadata,
+            tone=tone,
         )
 
     events = tuple(
@@ -435,6 +520,65 @@ def plan_tlr_block(
         events=events,
         total_duration_seconds=total_duration,
         metadata=metadata,
+        tone=tone,
+    )
+
+
+def tlr_tone_mismatch(plan: TlrBlockPlan, cue_library: CueLibrary) -> Optional[str]:
+    """Why a night with ``cue_library`` would not play the TLR tone ``plan`` was made
+    with, or None (#264).
+
+    The night plays its own library's cue under each block event's cue ID, for that
+    cue's length. A plan with a tone (schema 2) is checked on its frequency and length;
+    an older plan only on the length its events keep. A cue ID the library lacks raises
+    KeyError, as the night would.
+    """
+    preset = _preset_name(plan.metadata)
+    for cue_id in dict.fromkeys(event.cue_id for event in plan.events):
+        cue = cue_library.by_id(cue_id)
+        night = describe_tone(cue.frequency_hz, cue.duration_seconds)
+        tone = plan.tone if plan.tone is not None and plan.tone.cue_id == cue_id else None
+        if tone is not None:
+            if not tone.differs_from(cue):
+                continue
+            made_from = f" from cue library {tone.library_id}" if tone.library_id else ""
+            return (
+                f"the night's cue library has {cue_id} at {night}, but the TLR block plan was made with "
+                f"{tone.describe()}{made_from}: the night would play another TLR tone than the one planned and "
+                f"trained. Train, plan and run the night from one cue library: {_library_fix(preset)}, then run "
+                "train-tlr-cue and plan-tlr-block on it again."
+            )
+        lengths = sorted({event.duration_seconds for event in plan.events if event.cue_id == cue_id})
+        if all(_same(cue.duration_seconds, length) for length in lengths):
+            continue
+        planned = " and ".join(f"{length:g} s" for length in lengths)
+        return (
+            f"the night's cue library has {cue_id} at {night}, but the TLR block plan, which records no tone "
+            f"(schema 1, made before #264), was made with a cue of {planned}. Plan the block again from the "
+            "night's cue library, after training on that library."
+        )
+    return None
+
+
+def training_tone_mismatch(training: TlrTrainingSession, cue: CueMetadata) -> Optional[str]:
+    """Why ``cue`` is not the tone ``training`` played, or None (#264)."""
+    if training.cue_id != cue.cue_id:
+        return (
+            f"the training played {training.cue_id}, not {cue.cue_id}: plan the block for the cue that was "
+            f"trained (--cue-id {training.cue_id})"
+        )
+    if training.tone is None:
+        return (
+            f"the training summary {training.session_id} records no tone (made before #264): run "
+            "train-tlr-cue again, or leave out --training"
+        )
+    if not training.tone.differs_from(cue):
+        return None
+    made_from = f" from cue library {training.tone.library_id}" if training.tone.library_id else ""
+    return (
+        f"the training played {cue.cue_id} at {training.tone.describe()}{made_from}, but this cue library has "
+        f"it at {describe_tone(cue.frequency_hz, cue.duration_seconds)}. Train and plan from one cue library: "
+        "the one the night will use."
     )
 
 
@@ -481,6 +625,28 @@ def _training_event_from_result(
         reason_codes=result.reason_codes,
         occurred_at_utc=result.started_at or _utc_now(),
     )
+
+
+def _tone_from(payload: object) -> Optional[TlrTone]:
+    return TlrTone.from_dict(payload) if isinstance(payload, Mapping) and payload else None
+
+
+def _same(left: Optional[float], right: Optional[float]) -> bool:
+    if left is None or right is None:
+        return left is None and right is None
+    return math.isclose(float(left), float(right), rel_tol=0.0, abs_tol=_TONE_TOLERANCE)
+
+
+def _preset_name(metadata: Mapping[str, object]) -> Optional[str]:
+    protocol = metadata.get("protocol") if isinstance(metadata, Mapping) else None
+    name = protocol.get("name") if isinstance(protocol, Mapping) else None
+    return str(name) if name else None
+
+
+def _library_fix(preset: Optional[str]) -> str:
+    if preset:
+        return f"create-cue-library --protocol-preset {preset} makes one with that preset's TLR tone"
+    return "create-cue-library makes one, with --protocol-preset NAME for a preset's TLR tone"
 
 
 def _utc_now() -> str:

@@ -18,6 +18,7 @@ muse-tmr protocol-presets konkoly2026_puzzle      # the whole preset as JSON, it
 | `simulate-replay-cues`, `run-pilot4-cueing`, `run-pilot5-full-night` | `--min-stable-seconds`, `--puzzle-cue-interval-seconds`, `--scheduler-cooldown-seconds`, `--max-puzzle-cues-per-block` | `gate_min_stable_seconds`, `puzzle_cue_interval_seconds`, `scheduler_cooldown_seconds`, `max_puzzle_cues_per_block` |
 | `plan-tlr-block` | `--repetitions`, `--interval-seconds`, `--post-block-pause-seconds`, `--disabled` | `tlr_repetitions`, `tlr_interval_seconds`, `tlr_post_block_pause_seconds`, `tlr_block_enabled` |
 | `create-tlr-cue` | `--frequency-hz`, `--duration-seconds` | `tlr_tone_frequency_hz`, `tlr_tone_duration_seconds` |
+| `create-cue-library` | none: the starter library's `tlr_soft_tone` becomes the cue `create-tlr-cue` makes | `tlr_tone_frequency_hz`, `tlr_tone_duration_seconds` |
 | `generate-puzzle-session` | `--count` | `puzzle_count` |
 | `assign-puzzle-cues` | `--cued-count` | `cued_puzzle_count` |
 
@@ -39,7 +40,9 @@ What a run records is the preset's manifest, a `protocol` block:
 }
 ```
 
-`metadata.json` of a Pilot 4 or 5 night, `pilot4_summary.json` or `pilot5_summary.json`, a Pilot 3 report and `analyze-cued-uncued` (from `--protocol-metadata`, or the assignment's block) keep it as `protocol`; a TLR block plan, a cue assignment, a night puzzle session and a TLR cue made by `create-tlr-cue` keep it under `metadata.protocol`. When the assignment or the TLR plan a night uses was made with another preset, the night prints a warning, runs, and names those files' presets under `protocol.inputs`.
+`metadata.json` of a Pilot 4 or 5 night, `pilot4_summary.json` or `pilot5_summary.json`, a Pilot 3 report and `analyze-cued-uncued` (from `--protocol-metadata`, or the assignment's block) keep it as `protocol`; a TLR block plan, a cue assignment, a night puzzle session and a TLR cue made by `create-tlr-cue`, or by `create-cue-library` with `--protocol-preset`, keep it under `metadata.protocol`. When the assignment or the TLR plan a night uses was made with another preset, the night prints a warning, runs, and names those files' presets under `protocol.inputs`.
+
+The TLR tone is the one setting a night does not take from its plan: the night plays the cue its own `--cue-library` has under the plan's cue ID. Make that library with `create-cue-library --protocol-preset NAME` and train and plan from it too, so that one file holds the preset's tone for all three. The plan records the tone it was made with, and `run-pilot5-full-night` refuses to start when the night's library has another tone under that ID (#264); `plan-tlr-block --training` refuses a library whose cue is not the tone the training played. A starter library made without `--protocol-preset` records no preset and keeps the 396 Hz tone of 1 s, so `plan-tlr-block --protocol-preset NAME` warns when such a cue is not that preset's tone.
 
 Two rules hold for every preset, and the tests check them:
 
@@ -136,7 +139,8 @@ A REM period is a gate-open run as `muse_tmr.validation.gate_log` defines it, th
 - `pause_rules`: every arousal guard pause against the published pause for its trigger, every awakening marker against a published awakening pause, cues outside REM periods, and cues after a guard pause in the same period where the paper stopped;
 - `volume_ramp`: the gain of the cues within each period against a published ramp (`not_implemented` when the paper ramped and the night did not);
 - `cue_duration`: against the published cue length;
-- `tlr_block`: each TLR block against the plan in `metadata.json` (a guard pause starts a new block, as above): the played spacing against the planned one, and whether the block played to its last cue before a guard pause or the end of its period cut it (`complete`).
+- `tlr_block`: each TLR block against the plan in `metadata.json` (a guard pause starts a new block, as above): the played spacing against the planned one, and whether the block played to its last cue before a guard pause or the end of its period cut it (`complete`);
+- `tlr_tone`: the plan's tone against the preset's TLR tone, the one `create-cue-library` and `create-tlr-cue` make with it. The audio log names the cue but not its tone; the plan's tone is the one the night played, as a night only starts when its library has that tone under the plan's cue ID (a sham night plays the sham sound for as long). A plan made before #264 records no tone (`not_available`). A preset whose paper had no TLR cue (`konkoly2021_osnabrueck`, `borghese2022_rem_home`, `schwartz2022_irt_rem`) keeps REMind's default tone, which is `not_published`.
 
 Each check reports `as_published` (or `as_planned`), `differs`, `later_than_published`, `earlier_than_published` or `not_implemented`, or why there was nothing to compare (`not_published`, `not_checkable` for a rule without a duration, `nothing_to_check`, `no_cues`, `no_intervals`, `no_plan`, `not_available`, `not_used`). For `remind_default_v1`, which cites no paper, "published" stands for its own settings. Every report carries `parameter_fidelity_is_not_result_fidelity`: no PSG-verified REM, no EOG, gain and not dB SPL, and a first cue 60 to 85 s after a REM onset, later than the Nijmegen arm of Konkoly et al. 2021 and than Jafarzadeh Esfahani, Picard-Deland et al. 2024 (#167). Matching a paper's parameters says nothing about matching its results.
 

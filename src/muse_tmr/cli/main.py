@@ -31,6 +31,7 @@ PROTOCOL_PRESET_COMMANDS = (
     "run-pilot5-full-night",
     "plan-tlr-block",
     "create-tlr-cue",
+    "create-cue-library",
     "generate-puzzle-session",
     "assign-puzzle-cues",
 )
@@ -336,6 +337,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create a starter cue metadata library.",
     )
     create_cues_parser.add_argument("--output", type=Path, required=True, help="Output cue library .json path.")
+    create_cues_parser.add_argument(
+        "--protocol-preset",
+        default=None,
+        metavar="NAME",
+        help="Put this protocol preset's TLR tone, the cue create-tlr-cue --protocol-preset makes, in place of "
+        "the starter tlr_soft_tone, so that training, the TLR plan and the night use one library.",
+    )
 
     validate_cues_parser = subparsers.add_parser(
         "validate-cue-library",
@@ -653,6 +661,13 @@ def build_parser() -> argparse.ArgumentParser:
     plan_tlr_parser.add_argument("--interval-seconds", type=float, default=None, help=PROTOCOL_PRESET_DEFAULT_HELP)
     plan_tlr_parser.add_argument("--post-block-pause-seconds", type=float, default=None, help=PROTOCOL_PRESET_DEFAULT_HELP)
     plan_tlr_parser.add_argument("--disabled", action="store_true")
+    plan_tlr_parser.add_argument(
+        "--training",
+        type=Path,
+        default=None,
+        help="The summary train-tlr-cue wrote: refuse to plan when it played another tone than this library's "
+        "cue, and record the training in the plan.",
+    )
     _add_protocol_preset_arg(plan_tlr_parser)
 
     import_puzzles_parser = subparsers.add_parser(
@@ -2264,10 +2279,25 @@ def _calibrate_volume(args: argparse.Namespace) -> int:
 
 
 def _create_cue_library(args: argparse.Namespace) -> int:
+    from dataclasses import replace
+
     from muse_tmr.audio import default_cue_library, export_cue_library
 
-    output_path = export_cue_library(default_cue_library(), _resolve_output_path(args.output))
-    print(f"cue library created output={output_path}")
+    library = default_cue_library()
+    tlr_note = ""
+    if args.protocol_preset is not None:
+        from muse_tmr.protocol import default_tlr_cue
+
+        # The cue create-tlr-cue --protocol-preset makes, in place of the starter's (#264).
+        preset, overrides = _protocol_from_args(args, {})
+        tlr = default_tlr_cue(preset.tlr_cue_config(overrides=overrides), protocol=preset.manifest(overrides))
+        library = replace(library, cues=tuple(tlr if cue.cue_id == tlr.cue_id else cue for cue in library.cues))
+        tlr_note = (
+            f"tlr_cue={tlr.cue_id} tlr_frequency_hz={tlr.frequency_hz} "
+            f"tlr_duration_seconds={tlr.duration_seconds} protocol={preset.name} "
+        )
+    output_path = export_cue_library(library, _resolve_output_path(args.output))
+    print(f"cue library created {tlr_note}output={output_path}")
     return 0
 
 
@@ -3028,6 +3058,10 @@ async def _run_live_cueing_pilot(
     except _NightArmError as exc:
         print(f"{command}: {exc}", file=sys.stderr)
         return 2
+    tone_refusal = _tlr_tone_refusal(tlr_block_plan, cue_library)
+    if tone_refusal is not None:
+        print(f"{command}: {tone_refusal}", file=sys.stderr)
+        return 2
     config = _live_cueing_config(
         args,
         pilot_id=pilot_id,
@@ -3501,6 +3535,7 @@ def _train_tlr_cue(args: argparse.Namespace) -> int:
         ),
         session_id=args.session_id,
         event_log_path=_resolve_output_path(args.event_log),
+        library_id=library.library_id,
     )
     output_path = session.save(_resolve_output_path(args.output))
     print(
@@ -3516,30 +3551,68 @@ def _train_tlr_cue(args: argparse.Namespace) -> int:
 
 def _plan_tlr_block(args: argparse.Namespace) -> int:
     from muse_tmr.audio import load_cue_library
-    from muse_tmr.protocol import plan_tlr_block
+    from muse_tmr.protocol import load_tlr_training_session, plan_tlr_block, training_tone_mismatch
 
     library = load_cue_library(_resolve_output_path(args.cue_library))
     cue = library.by_id(args.cue_id)
+    training = None
+    if args.training is not None:
+        # The plan is the night's record of the tone; it must be the one trained (#264).
+        training = load_tlr_training_session(_resolve_output_path(args.training))
+        mismatch = training_tone_mismatch(training, cue)
+        if mismatch is not None:
+            print(f"plan-tlr-block: {mismatch}", file=sys.stderr)
+            return 2
     preset, overrides = _protocol_from_args(
         args,
         _TLR_BLOCK_PRESET_FLAGS,
         extra_overrides={"tlr_block_enabled": False} if args.disabled else None,
     )
+    metadata: Dict[str, object] = {"protocol": _protocol_block(preset, overrides, tlr_cue=cue.metadata)}
+    if args.protocol_preset is not None:
+        tone_warning = _preset_tone_warning(cue, preset, overrides)
+        if tone_warning is not None:
+            print(tone_warning, file=sys.stderr)
+    if training is not None:
+        metadata["training"] = {"session_id": training.session_id, "completed_at_utc": training.completed_at_utc}
     plan = plan_tlr_block(
         cue,
         config=preset.tlr_block_config(overrides),
-        metadata={"protocol": _protocol_block(preset, overrides, tlr_cue=cue.metadata)},
+        metadata=metadata,
+        library_id=library.library_id,
     )
     output_path = plan.save(_resolve_output_path(args.output))
     print(
         "TLR block planned "
         f"cue={plan.cue_id} "
+        f"frequency_hz={cue.frequency_hz} "
+        f"duration_seconds={cue.duration_seconds} "
         f"events={len(plan.events)} "
         f"puzzle_start_offset={plan.puzzle_cue_start_offset_seconds} "
         f"protocol={preset.name} "
-        f"output={output_path}"
+        + (f"training={training.session_id} " if training is not None else "")
+        + f"output={output_path}"
     )
     return 0
+
+
+def _preset_tone_warning(cue, preset, overrides: Mapping[str, object]) -> Optional[str]:
+    """A warning when ``cue`` records no protocol preset and is not the preset's TLR tone,
+    as the starter library's tlr_soft_tone is without create-cue-library --protocol-preset
+    (#264). A cue made with another preset is named by _protocol_block()."""
+    from muse_tmr.protocol import TlrTone
+
+    if isinstance(cue.metadata, Mapping) and isinstance(cue.metadata.get("protocol"), Mapping):
+        return None
+    config = preset.tlr_cue_config(cue_id=cue.cue_id, overrides=overrides)
+    tone = TlrTone(cue_id=cue.cue_id, frequency_hz=config.frequency_hz, duration_seconds=config.duration_seconds)
+    if not tone.differs_from(cue):
+        return None
+    return (
+        f"warning: the tlr cue {cue.cue_id} is {TlrTone.of_cue(cue).describe()} and records no protocol preset, "
+        f"{preset.name}'s TLR tone is {tone.describe()}; create-cue-library --protocol-preset {preset.name} makes "
+        "a library with it"
+    )
 
 
 def _import_puzzles(args: argparse.Namespace) -> int:
@@ -4132,6 +4205,19 @@ def _night_arm_from_args(args: argparse.Namespace):
     if night_id is not None or sham_cue_id is not None:
         raise _NightArmError("--night-id and --sham-cue-id go with --arm or --night-schedule")
     return None
+
+
+def _tlr_tone_refusal(tlr_block_plan, cue_library) -> Optional[str]:
+    """Why the night's cue library would not play the TLR tone its plan was made with, or
+    None (#264). Checked in every arm before anything runs, as the sham cue is."""
+    from muse_tmr.protocol import tlr_tone_mismatch
+
+    if tlr_block_plan is None:
+        return None
+    try:
+        return tlr_tone_mismatch(tlr_block_plan, cue_library)
+    except KeyError as exc:
+        return f"the TLR block plan's cue is not in the night's cue library ({exc.args[0] if exc.args else exc})"
 
 
 def _check_sham_cue(night_arm, *, catalog, cue_library, tlr_block_plan=None, generated_tone_only=False) -> None:

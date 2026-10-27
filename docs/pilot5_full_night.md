@@ -27,7 +27,9 @@ Required before using `--backend system`:
   stops from ordinary recoverable artifacts.
 - Puzzle catalog has at least four eligible unsolved puzzles.
 - Night session and cue assignment exist, with cued and uncued puzzles randomized.
-- Cue library contains the puzzle cue IDs and the TLR cue ID referenced by the block.
+- Cue library contains the puzzle cue IDs and the TLR cue the block was planned with,
+  under the same ID and with the same tone: training, the plan and the night use one
+  library.
 - TLR training was run before sleep, and a TLR block plan exists.
 - macOS output device is set to the intended sleep headphones.
 - You know the emergency stop path for the run.
@@ -48,6 +50,7 @@ cd /path/to/remind-eeg
 
 .venv/bin/python -m muse_tmr.cli.main plan-tlr-block data/cues/starter.json \
   --output data/protocol/night-001_tlr_block.json \
+  --training data/protocol/night-001_tlr_training.json \
   --repetitions 3 \
   --interval-seconds 8 \
   --post-block-pause-seconds 10
@@ -58,11 +61,25 @@ pre-sleep TLR familiarization. Without `afplay` on PATH it then exits with code 
 instead of training in silence.
 
 To run a night with a protocol preset (`docs/protocol_presets.md`), give the same
-`--protocol-preset` to `create-tlr-cue`, `plan-tlr-block`, `generate-puzzle-session`,
+`--protocol-preset` to `create-cue-library`, `plan-tlr-block`, `generate-puzzle-session`,
 `assign-puzzle-cues` and `run-pilot5-full-night`, and leave out the flags it sets, for
 example the `--repetitions`, `--interval-seconds` and `--post-block-pause-seconds` above.
-Each file records the preset it was made with; a night whose plan or assignment was made
-with another preset says so in a warning and in `metadata.json`.
+`create-cue-library` then puts the preset's TLR tone in `data/cues/starter.json` under
+`tlr_soft_tone`, the same cue `create-tlr-cue --protocol-preset` makes, so training, the
+plan and the night all read that one library. Without the flag the library keeps the
+starter's tone, and `plan-tlr-block --protocol-preset` warns when that is not the
+preset's. Each file records the preset it was made with; a night whose plan or
+assignment was made with another preset says so in a warning and in `metadata.json`.
+
+The night plays the TLR cue of its own `--cue-library`, whatever library the plan was
+made from. So the plan records the tone it was made with (`tone`), and
+`run-pilot5-full-night` exits with code 2, before it connects or writes a file, when the
+night's library has another tone under the plan's cue ID; for a plan made before it kept
+its tone, when the cue's length differs from the plan's. The error says how to fix it.
+`--training` makes `plan-tlr-block` refuse in the same way when the library's cue is not
+the tone the training played, and records the training in the plan. Before this check
+(#264) a TLR cue made by `create-tlr-cue --protocol-preset` into a file of its own was
+trained and planned, while the night played the starter library's `tlr_soft_tone`.
 
 ## Dry-Run Smoke
 
@@ -273,7 +290,8 @@ Compare the night with its protocol preset:
 
 Its `tlr_block` check shows how each TLR block played against the plan: at a 30 s stride
 cues planned closer than 30 s play back to back, and after an arousal guard pause the
-scheduler plays the block again in the same REM period.
+scheduler plays the block again in the same REM period. Its `tlr_tone` check compares the
+plan's tone, the one the night played, with the preset's.
 
 ## Outputs
 
