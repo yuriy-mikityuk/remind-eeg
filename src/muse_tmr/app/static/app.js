@@ -1887,8 +1887,11 @@ dreamForm.addEventListener("input", () => {
 recallForm.addEventListener("input", () => {
   recallUnsaved = true;
 });
-retestForm.addEventListener("input", () => {
-  retestUnsaved = true;
+// Picking a wave is no answer: the select fires input before its change handler asks.
+retestForm.addEventListener("input", (event) => {
+  if (event.target !== retestWave) {
+    retestUnsaved = true;
+  }
 });
 
 function morningUnsaved() {

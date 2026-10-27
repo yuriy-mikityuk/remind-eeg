@@ -208,6 +208,24 @@ try {
     `(!document.querySelector("#screen-morning").hidden && document.querySelector("#screen-record").hidden) || "Morning tab not shown"`
   );
   await step(
+    "picking another retest wave with nothing typed asks nothing",
+    () =>
+      evaluate(`(() => {
+        window.confirmCalls = 0;
+        window.confirm = () => {
+          window.confirmCalls += 1;
+          return false;
+        };
+        const wave = document.querySelector("#retest-wave");
+        wave.value = "day7";
+        // A picked option fires input, then change, and both bubble to the form.
+        wave.dispatchEvent(new Event("input", { bubbles: true }));
+        wave.dispatchEvent(new Event("change", { bubbles: true }));
+      })()`),
+    `(window.confirmCalls === 0 && document.querySelector("#retest-wave").value === "day7") ||
+      "asked " + window.confirmCalls + " time(s), wave " + document.querySelector("#retest-wave").value`
+  );
+  await step(
     "the Recordings tab lists recordings",
     click("#tab-recordings"),
     `(!document.querySelector("#screen-recordings").hidden && document.querySelector("#history-list").children.length > 0) || "Recordings list empty"`
