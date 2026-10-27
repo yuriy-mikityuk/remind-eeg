@@ -931,6 +931,61 @@ class TestOneProtocolHash(unittest.TestCase):
         self.assertEqual(night_block["inputs"]["assignment"]["name"], preset.name)
         self.assertEqual(night_block["settings"]["cued_puzzle_count"], 2)
 
+    def test_a_pilot5_night_keeps_its_tlr_plan_for_the_fidelity_report(self):
+        from muse_tmr.audio import load_cue_library
+        from muse_tmr.reports.protocol_fidelity import build_protocol_fidelity
+        from tests.test_pilot3_replay_simulation import write_eeg_only_recording
+
+        preset = get_protocol_preset("konkoly2021_northwestern")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            recording = root / "recording"
+            write_eeg_only_recording(recording, ["nrem"] * 2 + ["rem"] * 6)
+            catalog, session, assignment, cue_library = protocol_fixture()
+            paths = {
+                "catalog": catalog.save(root / "catalog.json"),
+                "session": session.save(root / "session.json"),
+                "assignment": assignment.save(root / "assignment.json"),
+            }
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cli_main.main([
+                    "create-tlr-cue", "--output", str(root / "tlr_cue.json"), "--protocol-preset", preset.name,
+                ]), 0)
+                self.assertEqual(cli_main.main([
+                    "plan-tlr-block", str(root / "tlr_cue.json"), "--output", str(root / "tlr_plan.json"),
+                    "--protocol-preset", preset.name,
+                ]), 0)
+                self.assertEqual(cli_main.main([
+                    "calibrate-volume", "--device-name", "Speaker", "--output", str(root / "calibration.json"),
+                    "--detectable-volume", "0.01", "--identifiable-volume", "0.02", "--comfortable-volume", "0.04",
+                ]), 0)
+            tlr_cues = load_cue_library(root / "tlr_cue.json").cues
+            replace(cue_library, cues=cue_library.cues + tlr_cues).save(root / "cues.json")
+            args = cli_main.build_parser().parse_args([
+                "run-pilot5-full-night", "--output-dir", str(root / "night"),
+                "--catalog", str(paths["catalog"]), "--session", str(paths["session"]),
+                "--assignment", str(paths["assignment"]), "--cue-library", str(root / "cues.json"),
+                "--tlr-block", str(root / "tlr_plan.json"), "--calibration", str(root / "calibration.json"),
+                "--backend", "mock", "--preset", "p21", "--protocol-preset", preset.name,
+                "--duration-seconds", "300", "--allow-short",
+            ])
+            replay = ReplaySession(ReplayConfig(input_path=recording, speed=0.0))
+            with mock.patch.object(cli_main, "_build_source", return_value=replay), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                asyncio.run(cli_main._run_pilot5_full_night(args))
+            plan = json.loads((root / "tlr_plan.json").read_text(encoding="utf-8"))
+            metadata = json.loads((root / "night" / "metadata.json").read_text(encoding="utf-8"))
+            tlr_block = build_protocol_fidelity(root / "night").checks["tlr_block"]
+
+        # The night keeps the plan as it was made, its preset block included, and names it.
+        self.assertEqual(metadata["tlr_block_plan"], plan)
+        self.assertEqual(metadata["tlr_block_plan"]["metadata"]["protocol"]["name"], preset.name)
+        self.assertEqual(metadata["protocol"]["inputs"]["tlr_block_plan"]["content_hash"], preset.content_hash())
+        # The fidelity report compares the TLR cues with that plan.
+        self.assertEqual(tlr_block["plan"], {"repetitions": 10, "interval_seconds": 30.0})
+        self.assertGreaterEqual(tlr_block["observed"]["cues"], 1)
+        self.assertIn(tlr_block["status"], ("as_planned", "differs"))
+
 
 def _night_logs(summary):
     return {

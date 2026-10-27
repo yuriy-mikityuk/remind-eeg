@@ -1,7 +1,6 @@
 """The protocol fidelity report (#231): synthetic gate sequences and a synthetic night."""
 
 import ast
-import asyncio
 import contextlib
 import datetime as dt
 import io

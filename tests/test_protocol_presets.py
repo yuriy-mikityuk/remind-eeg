@@ -19,7 +19,6 @@ from muse_tmr.protocol import (
     DEFAULT_PROTOCOL_PRESET,
     SOURCE_CHECKS,
     Citation,
-    ProtocolPreset,
     ProtocolPresetNotRunnable,
     RunnerSettings,
     TlrBlockConfig,
