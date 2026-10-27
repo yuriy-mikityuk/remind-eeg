@@ -367,6 +367,59 @@ class TestDescription(_SeriesTest):
         self.assertIsNotNone(report.arousal["sham"]["mean_rate"]["any"])
         self.assertIsNone(report.arousal["no_cue"]["mean_rate"]["any"])
 
+    def test_every_nights_values_come_from_its_files(self):
+        """Each night's values recomputed from the files write_series wrote, on a two-rater
+        series: the raters (both of two) decide incorporation, not the sleeper's links;
+        unsure counts as heard; and every wave has its own delta."""
+        series = self.series(raters=("rater-a", "rater-b"), planted=True)
+        report = _analyse(series)
+        categories = ("sound_cue", "direct_conceptual", "indirect_conceptual")
+
+        def read(directory, name):
+            return json.loads((directory / name).read_text(encoding="utf-8"))
+
+        def solve_rate(results):
+            return sum(1 for item in results if item["solved"]) / len(results)
+
+        covered = {"unsure": 0, "woke": 0, "raters_differ_from_links": 0, "day7_differs_from_morning": 0}
+        for night in report.nights:
+            night_id = night["night_id"]
+            dream = read(series.reports_dir, f"{night_id}_dream_report.json")
+            puzzles = read(series.protocol_dir, f"{night_id}_puzzles.json")["puzzle_ids"]
+            cued = set(read(series.protocol_dir, f"{night_id}_assignment.json")["cued_puzzle_ids"])
+            coded_by = {puzzle: 0 for puzzle in puzzles}
+            for rater in ("rater-a", "rater-b"):
+                for item in read(series.reports_dir, f"{night_id}_coding_{rater}.json")["codings"]:
+                    coded_by[item["puzzle_id"]] += any(item[name] for name in categories)
+            perception, woke = dream["cue_perception"], dream["woke_from_sound"]
+            expected = {
+                "lucid": 1.0 if dream["lucid"] else 0.0,
+                "cue_perceived": None if perception == "unknown" else float(perception in ("in_dream", "awake", "unsure")),
+                "woke_from_sound": None if woke == "unknown" else float(woke == "yes"),
+                "incorporation_rate": sum(1 for count in coded_by.values() if count == 2) / len(puzzles),
+            }
+            for wave, suffix in (("morning", ""), ("day7", "_day7"), ("day10", "_day10")):
+                results = read(series.reports_dir, f"{night_id}_retest{suffix}.json")["results"]
+                expected[f"cued_minus_uncued_solve_rate_{wave}"] = solve_rate(
+                    [item for item in results if item["puzzle_id"] in cued]
+                ) - solve_rate([item for item in results if item["puzzle_id"] not in cued])
+            for name, value in expected.items():
+                if value is None:
+                    self.assertIsNone(night["values"][name], (night_id, name))
+                else:
+                    self.assertAlmostEqual(night["values"][name], value, msg=f"{night_id} {name}")
+            self.assertEqual(night["incorporation_source"], "raters")
+            linked = sum(1 for link in dream["puzzle_incorporations"] if link["incorporated"]) / len(puzzles)
+            covered["unsure"] += perception == "unsure"
+            covered["woke"] += woke == "yes"
+            covered["raters_differ_from_links"] += linked != expected["incorporation_rate"]
+            covered["day7_differs_from_morning"] += (
+                expected["cued_minus_uncued_solve_rate_day7"] != expected[MORNING_DELTA]
+            )
+        # The series holds every case the values could get wrong.
+        for case, nights in covered.items():
+            self.assertGreater(nights, 0, case)
+
     def test_rater_codes_decide_incorporation(self):
         report = _analyse(self.series(raters=("rater-a",)))
         self.assertEqual({night["incorporation_source"] for night in report.nights}, {"raters"})
@@ -486,6 +539,22 @@ class TestLimitations(_SeriesTest):
         self.assertEqual(mismatch.metadata["nights"][cue_night], {"scheduled": "cue", "summary": "no_cue"})
         # The schedule's arm stays the night's arm in the analysis.
         self.assertEqual(next(n for n in report.nights if n["night_id"] == cue_night)["arm"], "cue")
+
+    def test_no_no_cue_nights(self):
+        series = self.series()
+        for night_id, arm in arms_by_night(series.schedule).items():
+            if arm != "no_cue":
+                continue
+            (series.reports_dir / f"{night_id}_dream_report.json").unlink()
+            for suffix in ("", "_day7", "_day10"):
+                (series.reports_dir / f"{night_id}_retest{suffix}.json").unlink()
+            shutil.rmtree(series.recordings_dir / night_id)
+        report = _analyse(series)
+        self.assertIn("no_no_cue_nights", report.limitation_codes)
+        self.assertNotIn("no_sham_nights", report.limitation_codes)
+        unbalanced = next(item for item in report.limitations if item.code == "unbalanced_arms")
+        self.assertEqual(unbalanced.metadata["nights_with_data"], {"cue": 4, "sham": 4, "no_cue": 0})
+        self.assertIsNone(report.difference("lucid", "cue-no_cue")["difference"])
 
 
 class TestCommand(_SeriesTest):

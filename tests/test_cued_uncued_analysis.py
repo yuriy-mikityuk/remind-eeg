@@ -250,8 +250,27 @@ class TestSchema3(unittest.TestCase):
             build_cued_uncued_analysis(session, assignment, (retest, _retest_wave("morning")))
         only_later = build_cued_uncued_analysis(session, assignment, (day7,))
         self.assertEqual(only_later.metadata["primary_retest_wave"], "day7")
+        # Without a morning retest the rows are the earliest wave's, whatever the order given.
+        delayed = build_cued_uncued_analysis(session, assignment, (_retest_wave("day10", solved=("p4",)), day7))
+        self.assertEqual(delayed.metadata["primary_retest_wave"], "day7")
+        self.assertEqual(list(delayed.wave_metrics), ["day7", "day10"])
+        self.assertEqual({row.puzzle_id: row.solved for row in delayed.rows},
+                         {"p1": False, "p2": True, "p3": True, "p4": False})
         complete = build_cued_uncued_analysis(session, assignment, (retest, day7, _retest_wave("day10")))
         self.assertNotIn("missing_delayed_retest", complete.limitation_codes)
+
+    def test_the_cross_tab_counts_each_waves_own_solves(self):
+        # The dream report links p1 and p3; the morning retest solved p1, the day7 one p2 and p3.
+        session, assignment, dream_report, retest = _analysis_inputs()
+        day7 = _retest_wave("day7", solved=("p2", "p3"))
+        report = build_cued_uncued_analysis(session, assignment, (retest, day7), dream_report=dream_report, min_group_size=1)
+        waves = report.incorporation_solved["waves"]
+        self.assertEqual(waves["morning"]["incorporated"], {"puzzles": 2, "solved": 1, "unsolved": 1, "solve_rate": 0.5})
+        self.assertEqual(waves["morning"]["not_incorporated"], {"puzzles": 2, "solved": 0, "unsolved": 2, "solve_rate": 0.0})
+        self.assertEqual(waves["day7"]["incorporated"], {"puzzles": 2, "solved": 1, "unsolved": 1, "solve_rate": 0.5})
+        self.assertEqual(waves["day7"]["not_incorporated"], {"puzzles": 2, "solved": 1, "unsolved": 1, "solve_rate": 0.5})
+        self.assertEqual(waves["day7"]["by_condition"]["uncued"]["incorporated"]["solved"], 1)
+        self.assertEqual(waves["morning"]["by_condition"]["uncued"]["incorporated"]["solved"], 0)
 
     def test_rater_codes_win_over_the_sleepers_links(self):
         session, assignment, dream_report, retest = _analysis_inputs()
