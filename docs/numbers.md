@@ -202,8 +202,9 @@ Each preset in `src/muse_tmr/protocol/protocol_registry.py` (a config dataclass)
 | `small_n` below 5 nights with data in an arm | `nof1_protocol.md`, `USAGE.md` | `DEFAULT_MIN_NIGHTS_PER_ARM` in `nof1_analysis.py`; `--min-nights-per-arm` | code (#228); set by hand, like the 5 puzzles of `analyze-cued-uncued --min-group-size` |
 | Eight outcomes and three pairs of arms in the series analysis | `nof1_protocol.md` | `OUTCOMES` and `CONTRASTS` in `nof1_analysis.py` | count (#228) |
 | A puzzle counts as incorporated when more than half of its raters coded it, so both of two | `nof1_protocol.md`, `protocol.md`, `validation.md`, `data_model.md`, CHANGELOG | `rater_incorporation()` in `src/muse_tmr/reports/incorporation_coding.py` | code (#228); a rule set by hand |
-| The report's SCRIBE/CENT checklist: 28 rows (the 26 SCRIBE items and 2 CENT items SCRIBE lacks), 4 `auto`, 12 `partial`, 12 `manual` | CHANGELOG | `REPORTING_CHECKLIST` in `nof1_analysis.py`, `checklist_counts()` | count (#228); the statuses are a judgement made for #228 |
-| SCRIBE 2016 has 26 items in six sections | `references.md` | [Tate et al. 2016](https://pmc.ncbi.nlm.nih.gov/articles/PMC4960517/), its text | literature; read on 2026-10-27 for #228, the checklist table itself not loaded |
+| The report's SCRIBE/CENT checklist: 29 rows (the 26 SCRIBE items, and 3 rows for the CENT items 7a and 7b, 10 and 18, which no SCRIBE item covers), 4 `auto`, 13 `partial`, 12 `manual` | CHANGELOG | `REPORTING_CHECKLIST` in `nof1_analysis.py`, `checklist_counts()` | count (#228); the statuses are a judgement made for #228 |
+| SCRIBE 2016 has 26 items in six sections | `references.md` | [Tate et al. 2016](https://pmc.ncbi.nlm.nih.gov/articles/PMC4960517/), its text | literature; read on 2026-10-27 for #228, the checklist table itself, an image, not read |
+| CENT 2015 adds guidance to 14 of the 25 items of CONSORT 2010 and has an item 4c, ethics approval | `references.md` | the abstract of [Vohra et al. 2016](https://doi.org/10.1016/j.jclinepi.2015.05.004) in *J Clin Epidemiol* 76:9–17, the co-publication of the BMJ statement, and the BMJ's [correction](https://pmc.ncbi.nlm.nih.gov/articles/PMC5058423/) of item 4c | literature; read on 2026-10-27 for #228, the statement's full text not read |
 
 ## Other people's figures
 

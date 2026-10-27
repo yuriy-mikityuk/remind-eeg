@@ -974,7 +974,7 @@ agreement is 1) with `kappa_note`, and `yes_counts` per rater.
 | `autocorrelation` | Per outcome: `lag1` of the values once the arm means are taken out, over consecutive positions, with `pairs` and `nights`. |
 | `cue_counts`, `arousal` | Per arm: nights with a summary, `plays`, `plays_per_night`, `virtual_plays`; nights with arousal proxies and the mean of each flag's rate per cue. |
 | `limitations` | `code`, `severity`, `message`, `metadata`, as in the cued-vs-uncued analysis; the codes are in `docs/nof1_protocol.md`. |
-| `reporting_checklist`, `reporting_checklist_counts` | Each SCRIBE 2016 item with its CENT 2015 items, `status` (`auto`, `partial`, `manual`) and what fills it; the count per status. |
+| `reporting_checklist`, `reporting_checklist_counts` | Each SCRIBE 2016 item (`scribe`) with the CENT 2015 items on its topic (`cent`), then the CENT items no SCRIBE item covers; `item`, `status` (`auto`, `partial`, `manual`) and `filled_by`, what fills it; the count per status. |
 
 No dream text is copied into it.
 

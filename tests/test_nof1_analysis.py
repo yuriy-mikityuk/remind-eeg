@@ -288,17 +288,26 @@ class TestDescription(_SeriesTest):
         markdown = report.to_markdown()
         self.assertIn("Synthetic input, not sleep", markdown)
         self.assertIn("SCRIBE", markdown)
-        self.assertIn("4 items auto, 12 partial, 12 manual", markdown)
+        self.assertIn("4 items auto, 13 partial, 12 manual", markdown)
         primary = [item for item in report.differences if item["primary"]]
         self.assertEqual([(item["outcome"], item["contrast"]) for item in primary], [("lucid", "cue-no_cue")])
         self.assertNotIn("p-value =", markdown)
 
     def test_the_checklist_marks_every_item(self):
         counts = checklist_counts()
-        self.assertEqual(counts, {"auto": 4, "partial": 12, "manual": 12})
+        self.assertEqual(counts, {"auto": 4, "partial": 13, "manual": 12})
         rows = nof1_analysis.checklist_rows()
         self.assertEqual([row["scribe"] for row in rows if row["scribe"]], [str(item) for item in range(1, 27)])
         self.assertTrue(all(row["status"] in ("auto", "partial", "manual") for row in rows))
+        # CENT keeps CONSORT 2010's item numbers and adds 4c (ethics approval): each one
+        # sits in exactly one row.
+        consort_2010 = (
+            "1a 1b 2a 2b 3a 3b 4a 4b 5 6a 6b 7a 7b 8a 8b 9 10 11a 11b 12a 12b 13a 13b 14a 14b "
+            "15 16 17a 17b 18 19 20 21 22 23 24 25"
+        ).split()
+        named = [item for row in rows for item in row["cent"].split(", ") if item]
+        self.assertEqual(sorted(named), sorted(consort_2010 + ["4c"]))
+        self.assertEqual([row["cent"] for row in rows if not row["scribe"]], ["7a, 7b", "10", "18"])
 
 
 class TestLimitations(_SeriesTest):
@@ -395,7 +404,7 @@ class TestCommand(_SeriesTest):
         self.assertEqual(payload["schedule"]["seal"], "matches")
         self.assertEqual(_analyse(series).schedule["seal"], "not_checked")
         self.assertEqual(payload["settings"]["primary_contrast"], "cue-no_cue")
-        self.assertEqual(payload["reporting_checklist_counts"], {"auto": 4, "partial": 12, "manual": 12})
+        self.assertEqual(payload["reporting_checklist_counts"], {"auto": 4, "partial": 13, "manual": 12})
         self.assertTrue(markdown.exists())
         self.assertIn("orders=72 (exact)", stdout.getvalue())
         self.assertIn(SYNTHETIC_NOTE, stdout.getvalue())

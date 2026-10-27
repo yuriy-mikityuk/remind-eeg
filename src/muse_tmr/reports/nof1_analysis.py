@@ -104,8 +104,9 @@ OUTCOMES.update(
 )
 
 # SCRIBE 2016 items (Tate et al. 2016) with the CENT 2015 items (Vohra et al. 2015) on the
-# same topic, and what this report fills. Status: auto (the report holds it), partial
-# (the report holds part of it), manual (the author writes it).
+# same topic, by CENT's numbers (CONSORT 2010's, plus 4c), then three CENT items SCRIBE
+# has no item for, and what this report fills. Status: auto (the report holds it),
+# partial (the report holds part of it), manual (the author writes it).
 REPORTING_CHECKLIST: Tuple[Tuple[str, str, str, str, str], ...] = (
     ("1", "1a", "Title names the single-case design", "partial",
      "The report's title names an N-of-1 series; the paper's title is yours."),
@@ -117,7 +118,7 @@ REPORTING_CHECKLIST: Tuple[Tuple[str, str, str, str, str], ...] = (
     ("6", "3b, 6b", "Changes after the start", "partial",
      "Nights whose protocol effective hash differs from the first night's; the reasons are yours."),
     ("7", "", "Planned replication", "manual", "Yours."),
-    ("8", "8a, 8b, 9, 10", "Randomisation and concealment", "auto",
+    ("8", "8a, 8b, 9", "Randomisation and concealment", "auto",
      "How the order was drawn (seed, Latin-square rows), the commitment and the seal check."),
     ("9", "11a, 11b", "Blinding", "partial",
      "What stayed sealed and until when, and unblinded_early; who was blind and how alike the sounds were are "
@@ -125,7 +126,7 @@ REPORTING_CHECKLIST: Tuple[Tuple[str, str, str, str, str], ...] = (
     ("10", "4a", "Selection criteria", "manual", "Yours."),
     ("11", "15", "Participant characteristics", "manual", "Yours."),
     ("12", "4b", "Setting", "manual", "Yours."),
-    ("13", "", "Ethics approval and consent", "manual", "Yours."),
+    ("13", "4c", "Ethics approval and consent", "manual", "Yours."),
     ("14", "6a", "Measures", "partial",
      "Each outcome's definition and source; rater agreement comes from compare-incorporation-codings; "
      "validity is yours."),
@@ -152,6 +153,9 @@ REPORTING_CHECKLIST: Tuple[Tuple[str, str, str, str, str], ...] = (
      "The commitment a preregistration carries; where it was filed is yours."),
     ("26", "25", "Funding", "manual", "Yours."),
     ("", "7a, 7b", "Number of periods and stopping rule", "manual", "Yours, as preregistered."),
+    ("", "10", "Who drew the sequence and who assigned the nights", "partial",
+     "plan-night-schedule drew the order and each runner read its night's arm from the schedule; who ran "
+     "them is yours."),
     ("", "18", "Carry-over, period effects and serial correlation", "auto",
      "carry_over_possible, the first night's flag and the means without it, lag-1 autocorrelation."),
 )
