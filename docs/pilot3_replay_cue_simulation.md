@@ -164,6 +164,18 @@ with the preset's paper:
 It writes `protocol_fidelity.json` and `.md` next to the report. A plan plays nothing,
 so the report says `pilot3_plan_not_played` and has no gain to compare.
 
+## Arms
+
+`--arm cue|sham|no_cue`, or `--night-schedule <schedule.json> --night-id <night>`,
+plans the replay as one arm of an N-of-1 series (`docs/nof1_protocol.md`). The plan's
+times are the same in every arm: a sham plan names the sham cue (`--sham-cue-id`,
+default `sham_soft_tone`, which the cue library must hold) and the reason `sham_arm`, a
+no-cue plan has no `play` events and a `virtual_play` skip where the cue arm plays
+(`metrics.virtual_play_count`). Uncued puzzles stay unschedulable in every arm. The
+report (schema 2) records `arm`, `night_id` and `schedule_commitment_sha256` and adds the
+criteria `no_play_in_no_cue_arm` and, with a schedule, `arm_matches_sealed_schedule`; the
+printed line leaves out the plan's counts and its first play.
+
 ## Validate
 
 The command exits `0` only when:

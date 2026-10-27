@@ -122,6 +122,18 @@ morning `protocol-fidelity` compares the night with it:
 .venv/bin/python -m muse_tmr.cli.main protocol-fidelity "$OUTDIR"
 ```
 
+## Arms
+
+`--night-schedule <schedule.json> --night-id <night>` runs the night as the arm a sealed
+N-of-1 schedule gives it, and `--arm cue|sham|no_cue` as one arm, open label
+(`docs/nof1_protocol.md`). A sham night plays the untrained sham cue (`--sham-cue-id`,
+default `sham_soft_tone`) wherever a cue would play, for as long and as loud as that cue,
+through the same player, backend and calibrated cap; a no-cue night sends nothing to the
+player and logs a `virtual_play` skip where the cue arm plays. The sham cue is checked
+before the night starts, in every arm. The command never prints the arm, and the summary
+(schema 4) records it with `night_id`, `schedule_commitment_sha256` and the criteria
+`no_play_in_no_cue_arm` and, with a schedule, `arm_matches_sealed_schedule`.
+
 ## Emergency Stop
 
 The summary prints an `emergency_stop` path. Creating that file blocks future playback

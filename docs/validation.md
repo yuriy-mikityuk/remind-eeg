@@ -40,6 +40,8 @@ with assumptions.
 | Replay determinism | Same raw path and time range produce the same frame counts, epoch indexes, and feature row counts | Replay and feature outputs | Re-running replay changes deterministic counts or row identities. |
 | Cued-only scheduler contract | Count puzzle `play` events whose `puzzle_id` is not in `PuzzleCueAssignment.scheduled_puzzle_ids` | Scheduler JSONL, assignment JSON | Any uncued puzzle receives a scheduler `play` event. |
 | Safety separation | Audio decisions are derived from stable gate plus scheduler/guard state, not raw `P_REM` alone | Gate decisions, scheduler events, guard decisions | A cue can be traced directly from REM probability without gate and guard checks. |
+| Night arm contract | A `no_cue` night: scheduler `play` events plus `status == "played"` lines of `audio_playback.jsonl`; a `sham` night: its plays against the same night's plan in the cue arm | `pilot4_summary.json`/`pilot5_summary.json` criterion `no_play_in_no_cue_arm`, scheduler JSONL, audio JSONL | A no-cue night with a play or a played line, or a sham play at another time or volume than the cue it stands in for. |
+| Sealed arm | The night's `arm` against its sealed schedule, and the schedule's commitment against its companion, at the end of the night | Summary criterion `arm_matches_sealed_schedule`, `metadata.json` `night_arm` | The schedule changed, or the night ran another arm. A night run after `unseal-night-schedule` has `schedule_unsealed_at_utc` set and was not blind. |
 | Synthetic end-to-end regression | `muse-tmr demo --hours 2` on `clean_night`, seed 0: Pilot 1 and Pilot 3 pass, zero uncued `play` events, mock audio, the report written, the raw sha256 and Pilot 3 counts equal to `tests/fixtures/synthetic/agreement_baseline.json` and the agreement within its 0.01 | CI `end_to_end` job, `demo_summary.json` | Anything differs from the baseline. It checks plumbing on synthetic input, not sleep, not validity: its cued plays come on N1 epochs at sleep onset, not in REM (`docs/synthetic_data.md`). |
 
 ## Technical Quality Metrics
@@ -88,6 +90,8 @@ them as proof of effectiveness.
 | Dream report completion | Dream report exists and validates against the night puzzle session | Dream report JSON | Keep raw self-report text separate from summary metrics. |
 | Lucid report rate | `lucid == true` count divided by completed reports | Dream report JSON across sessions | Self-report only. |
 | Cues-heard rate | `cues_heard == true` count divided by completed reports | Dream report JSON across sessions | Use as awareness/context, not as a success claim. |
+| Cue perception and sound awakenings | Reports by `cue_perception` (`not_perceived`, `in_dream`, `awake`, `unsure`, `unknown`) and by `woke_from_sound`, per night arm | Dream report JSON (schema 2), the night's summary `arm` | Self-report. On a sham night a perceived sound is the sham sound; at n = 1 the sleeper may tell the sounds apart. |
+| Delayed retest | The retest metrics of the `day7` and `day10` waves next to the morning one | Retest JSON `retest_wave` (schema 2) | A missing wave is a limitation, not a zero. |
 | Puzzle incorporation rate | Linked puzzle incorporations divided by generated session puzzle count | Dream report JSON, session JSON | Count only links that validate against session puzzle IDs. |
 | Retest completion | Retest rows divided by generated session puzzle count | Morning retest JSON, session JSON | Rows must include solved/unsolved, duration, and confidence. |
 | Solve rate by condition | `solved_count / puzzle_count` for cued and uncued groups | Analysis JSON `condition_metrics` | Cued-vs-uncued comparison is descriptive. |
@@ -110,6 +114,9 @@ Every validation report should include a limitations section. At minimum, consid
 - HRV values based on proxy features rather than validated beat-level intervals.
 - Arousal proxies after cues that are not PSG-scored arousals, with `thresholds_unfitted`
   until a pull request carries real-night numbers.
+- For nights with an arm: which nights were sham or no-cue, whether the schedule was
+  sealed and when it was unsealed, that a sham still makes sound and may be recognised,
+  and that at n = 1 the experimenter cannot be blind.
 
 ## Pilot Gates
 

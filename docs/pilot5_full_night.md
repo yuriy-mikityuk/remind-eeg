@@ -127,6 +127,22 @@ in `audio_playback.jsonl` carry `volume_multiplier` 0.5 and an `effective_volume
 the `capped_volume`, the volume after the calibration and hard caps (#255). A pause or
 stop reason in the same epoch still wins.
 
+## A Night Of A Sealed Series
+
+A night of an N-of-1 series (`docs/nof1_protocol.md`) adds the schedule and the night's
+ID to the command above:
+
+```bash
+  --night-schedule data/protocol/night_schedules/<schedule-id>.json \
+  --night-id night-001
+```
+
+The night then runs the arm the sealed schedule gives it: `cue` as above, `sham` with the
+untrained sound in place of every TLR and puzzle cue, or `no_cue` with nothing played.
+The command never prints the arm. Do not open `pilot5_summary.json`, `metadata.json` or
+the logs before the morning forms (dream report, sound check, retest) are saved: they
+name the arm. On a no-cue night `tlr_block_played` passes on the block's virtual plays.
+
 ## Emergency Stop
 
 Creating the emergency stop file blocks future playback while the recording continues:
@@ -158,7 +174,8 @@ cue-attributed awakening rate in the report and in that block counts them:
 
 In the morning, the app's Morning tab does the next three steps without flags: pick the
 night, write the dream report, then the sound check (play each sound and pick its
-puzzle), then the blind retest with a timer per puzzle. It finds the night's catalog
+puzzle), then the blind retest with a timer per puzzle; above the retest, pick "A week
+later" or "Ten days later" for a delayed one. It finds the night's catalog
 and assignment in `data/protocol`, the cues in `data/cues` and the calibration in
 `data/calibration`, and saves to the same `data/reports/<night>_dream_report.json`,
 `<night>_cue_recall.json` and `<night>_retest.json` as the commands below. Its sounds
@@ -174,10 +191,16 @@ Record dream report:
   --catalog data/protocol/puzzle_catalog.json \
   --output data/reports/night-001_dream_report.json \
   --lucid no \
-  --cues-heard no \
+  --cue-perception not_perceived \
+  --woke-from-sound no \
   --confidence 0.5 \
   --dream-text ""
 ```
+
+`--cue-perception` says whether a sound was heard and where (`not_perceived`,
+`in_dream`, `awake`, `unsure`, `unknown`), `--woke-from-sound` whether one woke you, and
+`--eye-signal-attempt 04:20`, repeated, marks when you think you made the eye signal.
+`--cues-heard yes|no` still works and is read as `unsure` or `not_perceived`.
 
 Play each puzzle's sound and say which puzzle it belongs to, before the retest:
 
@@ -216,6 +239,10 @@ Record the blind morning puzzle retest before looking at cue conditions:
   --confidence "p3=0.0" \
   --confidence "p4=0.0"
 ```
+
+A week and ten days later, retest the same puzzles again with `--wave day7` and
+`--wave day10`, saved as `data/reports/night-001_retest_day7.json` and
+`night-001_retest_day10.json` (the Morning tab's wave selector writes the same files).
 
 Generate analysis:
 

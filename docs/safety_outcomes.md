@@ -128,7 +128,10 @@ dry-run audio, synthetic cues), `time_base_inferred` (a summary from before
 `gate_log_missing` (no controls and no REM periods), `small_n` (fewer than 10 played
 cues), `unpaired_cues`, `cue_windows_overlap`, `cue_not_played`, `audio_log_missing`,
 `audio_log_mismatch`, `eeg_gap`, `eeg_unusable`, `imu_gap`, `hr_unavailable`,
-`ppg_absent`, `awakening_log_missing`, `awakening_time_from_utc`, `awakening_unplaced`.
+`ppg_absent`, `awakening_log_missing`, `awakening_time_from_utc`, `awakening_unplaced`,
+`no_cues` (the night logged no play), and on a night with an arm (#228) `sham_arm` (every
+cue was the untrained sham sound) or, on a no-cue night instead of `no_cues`,
+`no_cue_arm` (nothing played by design; its metadata counts the virtual plays).
 
 ## On synthetic input, not sleep
 

@@ -27,6 +27,7 @@ Complete command and code reference for `muse-tmr`, organized by workflow stage.
 - [TLR cue module](#tlr-cue-module)
 - [Protocol presets](#protocol-presets)
 - [REM-gated scheduler](#rem-gated-scheduler)
+- [N-of-1 series: cue, sham and no-cue nights](#n-of-1-series-cue-sham-and-no-cue-nights)
 - [Morning dream report](#morning-dream-report)
 - [Morning sound check](#morning-sound-check)
 - [Morning puzzle retest](#morning-puzzle-retest)
@@ -475,6 +476,23 @@ for timestamp_seconds, gate_decision, feature_rows in replayed_gate_decisions:
 
 The scheduler consumes stable REM gate decisions, optionally emits a TLR block first, then schedules only cued puzzle cues from `scheduled_puzzle_ids`. It enforces cue interval, cooldown, and max-per-block limits, and logs structured `play`, `skip`, `pause`, and `stop` events. `ArousalGuard` consumes EEG/IMU/PPG feature rows and can allow cueing, lower volume, pause cueing, or stop a session from motion, alpha, HR-jump, and artifact-quality proxies. Neither layer calls audio playback directly.
 
+`TmrSchedulerConfig(arm="sham", sham_cue_id="sham_soft_tone")` or `arm="no_cue"` runs the night's arm (next section). The arm changes what a cue the gate lets through becomes, never when it comes: a sham play names the sham cue instead, keeps the puzzle, protocol and metadata of the cue it stands in for and adds the reason `sham_arm`; on a no-cue night the play is a `skip` with `no_cue_arm` and `metadata.virtual_play`, and recording a `play` raises. `ensure_sham_untrained()` refuses a sham cue that is a catalog puzzle's cue, a TLR cue or a tone of the same frequency as one.
+
+## N-of-1 series: cue, sham and no-cue nights
+
+```bash
+muse-tmr plan-night-schedule --blocks 2 --washout-nights 1
+muse-tmr show-night-schedule data/protocol/night_schedules/<schedule-id>.json
+muse-tmr run-pilot5-full-night ... --night-schedule data/protocol/night_schedules/<schedule-id>.json --night-id night-001
+muse-tmr unseal-night-schedule data/protocol/night_schedules/<schedule-id>.json
+```
+
+`plan-night-schedule` draws `--blocks` blocks of one `cue`, one `sham` and one `no_cue` night, counterbalanced so that within each group of three blocks every arm takes every place once, with `--washout-nights` washout nights between two blocks. `--seed` fixes the order; without it a seed is drawn at random and kept only in the schedule. It writes the schedule, with its seed and a random salt, to `data/protocol/night_schedules/<schedule-id>.json` (or `--output`) and its sealed companion next to it as `<name>.sealed.json`, which holds only `commitment_sha256`. It prints the night IDs (`--night-prefix`, default `night-`), the washout nights and the commitment, never an arm or the seed, and never replaces a schedule. `--sham-cue-id` (default `sham_soft_tone`) is the untrained sound the sham nights play.
+
+`show-night-schedule` lists the nights with their blocks and checks the schedule against its companion (`seal=matches`, exit 1 otherwise); the arms show as `sealed` until `unseal-night-schedule`, which checks the commitment, records `unsealed_at_utc` (the first time only) and prints them. `--json` prints either as JSON, `--sealed` names another companion.
+
+`simulate-replay-cues`, `run-pilot4-cueing` and `run-pilot5-full-night` take `--night-schedule` with `--night-id`, or `--arm cue|sham|no_cue` for an open-label night (then `--night-id` is only a label), and `--sham-cue-id`. With a schedule the command checks the commitment first and exits with code 2 for a changed schedule, an unknown night or a washout night. The sham cue, when the night names one, is checked in every arm before anything runs: in the cue library with `protocol: "sham"`, untrained, and a generated tone for Pilot 4 and 5. On a night with an arm the command never prints the arm, nor the play counts, first play, volumes or scorer status that would give it away; the report or summary records `arm`, `night_id` and `schedule_commitment_sha256`, and the criteria `no_play_in_no_cue_arm` and, with a schedule, `arm_matches_sealed_schedule`. Without these flags a night runs and logs as before. The runbook is [`nof1_protocol.md`](nof1_protocol.md).
+
 ## Morning dream report
 
 ```bash
@@ -489,6 +507,8 @@ muse-tmr record-dream-report data/protocol/night-001_puzzles.json \
 ```
 
 Dream reports save local JSON with lucid yes/no, cues-heard yes/no, confidence, free-text recall, and optional per-puzzle links. Each `--puzzle-link` is validated against the generated night puzzle session so reports can connect dream content back to the experimental puzzle IDs without making uncued assumptions.
+
+Schema 2 adds `--cue-perception` (`not_perceived`, `in_dream`, `awake`, `unsure` for heard but not sure whether dreaming, `unknown`), `--woke-from-sound` (`yes`, `no`, `unknown`, the default) and `--eye-signal-attempt TIME`, repeated for each time the sleeper thinks they made the eye signal (`HH:MM`, `HH:MM:SS` or an ISO time; a marking only, nothing detects it). Give `--cue-perception`, `--cues-heard` or both: the one left out is read from the other, and two that disagree exit with code 2. A schema 1 report loads as it was, its `cue_perception` read from `cues_heard` (yes: `unsure`, no: `not_perceived`).
 
 ## Morning sound check
 
@@ -521,6 +541,8 @@ muse-tmr record-puzzle-retest data/protocol/night-001_puzzles.json \
 ```
 
 Retests save one result per generated session puzzle with response, solved/unsolved, duration, confidence, cue ID, blind order, and `cue_condition` (`cued` or `uncued`) from the assignment for later analysis. During administration, do not reveal the cued/uncued condition to the subject.
+
+`--wave day7` or `--wave day10` records a delayed retest of the same puzzles a week or ten days later (`retest_wave`, schema 2; the default `morning` is the retest the morning after). Save it as `data/reports/night-001_retest_day7.json`, the name the app's Morning tab uses. A schema 1 retest loads as a `morning` one.
 
 ## Cued-vs-uncued analysis
 
@@ -663,6 +685,8 @@ See `docs/pilot3_replay_cue_simulation.md` for the replay-only runbook. The simu
 
 `--guard-min-ppg-confidence` and `--guard-min-hr-series-quality` (both 0 to 1, default 0: off) turn the arousal guard's two HR rules off on epochs whose `ppg_confidence`, or the median quality of whose heart-rate series, is below the value; each such decision logs `hr_rule_skipped_by` (`docs/safety.md`). Set one only from an `analyze-optics-agreement` table.
 
+`--arm`, `--night-schedule` with `--night-id`, and `--sham-cue-id` replay the night as one arm of an N-of-1 series (above); the report (schema 2) records `arm`, `night_id` and `schedule_commitment_sha256`, and its `metrics` add `virtual_play_count`, the skips a no-cue plan logs where the cue arm plays.
+
 `--inject-cues-every-seconds N` adds a `synthetic_cue` play event to a gate-open epoch whenever N seconds have passed since the last one, decided like a scheduler play at the end of the epoch, with mock audio and outside the scheduler: the report keeps them in `injected_cues` and its `scheduler_events` are what they are without the flag. It is there to check where `score-cue-arousal` puts its windows on a replayed night before a night with sound:
 
 ```bash
@@ -701,7 +725,9 @@ muse-tmr log-pilot4-awakening data/recordings/pilot4_low_volume_<timestamp>/awak
 
 `--attributed-to-cue` (`yes`, `no`, `unsure`) records whether you think a cue woke you, and `--timestamp-seconds` places the marker at that many seconds from the night's first epoch instead of its UTC time (`--timestamp-utc`, by default now; a time without an offset is read as UTC by `score-cue-arousal` and `protocol-fidelity` alike). Older markers without them still load.
 
-`--protocol-preset` sets the gate's stable window and the scheduler's interval, cooldown and limit as in Pilot 3, and `metadata.json` and `pilot4_summary.json` (schema 3) record the preset as `protocol`. A preset sets no volume: `--hard-max-volume`, `--default-volume` and the calibration hold whatever the preset. `muse-tmr protocol-fidelity <night>` then compares the night with it.
+`--protocol-preset` sets the gate's stable window and the scheduler's interval, cooldown and limit as in Pilot 3, and `metadata.json` and `pilot4_summary.json` (schema 4) record the preset as `protocol`. A preset sets no volume: `--hard-max-volume`, `--default-volume` and the calibration hold whatever the preset. `muse-tmr protocol-fidelity <night>` then compares the night with it.
+
+`--night-schedule` with `--night-id`, or `--arm`, runs the night as one arm of an N-of-1 series (above): a sham night plays the sham cue's tone for as long and as loud as each cue it stands in for, through the same player, backend and calibrated cap, and its `audio_playback.jsonl` lines say `arm: sham`; a no-cue night sends nothing to the player. `metadata.json` adds a `night_arm` block next to `protocol`, and the summary `arm`, `night_id`, `schedule_commitment_sha256` and `virtual_play_count`.
 
 ### Pilot 5: full-night TLR plus puzzle cueing
 
@@ -722,4 +748,4 @@ muse-tmr run-pilot5-full-night \
   --default-volume 0.02
 ```
 
-See `docs/pilot5_full_night.md` for the full runbook. Pilot 5 requires the Pilot 4 safety setup plus a TLR block plan, writes `pilot5_summary.json`, and expects the morning dream report, the sound check, blind puzzle retest, and cued-vs-uncued analysis before any behavioral interpretation. `--preset`, `--protocol-preset`, `--allow-dry-run` and the `--guard-min-*` gates work as in Pilot 4; the TLR block comes from the plan file, so make it with the same `--protocol-preset` (a plan made with another one is named in a warning and under `protocol.inputs`).
+See `docs/pilot5_full_night.md` for the full runbook. Pilot 5 requires the Pilot 4 safety setup plus a TLR block plan, writes `pilot5_summary.json`, and expects the morning dream report, the sound check, blind puzzle retest, and cued-vs-uncued analysis before any behavioral interpretation. It takes the arm flags as Pilot 4 does; a sham night's TLR cues are the sham sound too, and on a no-cue night `tlr_block_played` counts the block's virtual plays. `--preset`, `--protocol-preset`, `--allow-dry-run` and the `--guard-min-*` gates work as in Pilot 4; the TLR block comes from the plan file, so make it with the same `--protocol-preset` (a plan made with another one is named in a warning and under `protocol.inputs`).
