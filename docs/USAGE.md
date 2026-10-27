@@ -373,7 +373,7 @@ muse-tmr validate-cue-library data/cues/starter.json
 muse-tmr list-cues data/cues/starter.json --protocol puzzle
 ```
 
-Cue libraries are JSON metadata catalogs for `sound`, `generated_tone`, and `silence` cues. They carry duration, protocol role (`puzzle`, `tlr`, `test`, `generic`, or `sham` for the untrained sound of a sham night), tags, optional volume hints, and private sound file paths. Sound cue files under `cues/private/` or `data/cues/audio/` are gitignored by default; validation detects missing files before a sleep session.
+Cue libraries are JSON metadata catalogs for `sound`, `generated_tone`, and `silence` cues. They carry duration, protocol role (`puzzle`, `tlr`, `test`, `generic`, or `sham` for the untrained sound of a sham night), tags, optional volume hints, and private sound file paths. Sound cue files under `cues/private/` or `data/cues/audio/` are gitignored by default; validation detects missing files before a sleep session. `create-cue-library --protocol-preset NAME` writes the starter library with that preset's TLR tone in place of `tlr_soft_tone`, the cue `create-tlr-cue --protocol-preset NAME` makes, so that TLR training, the TLR plan and the night can use one library (next sections).
 
 ## Pre-sleep puzzle session manager
 
@@ -425,6 +425,8 @@ muse-tmr plan-tlr-block data/cues/tlr_default.json \
 
 `create-tlr-cue` writes a default generated TLR cue library. `train-tlr-cue` runs pre-sleep TLR cue familiarization through the audio player facade and writes structured JSONL training events. `plan-tlr-block` produces the configurable TLR cue block that the REM-gated scheduler runs before puzzle cues. `create-tlr-cue` and `plan-tlr-block` take `--protocol-preset` (next section): without the flags above the tone and the block come from the preset, `--volume-hint` never does, and both files record the preset under `metadata.protocol`.
 
+The training summary and the plan record the tone they were made with as `tone` (`cue_id`, `frequency_hz`, `duration_seconds` and the cue library's `library_id`; schema 2, #264). `plan-tlr-block --training <summary.json>` exits with code 2 when the training played another tone than the library's cue it plans, and otherwise records the training under `metadata.training`. A night plays the TLR cue of its own `--cue-library`, so train, plan and run the night from one library: Pilot 5 refuses a library whose tone under the plan's cue ID is not the plan's (below).
+
 ## Protocol presets
 
 ```bash
@@ -434,7 +436,7 @@ muse-tmr plan-tlr-block data/cues/tlr_default.json --output data/protocol/tlr_bl
   --protocol-preset konkoly2021_northwestern
 ```
 
-`protocol-presets` lists the presets with version, whether they run, the first 12 characters of the content hash, how their source was checked and their title; with a name, or `--json`, it prints JSON. `--protocol-preset NAME` on `simulate-replay-cues`, `run-pilot4-cueing`, `run-pilot5-full-night`, `plan-tlr-block`, `create-tlr-cue`, `generate-puzzle-session` and `assign-puzzle-cues` takes the protocol settings from that preset, `remind_default_v1` (today's defaults) when it is left out. An explicit flag wins and is recorded as an override; a preset that cannot run (`konkoly2021_paris`, `sanders2019_puzzle_sws`) or an unknown name exits with code 2 first. Which flag sets what, the `protocol` block each run records and every preset: `docs/protocol_presets.md`.
+`protocol-presets` lists the presets with version, whether they run, the first 12 characters of the content hash, how their source was checked and their title; with a name, or `--json`, it prints JSON. `--protocol-preset NAME` on `simulate-replay-cues`, `run-pilot4-cueing`, `run-pilot5-full-night`, `plan-tlr-block`, `create-tlr-cue`, `generate-puzzle-session` and `assign-puzzle-cues` takes the protocol settings from that preset, `remind_default_v1` (today's defaults) when it is left out; on `create-cue-library` it puts the preset's TLR tone in the starter library, which without it stays as it was. An explicit flag wins and is recorded as an override; a preset that cannot run (`konkoly2021_paris`, `sanders2019_puzzle_sws`) or an unknown name exits with code 2 first. Which flag sets what, the `protocol` block each run records and every preset: `docs/protocol_presets.md`.
 
 ```python
 from muse_tmr.protocol import get_protocol_preset
@@ -584,7 +586,7 @@ muse-tmr protocol-fidelity data/recordings/pilot5_full_night_<timestamp>
 muse-tmr protocol-fidelity <recording> --pilot3-report data/reports/pilot3_replay_cue_plan.json
 ```
 
-It compares a night's `scheduler_events.jsonl`, `audio_playback.jsonl`, `rem_gate_decisions.jsonl`, `awakening_events.jsonl` and `metadata.json` (or a Pilot 3 report's plan and epochs) with the preset the night recorded, or `--protocol-preset` another one: intervals between cues, cues per REM period (gate-open run), stable REM before the first cue, pause rules, the gain of the cues, cue length and the TLR block against its plan. It writes `protocol_fidelity.json` and `.md` into the directory, the report's directory or `--output-dir`, prints one status per check, and exits 0 whatever they are. Every report carries the `parameter_fidelity_is_not_result_fidelity` block. Checks and statuses: `docs/protocol_presets.md`; fields: `docs/data_model.md`.
+It compares a night's `scheduler_events.jsonl`, `audio_playback.jsonl`, `rem_gate_decisions.jsonl`, `awakening_events.jsonl` and `metadata.json` (or a Pilot 3 report's plan and epochs) with the preset the night recorded, or `--protocol-preset` another one: intervals between cues, cues per REM period (gate-open run), stable REM before the first cue, pause rules, the gain of the cues, cue length, the TLR block against its plan and the plan's TLR tone against the preset's. It writes `protocol_fidelity.json` and `.md` into the directory, the report's directory or `--output-dir`, prints one status per check, and exits 0 whatever they are. Every report carries the `parameter_fidelity_is_not_result_fidelity` block. Checks and statuses: `docs/protocol_presets.md`; fields: `docs/data_model.md`.
 
 ## Meditation complexity analysis
 
@@ -748,4 +750,4 @@ muse-tmr run-pilot5-full-night \
   --default-volume 0.02
 ```
 
-See `docs/pilot5_full_night.md` for the full runbook. Pilot 5 requires the Pilot 4 safety setup plus a TLR block plan, writes `pilot5_summary.json`, and expects the morning dream report, the sound check, blind puzzle retest, and cued-vs-uncued analysis before any behavioral interpretation. It takes the arm flags as Pilot 4 does; a sham night's TLR cues are the sham sound too, and on a no-cue night `tlr_block_played` counts the block's virtual plays. `--preset`, `--protocol-preset`, `--allow-dry-run` and the `--guard-min-*` gates work as in Pilot 4; the TLR block comes from the plan file, so make it with the same `--protocol-preset` (a plan made with another one is named in a warning and under `protocol.inputs`).
+See `docs/pilot5_full_night.md` for the full runbook. Pilot 5 requires the Pilot 4 safety setup plus a TLR block plan, writes `pilot5_summary.json`, and expects the morning dream report, the sound check, blind puzzle retest, and cued-vs-uncued analysis before any behavioral interpretation. It takes the arm flags as Pilot 4 does; a sham night's TLR cues are the sham sound too, and on a no-cue night `tlr_block_played` counts the block's virtual plays. `--preset`, `--protocol-preset`, `--allow-dry-run` and the `--guard-min-*` gates work as in Pilot 4; the TLR block comes from the plan file, so make it with the same `--protocol-preset` (a plan made with another one is named in a warning and under `protocol.inputs`). The TLR tone comes from `--cue-library`: the command exits with code 2, before it connects or writes a file and in every arm, when that library has another tone under the plan's cue ID than the plan recorded, or, for a plan from before #264 without a `tone`, a cue of another length. The message says how to make one library for training, the plan and the night (`create-cue-library --protocol-preset NAME`).
