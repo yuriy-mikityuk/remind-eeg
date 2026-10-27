@@ -71,21 +71,22 @@ class TestCuedUncuedAnalysis(unittest.TestCase):
     def test_the_sound_check_gives_recall_by_condition(self):
         session, assignment, dream_report, retest = _analysis_inputs()
         order = cue_recall_order(session)
-        # Every sound placed except p2's (cued) and p4's (uncued), which were not known.
-        answers = {index: (None if puzzle in ("p2", "p4") else puzzle) for index, puzzle in enumerate(order, start=1)}
+        # Every sound placed except p4's (uncued), which was not known: the two conditions
+        # differ, so a swap of cued and uncued shows.
+        answers = {index: (None if puzzle == "p4" else puzzle) for index, puzzle in enumerate(order, start=1)}
         recall = build_cue_recall_test(
             session, _catalog(), assignment, answers, completed_at_utc="2026-10-27T07:00:00+00:00"
         )
         report = build_cued_uncued_analysis(
             session, assignment, retest, dream_report=dream_report, cue_recall=recall, min_group_size=1
         )
-        self.assertEqual(report.cue_recall["recall_rate"], 0.5)
-        self.assertEqual(report.cue_recall["by_condition"]["cued"], {"trial_count": 2, "correct_count": 1, "recall_rate": 0.5})
-        self.assertEqual(report.cue_recall["by_condition"]["uncued"]["recall_rate"], 0.5)
-        self.assertEqual(report.cue_recall["recall_rate_difference_cued_minus_uncued"], 0.0)
+        self.assertEqual(report.cue_recall["recall_rate"], 0.75)
+        self.assertEqual(report.cue_recall["by_condition"]["cued"], {"trial_count": 2, "correct_count": 2, "recall_rate": 1.0})
+        self.assertEqual(report.cue_recall["by_condition"]["uncued"], {"trial_count": 2, "correct_count": 1, "recall_rate": 0.5})
+        self.assertEqual(report.cue_recall["recall_rate_difference_cued_minus_uncued"], 0.5)
         self.assertTrue(report.cue_recall["before_retest"])
         self.assertEqual({row.puzzle_id: row.cue_recalled for row in report.rows},
-                         {"p1": True, "p2": False, "p3": True, "p4": False})
+                         {"p1": True, "p2": True, "p3": True, "p4": False})
         self.assertNotIn("cue_recall_missing", report.limitation_codes)
         self.assertNotIn("cue_recall_after_retest", report.limitation_codes)
         self.assertIn("Sound check", report.to_markdown())
