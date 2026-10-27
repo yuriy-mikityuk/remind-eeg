@@ -550,7 +550,10 @@ def _read(path: Path):
 
 
 def _parse_target(target: str) -> Tuple[str, str]:
-    kind, _, name = str(target).partition(":")
+    text = str(target).strip()
+    if text.lower() == "skip":
+        return "skip", ""
+    kind, _, name = text.partition(":")
     if not name:
         return "eeg", kind
     kind = kind.strip().lower()
@@ -577,7 +580,8 @@ def default_channel_map(labels: Iterable[str]) -> Dict[str, str]:
 
 def resolve_channel_map(spec: Optional[object]) -> Optional[Dict[str, str]]:
     """A channel map from a mapping, a named map (``boas-headband``) or
-    ``LABEL=TARGET,LABEL=TARGET`` text, where a target without a kind is EEG."""
+    ``LABEL=TARGET,LABEL=TARGET`` text, where a target without a kind is EEG and
+    ``skip`` leaves the signal out."""
     if spec is None:
         return None
     if isinstance(spec, Mapping):

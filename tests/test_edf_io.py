@@ -227,6 +227,19 @@ class TestThirdPartyEdf(unittest.TestCase):
         self.assertEqual(len(frames[1].eeg.channels_uv["AF7"]), 64)
         self.assertTrue(all(frame.imu is None and frame.ppg is None for frame in eeg_only))
 
+    def test_a_skip_target_leaves_a_signal_out(self):
+        path = self.root / "boas.edf"
+        write_boas_like_edf(path)
+        # HB_2 is in uV; HB_PULSE is in nA, which an EEG target would refuse.
+        mapping = resolve_channel_map("HB_1=eeg:AF7,HB_2=skip,HB_PULSE=skip,HB_IMU_1=Skip")
+
+        channels = edf_channels(path, mapping)
+        frames = list(read_edf(path, channel_map=mapping))
+
+        self.assertEqual([(channel.label, channel.target) for channel in channels], [("HB_1", "eeg")])
+        self.assertEqual(set(frames[0].eeg.channels_uv), {"AF7"})
+        self.assertTrue(all(frame.imu is None and frame.ppg is None for frame in frames))
+
     def test_eeg_units_are_converted_or_must_be_given(self):
         path = self.root / "mv.edf"
         eeg, _ = write_boas_like_edf(path, eeg_unit="mV", with_imu=False)
