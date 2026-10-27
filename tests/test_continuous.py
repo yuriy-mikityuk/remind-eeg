@@ -41,6 +41,7 @@ NEW_DATA_MODULES = (
     "muse_tmr.data.mne_export",
     "muse_tmr.data.import_recording",
     "muse_tmr.data.replay",
+    "muse_tmr.data.boas",
 )
 FORBIDDEN_PACKAGES = ("muse_tmr.audio", "muse_tmr.protocol", "muse_tmr.models")
 
@@ -275,7 +276,8 @@ class TestSyntheticNightReconstruction(unittest.TestCase):
 
 
 class TestDataLayering(unittest.TestCase):
-    """No module under muse_tmr.data reaches the audio, protocol or model packages (#230)."""
+    """No module under muse_tmr.data reaches the audio, protocol or model packages (#230),
+    the BOAS loader of #226 among them."""
 
     def test_each_new_data_module_imports_none_of_them(self):
         code = (
