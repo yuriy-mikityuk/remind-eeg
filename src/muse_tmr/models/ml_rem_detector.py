@@ -1,4 +1,11 @@
-"""Personal REM classifier training and inference."""
+"""Personal REM classifier training and inference.
+
+Version 2 of the artifact (#226) adds ``training_data``, what the model was trained on,
+and ``train_personal_rem_classifier(init=...)``, a warm start from another artifact with
+the same features: training starts from its coefficients and the L2 penalty pulls
+toward them instead of toward 0, so a few labelled nights adjust that model rather than
+replace it. Version 1 artifacts still load, with ``training_data`` None.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +21,8 @@ import numpy as np
 
 from muse_tmr.models.rem_detector import RemPrediction
 
-PERSONAL_REM_MODEL_VERSION = 1
+PERSONAL_REM_MODEL_VERSION = 2
+SUPPORTED_PERSONAL_REM_MODEL_VERSIONS = (1, 2)
 PERSONAL_REM_MODEL_TYPE = "balanced_logistic_regression"
 
 DEFAULT_PERSONAL_REM_FEATURES = (
@@ -29,6 +37,23 @@ DEFAULT_PERSONAL_REM_FEATURES = (
     "feature_value_imu_coverage",
     "feature_value_ppg_coverage",
     "feature_value_heart_rate_coverage",
+)
+
+# The features of an epoch read from EEG alone, as validate-external reads a BOAS night
+# (#226): the heuristic's EEG scores and the values behind them that do not depend on
+# the amplifier's scale. No IMU or cardiac column, which would be missing and imputed in
+# every epoch, and no eye-movement proxy, which saturates on real nights (#116). Each
+# comes from its own epoch and the REM-event tracker's past, so a prediction never reads
+# a later epoch.
+EEG_PERSONAL_REM_FEATURES = (
+    "p_rem",
+    "feature_score_low_delta_power",
+    "feature_score_theta_alpha_ratio",
+    "feature_score_rem_event_density",
+    "feature_value_relative_delta_power",
+    "feature_value_theta_alpha_ratio",
+    "feature_value_rem_event_density",
+    "feature_value_eeg_coverage",
 )
 
 POSITIVE_REM_LABEL = "probable_rem"
@@ -114,7 +139,12 @@ class PersonalRemTrainingSummary:
 
 @dataclass(frozen=True)
 class PersonalRemModel:
-    """A versioned personal REM classifier artifact."""
+    """A versioned personal REM classifier artifact.
+
+    ``training_data`` (version 2) says what it was trained on: the annotation file or
+    the dataset, its split and fold, the recordings and participants, and the artifact
+    it was warm-started from (``init``). None for a version 1 artifact.
+    """
 
     model_version: int
     model_type: str
@@ -128,6 +158,7 @@ class PersonalRemModel:
     feature_importance: Mapping[str, float]
     training_summary: Optional[PersonalRemTrainingSummary]
     trained_at_utc: str
+    training_data: Optional[Mapping[str, object]] = None
 
     def predict_mapping(self, row: Mapping[str, object]) -> RemPrediction:
         values, missing_features = _prediction_vector(row, self.feature_names)
@@ -181,14 +212,23 @@ class PersonalRemModel:
                 if self.training_summary is not None
                 else None
             ),
+            "training_data": dict(self.training_data) if self.training_data is not None else None,
         }
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> "PersonalRemModel":
+        """Load a version 1 or 2 artifact; ValueError for another version."""
+        model_version = int(payload["model_version"])
+        if model_version not in SUPPORTED_PERSONAL_REM_MODEL_VERSIONS:
+            raise ValueError(
+                f"personal REM model version {model_version} is not supported; "
+                f"this version reads {', '.join(str(v) for v in SUPPORTED_PERSONAL_REM_MODEL_VERSIONS)}"
+            )
         feature_names = tuple(str(name) for name in payload["feature_names"])
         summary_payload = payload.get("training_summary")
+        training_data = payload.get("training_data")
         return cls(
-            model_version=int(payload["model_version"]),
+            model_version=model_version,
             model_type=str(payload["model_type"]),
             trained_at_utc=str(payload["trained_at_utc"]),
             feature_names=feature_names,
@@ -204,6 +244,7 @@ class PersonalRemModel:
                 if isinstance(summary_payload, MappingABC)
                 else None
             ),
+            training_data=dict(training_data) if isinstance(training_data, MappingABC) else None,
         )
 
     def save(self, output_path: Path) -> Path:
@@ -223,15 +264,30 @@ class PersonalRemModel:
 def train_personal_rem_classifier(
     rows: Iterable[Mapping[str, object]],
     config: Optional[PersonalRemClassifierConfig] = None,
+    *,
+    init: Optional[PersonalRemModel] = None,
+    training_data: Optional[Mapping[str, object]] = None,
 ) -> PersonalRemModel:
     """Train a personal REM model from labeled annotation rows.
 
     `probable_rem` is the positive class. `wake` and `nrem` are the negative class.
     `unknown` rows are skipped so annotation templates can be edited incrementally.
+
+    ``init`` warm-starts from that artifact: ValueError unless it has the same
+    ``feature_names`` as ``config``. Its coefficients and bias, carried over to this
+    data's feature means and scales so that the start predicts what ``init`` predicts,
+    are where the descent starts and what the L2 penalty pulls toward. ``training_data``
+    is stored with the artifact; an ``init`` adds its version, training time and
+    ``training_data`` there as ``init``.
     """
 
     config = config or PersonalRemClassifierConfig()
     config.validate()
+    if init is not None and tuple(init.feature_names) != tuple(config.feature_names):
+        raise ValueError(
+            "the init artifact has the features "
+            f"{', '.join(init.feature_names)}; train with the same feature_names, in the same order"
+        )
 
     training_rows, skipped_unknown_rows = _coerce_training_rows(rows)
     targets = np.asarray([_target_for_row(row) for row in training_rows], dtype=float)
@@ -245,7 +301,8 @@ def train_personal_rem_classifier(
     )
 
     matrix, means, scales, missing_counts = _training_matrix(training_rows, config.feature_names)
-    coefficients, bias = _fit_balanced_logistic(matrix, targets, config)
+    start = _warm_start(init, config.feature_names, means, scales) if init is not None else None
+    coefficients, bias = _fit_balanced_logistic(matrix, targets, config, start=start)
     raw_logits = matrix @ coefficients + bias
     calibration_intercept = _fit_calibration_intercept(raw_logits, targets)
     probabilities = _sigmoid_array(raw_logits + calibration_intercept)
@@ -256,10 +313,18 @@ def train_personal_rem_classifier(
         calibration_bins=config.calibration_bins,
     )
     group_holdout_metrics = (
-        _group_holdout_metrics(training_rows, config)
+        _group_holdout_metrics(training_rows, config, init=init)
         if config.compute_group_holdout
         else {"status": "disabled"}
     )
+    stored_training_data: Optional[Dict[str, object]] = dict(training_data) if training_data is not None else None
+    if init is not None:
+        stored_training_data = dict(stored_training_data or {})
+        stored_training_data["init"] = {
+            "model_version": init.model_version,
+            "trained_at_utc": init.trained_at_utc,
+            "training_data": dict(init.training_data) if init.training_data is not None else None,
+        }
 
     feature_importance = _feature_importance(config.feature_names, coefficients)
     summary = PersonalRemTrainingSummary(
@@ -286,7 +351,31 @@ def train_personal_rem_classifier(
         decision_threshold=config.decision_threshold,
         feature_importance=feature_importance,
         training_summary=summary,
+        training_data=stored_training_data,
     )
+
+
+def _warm_start(
+    init: PersonalRemModel,
+    feature_names: Sequence[str],
+    means: Mapping[str, float],
+    scales: Mapping[str, float],
+) -> Tuple[np.ndarray, float]:
+    """``init``'s coefficients and bias on this data's normalisation.
+
+    With ``z = (x - mean) / scale`` here and ``z0 = (x - mean0) / scale0`` in ``init``,
+    ``w0 . z0 + b0 + c0`` equals ``w . z + b`` for ``w = w0 * scale / scale0`` and
+    ``b = b0 + c0 + sum(w0 * (mean - mean0) / scale0)``; its calibration intercept ``c0``
+    goes into the bias, as calibration is refitted afterwards.
+    """
+    coefficients = np.empty(len(feature_names), dtype=float)
+    bias = float(init.bias) + float(init.calibration_intercept)
+    for index, name in enumerate(feature_names):
+        weight = float(init.coefficients[name])
+        init_scale = float(init.feature_scales[name])
+        coefficients[index] = weight * float(scales[name]) / init_scale
+        bias += weight * (float(means[name]) - float(init.feature_means[name])) / init_scale
+    return coefficients, bias
 
 
 def _coerce_training_rows(
@@ -395,12 +484,20 @@ def _fit_balanced_logistic(
     matrix: np.ndarray,
     targets: np.ndarray,
     config: PersonalRemClassifierConfig,
+    start: Optional[Tuple[np.ndarray, float]] = None,
 ) -> Tuple[np.ndarray, float]:
+    """Gradient descent from zeros and the log prior odds, or from ``start``, which the
+    L2 penalty then pulls toward instead of toward 0 (the warm start)."""
     coefficients = np.zeros(matrix.shape[1], dtype=float)
     positive_rows = float(targets.sum())
     negative_rows = float(len(targets) - positive_rows)
     prior = np.clip(positive_rows / len(targets), 1e-6, 1 - 1e-6)
     bias = float(math.log(prior / (1.0 - prior)))
+    anchor = np.zeros(matrix.shape[1], dtype=float)
+    if start is not None:
+        coefficients = np.array(start[0], dtype=float)
+        anchor = coefficients.copy()
+        bias = float(start[1])
     sample_weights = np.where(
         targets == 1.0,
         len(targets) / (2.0 * positive_rows),
@@ -411,7 +508,7 @@ def _fit_balanced_logistic(
         probabilities = _sigmoid_array(matrix @ coefficients + bias)
         weighted_error = (probabilities - targets) * sample_weights
         gradient = (matrix.T @ weighted_error) / len(targets)
-        gradient += config.l2_penalty * coefficients
+        gradient += config.l2_penalty * (coefficients - anchor)
         bias_gradient = float(weighted_error.mean())
 
         coefficients -= config.learning_rate * gradient
@@ -432,6 +529,7 @@ def _fit_calibration_intercept(logits: np.ndarray, targets: np.ndarray) -> float
 def _group_holdout_metrics(
     rows: Sequence[Mapping[str, object]],
     config: PersonalRemClassifierConfig,
+    init: Optional[PersonalRemModel] = None,
 ) -> Mapping[str, object]:
     groups: Dict[str, List[Mapping[str, object]]] = {}
     for row in rows:
@@ -455,7 +553,7 @@ def _group_holdout_metrics(
         ]
         if not _can_train_rows(train_rows, fold_config.min_training_rows):
             continue
-        model = train_personal_rem_classifier(train_rows, config=fold_config)
+        model = train_personal_rem_classifier(train_rows, config=fold_config, init=init)
         for row, prediction in zip(test_rows, model.predict_rows(test_rows)):
             fold_targets.append(_target_for_row(row))
             fold_probabilities.append(prediction.probability)
