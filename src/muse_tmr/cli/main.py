@@ -4058,8 +4058,9 @@ def _print_night_schedule(args: argparse.Namespace, *, unseal: bool) -> int:
 
 
 def _checked_schedule(command: str, schedule_arg: Path, sealed_arg: Optional[Path]):
-    """The schedule, after it was checked against its sealed companion; or an exit code
-    with the reason on stderr: 1 when it changed after it was sealed, 2 otherwise."""
+    """The schedule and its sealed companion's path, after the schedule was checked
+    against it; or None and an exit code with the reason on stderr: 1 when it changed
+    after it was sealed, 2 otherwise."""
     from muse_tmr.protocol import SealMismatch, load_night_schedule, sealed_path_for, verify_seal
 
     schedule_path = _resolve_output_path(schedule_arg)
@@ -4069,11 +4070,11 @@ def _checked_schedule(command: str, schedule_arg: Path, sealed_arg: Optional[Pat
         verify_seal(schedule, sealed_path)
     except SealMismatch as exc:
         print(f"{command}: {exc}", file=sys.stderr)
-        return None, 1
+        return None, sealed_path, 1
     except (OSError, KeyError, ValueError) as exc:
         print(f"{command}: {exc}", file=sys.stderr)
-        return None, 2
-    return schedule, 0
+        return None, sealed_path, 2
+    return schedule, sealed_path, 0
 
 
 def _prereg_template(args: argparse.Namespace) -> int:
@@ -4088,7 +4089,7 @@ def _prereg_template(args: argparse.Namespace) -> int:
         schedule_design_orders,
     )
 
-    schedule, code = _checked_schedule("prereg-template", args.schedule, args.sealed)
+    schedule, sealed_path, code = _checked_schedule("prereg-template", args.schedule, args.sealed)
     if schedule is None:
         return code
     if args.protocol_metadata is not None:
@@ -4115,6 +4116,7 @@ def _prereg_template(args: argparse.Namespace) -> int:
         schedule,
         protocol=protocol,
         protocol_source=source,
+        sealed_name=sealed_path.name,
         analysis={
             "seed": DEFAULT_SEED,
             "permutations": DEFAULT_PERMUTATIONS,
@@ -4236,7 +4238,7 @@ def _analyze_nof1(args: argparse.Namespace) -> int:
     if args.primary_outcome is not None and args.primary_outcome not in OUTCOMES:
         print(f"analyze-nof1: --primary-outcome must be one of: {', '.join(OUTCOMES)}", file=sys.stderr)
         return 2
-    schedule, code = _checked_schedule("analyze-nof1", args.schedule, args.sealed)
+    schedule, _sealed_path, code = _checked_schedule("analyze-nof1", args.schedule, args.sealed)
     if schedule is None:
         return code
     if schedule.sealed:

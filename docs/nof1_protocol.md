@@ -65,9 +65,10 @@ the night IDs in order and how the order is drawn), the sealed `commitment_sha25
 the protocol block: the one of `--protocol-preset` (default `remind_default_v1`, as for
 every runner) or of a file given with `--protocol-metadata`, such as a night's puzzle
 session. It never prints or writes an arm, the seed or the salt, so it can be filed, on
-OSF for example, before the first night: two schedules of one design differ in it only
-in their commitment. Fill in what it marks _To fill in_: the hypotheses, the primary
-outcome and contrast, the stopping rule and the exclusions.
+OSF for example, before the first night: two schedules of one design drawn on the same
+day differ in it only in their commitment. Fill in what it marks _To fill in_: the
+hypotheses, whether the seed was yours or drawn at random, the primary outcome and
+contrast, the stopping rule and the exclusions.
 
 It also says how many arm orders the blocks allow, which decides what the analysis can
 show (section 7). Two or three blocks allow 12, too few for any difference to fall

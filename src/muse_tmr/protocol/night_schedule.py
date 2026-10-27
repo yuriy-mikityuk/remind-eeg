@@ -474,6 +474,7 @@ def prereg_template(
     *,
     protocol: Optional[Mapping[str, object]] = None,
     protocol_source: str = "",
+    sealed_name: str = "",
     analysis: Optional[Mapping[str, object]] = None,
     software_version: str = "",
     generated_at_utc: Optional[str] = None,
@@ -484,9 +485,10 @@ def prereg_template(
     washout nights, the nights in order and how their arms are drawn), the sealed
     commitment and the protocol block's hashes (``ProtocolPreset.manifest()``).
     It never renders an arm, the seed or the salt: the seed alone gives the order back.
-    So two schedules of one design differ in the template only in their commitment.
-    ``analysis`` holds the analysis settings it states (seed, permutations, interval,
-    outcomes); lines marked "To fill in" are the author's.
+    So two schedules of one design drawn on the same day differ in the template only in
+    their commitment. ``sealed_name`` is the sealed companion's file name. ``analysis``
+    holds the analysis settings it states (seed, permutations, interval, outcomes);
+    lines marked "To fill in" are the author's.
     """
     generated = generated_at_utc or _utc_now()
     analysis = dict(analysis or {})
@@ -526,8 +528,9 @@ def prereg_template(
         f"- Blocks: {schedule.blocks}, each with one night of every arm; {schedule.washout_nights} washout "
         f"night{'s' if schedule.washout_nights != 1 else ''} between two blocks, without a cueing run; "
         f"{len(schedule.nights)} nights in all, {len(block_nights)} of them in blocks.",
-        f"- Counterbalancing: within every group of {len(schedule.arms)} blocks each arm takes each place in its "
-        "block once (the rows of a Latin square).",
+        f"- Counterbalancing: the blocks go in groups of {len(schedule.arms)}, and the blocks of a group take "
+        "distinct rows of one Latin square, so within a group no arm takes the same place twice, and in a full "
+        "group every arm takes every place once.",
         "- Within a night: `assign-puzzle-cues` splits the night's puzzles into cued and uncued with the night's "
         "own seed, and an uncued puzzle is never scheduled, in any arm.",
         "- Blinding: the arms stay in the schedule file. The runners never print a night's arm and the Morning tab "
@@ -544,12 +547,14 @@ def prereg_template(
         "",
         "## Randomisation and seal",
         "",
-        f"- Drawn by `plan-night-schedule` on {schedule.created_at_utc[:10]} with `random.Random(seed)`. The seed "
-        "came from `--seed` or was drawn at random. It stays in the schedule file with a random 16-byte salt and "
-        "is not given here, because the seed alone gives the order back.",
+        f"- Drawn by `plan-night-schedule` on {schedule.created_at_utc[:10]} with `random.Random(seed)`, from a "
+        "seed given with `--seed` or, without it, 32 random bits from `secrets`. Which of the two: _To fill in._ "
+        "The seed stays in the schedule file with a random 16-byte salt and is not given here, because the seed "
+        "alone gives the order back.",
         f"- Commitment: `commitment_sha256 = {schedule.commitment_sha256()}`, the sha256 of the schedule's canonical "
-        "JSON (sorted keys, no spaces) followed by the salt. The sealed companion "
-        f"`{schedule.schedule_id}.sealed.json` holds nothing else.",
+        "JSON (sorted keys, no spaces) followed by the salt. The sealed companion"
+        + (f" `{sealed_name}`" if sealed_name else f", `<name>{SEALED_SUFFIX}` next to the schedule,")
+        + " holds nothing else.",
         "- After the series: `muse-tmr unseal-night-schedule` checks the schedule against the commitment and "
         "records `unsealed_at_utc`. Anyone given the unsealed schedule can compute the hash again.",
         "",

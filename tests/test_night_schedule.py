@@ -411,6 +411,19 @@ class TestPreregTemplate(unittest.TestCase):
         unsealed = replace(self.schedule(self.SEED, SALT), unsealed_at_utc="2026-12-01T00:00:00+00:00")
         self.assertIn("is not a preregistration", prereg_template(unsealed))
 
+    def test_the_template_names_the_companion_by_its_file_and_asks_how_the_seed_came(self):
+        schedule = self.schedule(self.SEED, SALT)
+        path, sealed = write_night_schedule(schedule, self.root / "first-series.json")
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            self.assertEqual(cli_main.main(["prereg-template", str(path)]), 0)
+        text = printed.getvalue()
+        self.assertEqual(sealed.name, "first-series.sealed.json")
+        self.assertIn("The sealed companion `first-series.sealed.json` holds nothing else.", text)
+        self.assertNotIn("series-p.sealed.json", text)
+        self.assertIn("32 random bits from `secrets`. Which of the two: _To fill in._", text)
+        self.assertIn("next to the schedule, holds nothing else.", prereg_template(schedule))
+
     def test_the_command_checks_the_seal_and_writes_markdown(self):
         schedule = self.schedule(self.SEED, SALT)
         path, _sealed = write_night_schedule(schedule, self.root / "series-p.json")
