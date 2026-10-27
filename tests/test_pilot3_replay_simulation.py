@@ -606,6 +606,14 @@ class TestPilot3EegOnlyPreset(unittest.TestCase):
         self.assertEqual(report["metrics"]["cue_plan_count"], 0)
         self.assertGreaterEqual(self._simulate("p21")["metrics"]["cue_plan_count"], 1)
 
+    def test_an_explicit_flag_changes_what_the_replay_plans(self):
+        # The flag alone asks for the 300 s this recording does not have.
+        self.assertEqual(self._simulate("p21", "--min-stable-seconds", "300")["metrics"]["cue_plan_count"], 0)
+        # And it wins over the preset: borghese2022_rem_home brought back to 60 s plans cues.
+        report = self._simulate("p21", "--protocol-preset", "borghese2022_rem_home", "--min-stable-seconds", "60")
+        self.assertGreaterEqual(report["metrics"]["cue_plan_count"], 1)
+        self.assertEqual(report["protocol"]["overrides"], {"gate_min_stable_seconds": 60.0})
+
     def test_guard_default_follows_gate_optics_capable(self):
         catalog, session, assignment, cue_library = protocol_fixture()
         report = simulate_cue_plan_from_epochs(

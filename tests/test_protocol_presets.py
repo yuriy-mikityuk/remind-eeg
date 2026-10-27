@@ -317,6 +317,47 @@ class CliLoaderTest(unittest.TestCase):
                 plan["metadata"]["protocol"]["overrides"], {"tlr_block_enabled": False, "tlr_repetitions": 4}
             )
 
+    def test_explicit_night_flags_reach_the_gate_and_the_scheduler(self):
+        argv = [
+            "run-pilot4-cueing", "--output-dir", "night", "--catalog", "catalog.json", "--session", "session.json",
+            "--assignment", "assignment.json", "--cue-library", "cues.json", "--calibration", "calibration.json",
+            "--protocol-preset", "konkoly2024_exp1",
+        ]
+
+        def live_config(*flags):
+            return cli_main._live_cueing_config(
+                build_parser().parse_args(argv + list(flags)),
+                pilot_id="m8_pilot4_low_volume_rem_gated_cueing",
+                summary_filename="pilot4_summary.json",
+                enable_tlr_block=False,
+                require_tlr_block=False,
+            )
+
+        preset = get_protocol_preset("konkoly2024_exp1")
+        plain = live_config()
+        self.assertEqual(plain.gate_config.min_stable_seconds, preset.runner.gate_min_stable_seconds)
+        self.assertEqual(plain.scheduler_config, preset.scheduler_config(enable_tlr_block=False))
+        self.assertEqual(plain.protocol["overrides"], {})
+        flagged = live_config(
+            "--min-stable-seconds", "90", "--max-puzzle-cues-per-block", "1",
+            "--puzzle-cue-interval-seconds", "45", "--scheduler-cooldown-seconds", "60",
+        )
+        self.assertEqual(flagged.gate_config.min_stable_seconds, 90.0)
+        scheduler = flagged.scheduler_config
+        self.assertEqual(
+            (scheduler.max_puzzle_cues_per_block, scheduler.puzzle_cue_interval_seconds, scheduler.cooldown_seconds),
+            (1, 45.0, 60.0),
+        )
+        self.assertEqual(
+            flagged.protocol["overrides"],
+            {
+                "gate_min_stable_seconds": 90.0,
+                "max_puzzle_cues_per_block": 1,
+                "puzzle_cue_interval_seconds": 45.0,
+                "scheduler_cooldown_seconds": 60.0,
+            },
+        )
+
     def test_without_a_preset_the_tlr_files_are_todays(self):
         with tempfile.TemporaryDirectory() as tmp:
             cues = Path(tmp) / "cues.json"
