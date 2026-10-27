@@ -285,7 +285,8 @@ say what limits the reading: `single_subject`; `no_sham_nights` and `no_no_cue_n
 an arm; `unblinded_early`, the schedule unsealed before the series' last morning form or
 delayed retest was saved, or before a night started; `sham_detectable`;
 `carry_over_possible`; `first_night_effect_possible`; `missing_delayed_retest`;
-`missing_arousal_scoring`; `missing_night_data`; `arm_mismatch`, a summary that names
+`missing_arousal_scoring`; `missing_night_data`, a night without its summary, puzzle
+session, assignment, dream report or morning retest; `arm_mismatch`, a summary that names
 another arm than the schedule, whose arm is kept; `inherits_detector_limits`, the
 detector's open issues #116 and #167; and `synthetic_input`.
 

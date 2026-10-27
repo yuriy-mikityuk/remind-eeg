@@ -437,9 +437,24 @@ class TestLimitations(_SeriesTest):
         )
         self.assertEqual(sorted(by_code["missing_arousal_scoring"].metadata["night_ids"]), playing)
         self.assertEqual(
-            by_code["missing_night_data"].metadata["missing"]["night-005"], ["summary", "dream_report", "morning_retest"]
+            by_code["missing_night_data"].metadata["missing"]["night-005"],
+            ["summary", "session", "assignment", "dream_report", "morning_retest"],
         )
         self.assertIsNone(report.nights[4]["values"]["lucid"])
+
+    def test_a_night_without_its_session_or_assignment_is_named(self):
+        series = self.series(blocks=2)
+        (series.protocol_dir / "night-002_puzzles.json").unlink()
+        (series.protocol_dir / "night-003_assignment.json").unlink()
+        report = _analyse(series)
+        missing = next(item for item in report.limitations if item.code == "missing_night_data").metadata["missing"]
+        self.assertEqual(missing, {"night-002": ["session"], "night-003": ["assignment"]})
+        by_night = {night["night_id"]: night["values"] for night in report.nights}
+        self.assertIsNone(by_night["night-002"]["incorporation_rate"])
+        self.assertIsNotNone(by_night["night-003"]["incorporation_rate"])
+        for night_id in ("night-002", "night-003"):
+            self.assertIsNone(by_night[night_id][MORNING_DELTA])
+        self.assertIsNotNone(by_night["night-001"][MORNING_DELTA])
 
     def test_no_sham_nights_and_an_arm_mismatch(self):
         series = self.series()

@@ -1088,6 +1088,8 @@ def _limitations(
             name
             for name, present in (
                 ("summary", inputs["summary"]),
+                ("session", inputs["session"]),
+                ("assignment", inputs["assignment"]),
                 ("dream_report", inputs["dream_report"]),
                 ("morning_retest", "morning" in inputs["retest_waves"]),
             )
@@ -1100,7 +1102,11 @@ def _limitations(
             AnalysisLimitation(
                 code="missing_night_data",
                 severity="warning",
-                message="Some nights lack their summary, dream report or morning retest; their values are missing.",
+                message=(
+                    "Some nights lack their summary, puzzle session, assignment, dream report or morning retest; "
+                    "the values that need them are missing. Without the session there is no incorporation rate, "
+                    "and without the session or the assignment no cued-minus-uncued delta."
+                ),
                 metadata={"missing": missing},
             )
         )
