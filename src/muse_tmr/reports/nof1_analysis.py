@@ -1015,8 +1015,8 @@ def _limitations(
             message=(
                 "A single-case description: no p-value is computed, and an interval is the spread of the "
                 f"differences over the arm orders the schedule could have drawn. With {outcome_count} outcomes and "
-                "three contrasts some differences fall outside their interval by chance; only a primary one named "
-                "in advance means more than that, and none is evidence that cueing works."
+                "three contrasts some differences may fall outside their interval by chance; only a primary one "
+                "named in advance means more than that, and none is evidence that cueing works."
             ),
         )
     )

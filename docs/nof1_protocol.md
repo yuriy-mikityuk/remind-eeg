@@ -270,10 +270,13 @@ at most `--permutations` (10,000) of them, else over that many orders drawn with
 `--seed` (0). The interval is the range of those differences once the lowest and the
 highest 2.5 % are cut: what the difference looks like when the labels carry no
 information. With two or three blocks there are 12 orders and nothing is cut, so no
-difference can fall outside; with four there are 72. No p-value is computed. A
-difference outside its interval describes this series, it is not evidence that cueing
-works, and with eight outcomes and three pairs of arms some fall outside by chance:
-`--primary-outcome` and `--primary-contrast` mark the one you preregistered.
+difference can fall outside; with four there are 72. An outcome with few levels, such
+as a yes or no per night or the share of four puzzles, gives many orders the same
+difference, so even a large one can sit on the edge of its interval rather than
+outside it. No p-value is computed. A difference outside its interval describes this
+series, it is not evidence that cueing works, and with eight outcomes and three pairs
+of arms some may fall outside by chance: `--primary-outcome` and `--primary-contrast`
+mark the one you preregistered.
 
 It also gives each outcome's lag-1 autocorrelation once the arm means are taken out, and
 flags the series' first night, with every mean also given without it. The limitations

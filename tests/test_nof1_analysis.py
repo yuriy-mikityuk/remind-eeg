@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 from muse_tmr.cli import main as cli_main
-from muse_tmr.protocol import BLOCK_ARMS, generate_night_schedule
+from muse_tmr.protocol import BLOCK_ARMS, NightSchedule, ScheduledNight, generate_night_schedule
 from muse_tmr.reports import (
     Nof1NightInputs,
     ScheduleStillSealed,
@@ -195,6 +195,39 @@ class TestPermutationIntervals(_SeriesTest):
         self.assertTrue(all(item["observed_outside_interval"] is not True for item in short.differences))
         small_n = next(item for item in short.limitations if item.code == "small_n")
         self.assertFalse(small_n.metadata["outside_possible"])
+
+    def test_a_twelve_night_series_with_and_without_a_planted_difference(self):
+        """The figures the PR reports, synthetic input, not sleep. Four blocks allow 72
+        orders, and with a share of four puzzles or a yes/no per night ties among them keep
+        even the planted difference on the edge of its interval, not outside it."""
+        plain = _analyse(self.series("plain"))
+        planted = _analyse(self.series("planted", planted=True))
+        for report in (plain, planted):
+            self.assertEqual(len(report.nights), 12)
+            self.assertEqual((report.settings["possible_orders"], report.settings["method"]), (72, "exact"))
+
+        def figures(report, outcome):
+            item = report.difference(outcome, "cue-no_cue")
+            return item["difference"], item["interval"], item["observed_outside_interval"]
+
+        self.assertEqual(figures(plain, MORNING_DELTA), (0.625, [-0.625, 0.625], False))
+        self.assertEqual(figures(planted, MORNING_DELTA), (1.0, [-1.0, 1.0], False))
+        self.assertEqual(figures(plain, "lucid"), (0.25, [-0.75, 0.75], False))
+        self.assertEqual(figures(planted, "lucid"), (0.5, [-1.0, 1.0], False))
+
+    def test_a_schedule_the_planner_could_not_draw_uses_every_order_of_every_block(self):
+        nights = tuple(
+            ScheduledNight(f"night-{3 * (block - 1) + place:03d}", 3 * (block - 1) + place, arm, block)
+            for block in (1, 2, 3)
+            for place, arm in enumerate(BLOCK_ARMS, start=1)
+        )
+        schedule = NightSchedule(
+            schedule_id="same-order", seed=1, blocks=3, washout_nights=0, nights=nights, salt="0" * 32
+        )
+        design = nof1_analysis._design(schedule)
+        self.assertEqual((design.reference_set, design.size), ("within_block", 216))
+        drawn = generate_night_schedule(1, 3, schedule_id="s", salt="0" * 32)
+        self.assertEqual(nof1_analysis._design(drawn).reference_set, "schedule_design")
 
     def test_graded_values_by_hand(self):
         """cue 1, sham 0.5, no_cue 0 on every block: the observed cue - no_cue difference is
