@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, Iterable, Mapping, Optional, Tuple
 
@@ -15,9 +15,16 @@ from muse_tmr.audio import (
 )
 from muse_tmr.models import RemGateDecision
 from muse_tmr.protocol.arousal_guard import ArousalGuardDecision
+from muse_tmr.protocol.night_schedule import CUEING_ARMS
 from muse_tmr.protocol.puzzle_protocol import PuzzleCatalog
 from muse_tmr.protocol.randomization import PuzzleCueAssignment
 from muse_tmr.protocol.tlr_protocol import TlrBlockPlan
+
+# The reason a sham night's play carries, the reason of a no-cue night's skip in place of
+# a play, and the metadata flag that marks that skip (#228).
+SHAM_ARM_REASON = "sham_arm"
+NO_CUE_ARM_REASON = "no_cue_arm"
+VIRTUAL_PLAY = "virtual_play"
 
 
 @dataclass(frozen=True)
@@ -71,6 +78,10 @@ class TmrSchedulerConfig:
     cooldown_seconds: float = 120.0
     max_puzzle_cues_per_block: int = 4
     enable_tlr_block: bool = True
+    # The night's arm (muse_tmr.protocol.night_schedule): cue plays as planned, sham plays
+    # sham_cue_id in place of every puzzle and TLR cue, no_cue plays nothing.
+    arm: str = "cue"
+    sham_cue_id: Optional[str] = None
 
     def validate(self) -> None:
         if self.puzzle_cue_interval_seconds < 0:
@@ -79,6 +90,10 @@ class TmrSchedulerConfig:
             raise ValueError("cooldown_seconds must be non-negative")
         if self.max_puzzle_cues_per_block <= 0:
             raise ValueError("max_puzzle_cues_per_block must be positive")
+        if self.arm not in CUEING_ARMS:
+            raise ValueError(f"arm must be one of: {', '.join(CUEING_ARMS)}")
+        if self.arm == "sham" and not self.sham_cue_id:
+            raise ValueError("the sham arm needs sham_cue_id")
 
 
 @dataclass(frozen=True)
@@ -90,12 +105,17 @@ class TmrSchedulerEvent:
     puzzle_id: Optional[str] = None
     reason_codes: Tuple[str, ...] = ()
     metadata: Mapping[str, object] = field(default_factory=dict)
+    # The arm of the night that logged it. "cue", the default, is left out of the log,
+    # so a cue night's events read as they did before arms existed.
+    arm: str = "cue"
 
     def __post_init__(self) -> None:
         if self.event_type not in {"play", "skip", "pause", "stop"}:
             raise ValueError("event_type must be one of: play, skip, pause, stop")
         if self.timestamp_seconds < 0:
             raise ValueError("timestamp_seconds must be non-negative")
+        if self.arm not in CUEING_ARMS:
+            raise ValueError(f"arm must be one of: {', '.join(CUEING_ARMS)}")
         object.__setattr__(self, "reason_codes", _unique(self.reason_codes))
 
     def to_dict(self) -> Dict[str, object]:
@@ -111,7 +131,14 @@ class TmrSchedulerEvent:
             payload["protocol"] = self.protocol
         if self.puzzle_id is not None:
             payload["puzzle_id"] = self.puzzle_id
+        if self.arm != "cue":
+            payload["arm"] = self.arm
         return payload
+
+    @property
+    def virtual_play(self) -> bool:
+        """A no-cue night's skip where another arm would have played."""
+        return self.event_type == "skip" and bool(self.metadata.get(VIRTUAL_PLAY))
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> "TmrSchedulerEvent":
@@ -123,6 +150,7 @@ class TmrSchedulerEvent:
             puzzle_id=_optional_str(payload.get("puzzle_id")),
             reason_codes=tuple(str(item) for item in payload.get("reason_codes", ())),
             metadata=dict(payload.get("metadata", {}) or {}),
+            arm=str(payload.get("arm") or "cue"),
         )
 
 
@@ -136,6 +164,13 @@ class TmrCueScheduler:
     guard's `volume_multiplier`, which the player applies after its cap. Given the
     player's `playback_config`, every play event also logs the volume that player
     plays it at (`AudioPlaybackConfig.cue_volume()`).
+
+    `config.arm` decides only what a cue the gate lets through becomes, never when one
+    comes: in `cue` it is played; in `sham` it names `config.sham_cue_id` instead, keeps
+    the puzzle, the protocol and the metadata (length and volume included) of the cue it
+    stands in for and adds `sham_arm`; in `no_cue` it is logged as a `skip` with
+    `no_cue_arm` and `metadata.virtual_play`. So the three arms of one night log their
+    cues at the same times. Every event carries the arm.
     """
 
     def __init__(
@@ -158,6 +193,13 @@ class TmrCueScheduler:
         self.event_log_path = event_log_path
         self.playback_config = playback_config
         self._scheduled_puzzles = _scheduled_puzzles(assignment, catalog, cue_library)
+        if self.config.arm == "sham":
+            validate_sham_cue(
+                str(self.config.sham_cue_id),
+                catalog=catalog,
+                cue_library=cue_library,
+                tlr_cue_ids=tlr_cue_ids_of(tlr_block_plan),
+            )
         self._events = []
         self._active_block = False
         self._tlr_block_played = False
@@ -401,7 +443,7 @@ class TmrCueScheduler:
             },
             playback_config=self.playback_config,
         )
-        return self._record(
+        return self._emit_cue(
             TmrSchedulerEvent(
                 event_type="play",
                 timestamp_seconds=timestamp_seconds,
@@ -427,7 +469,7 @@ class TmrCueScheduler:
             extra={"puzzle_cue_index": self._puzzle_cues_in_block + 1},
             playback_config=self.playback_config,
         )
-        event = self._record(
+        event = self._emit_cue(
             TmrSchedulerEvent(
                 event_type="play",
                 timestamp_seconds=timestamp_seconds,
@@ -459,7 +501,29 @@ class TmrCueScheduler:
             )
         )
 
+    def _emit_cue(self, event: TmrSchedulerEvent) -> TmrSchedulerEvent:
+        """Record a cue the gate let through as the night's arm has it. Only the cue's
+        ID (sham) or the event type (no_cue) changes, and a reason is added."""
+        if self.config.arm == "sham":
+            event = replace(
+                event,
+                cue_id=self.config.sham_cue_id,
+                reason_codes=event.reason_codes + (SHAM_ARM_REASON,),
+            )
+        elif self.config.arm == "no_cue":
+            event = replace(
+                event,
+                event_type="skip",
+                reason_codes=event.reason_codes + (NO_CUE_ARM_REASON,),
+                metadata={**dict(event.metadata), VIRTUAL_PLAY: True},
+            )
+        return self._record(event)
+
     def _record(self, event: TmrSchedulerEvent) -> TmrSchedulerEvent:
+        if event.arm != self.config.arm:
+            event = replace(event, arm=self.config.arm)
+        if event.event_type == "play" and event.arm == "no_cue":
+            raise RuntimeError("a no_cue night never plays a cue")
         self._events.append(event)
         if self.event_log_path is not None:
             append_tmr_scheduler_events((event,), self.event_log_path)
@@ -487,6 +551,77 @@ def load_tmr_scheduler_events(input_path: Path) -> Tuple[TmrSchedulerEvent, ...]
         for line in input_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     )
+
+
+def tlr_cue_ids_of(tlr_block_plan: Optional[TlrBlockPlan]) -> Tuple[str, ...]:
+    """The TLR cue of a block plan and of each of its events."""
+    if tlr_block_plan is None:
+        return ()
+    return tuple(dict.fromkeys((tlr_block_plan.cue_id,) + tuple(event.cue_id for event in tlr_block_plan.events)))
+
+
+def ensure_sham_untrained(
+    sham_cue_id: str,
+    *,
+    catalog: Optional[PuzzleCatalog] = None,
+    cue_library: Optional[CueLibrary] = None,
+    tlr_cue_ids: Iterable[str] = (),
+) -> None:
+    """Raise ValueError when the sham cue is a trained one.
+
+    Trained are the cue of any puzzle in ``catalog``, the TLR cues in ``tlr_cue_ids`` (a
+    block plan's, from ``tlr_cue_ids_of()``) and every ``tlr`` cue of ``cue_library``.
+    With ``cue_library`` a sham cue that sounds like one of them, a generated tone of the
+    same frequency or a sound from the same file, is refused too.
+    """
+    sham_cue_id = str(sham_cue_id or "").strip()
+    if not sham_cue_id:
+        raise ValueError("the sham cue_id must not be empty")
+    trained: Dict[str, str] = {}
+    for puzzle in catalog.puzzles if catalog is not None else ():
+        if puzzle.cue_id:
+            trained.setdefault(puzzle.cue_id, f"the cue of puzzle {puzzle.puzzle_id}")
+    for cue_id in tlr_cue_ids:
+        trained.setdefault(str(cue_id), "a TLR cue")
+    library_cues = {cue.cue_id: cue for cue in cue_library.cues} if cue_library is not None else {}
+    for cue in library_cues.values():
+        if cue.protocol == "tlr":
+            trained.setdefault(cue.cue_id, "a TLR cue")
+    if sham_cue_id in trained:
+        raise ValueError(
+            f"sham cue {sham_cue_id} is {trained[sham_cue_id]}: a sham night needs a sound that was never trained"
+        )
+    sham = library_cues.get(sham_cue_id)
+    if sham is None:
+        return
+    for cue_id, what in trained.items():
+        other = library_cues.get(cue_id)
+        if other is None:
+            continue
+        same_tone = (
+            sham.cue_type == other.cue_type == "generated_tone"
+            and sham.frequency_hz is not None
+            and sham.frequency_hz == other.frequency_hz
+        )
+        same_file = sham.cue_type == other.cue_type == "sound" and bool(sham.path) and sham.path == other.path
+        if same_tone or same_file:
+            raise ValueError(
+                f"sham cue {sham_cue_id} sounds like {cue_id}, {what}: a sham night needs a sound that was never trained"
+            )
+
+
+def validate_sham_cue(
+    sham_cue_id: str,
+    *,
+    catalog: Optional[PuzzleCatalog],
+    cue_library: CueLibrary,
+    tlr_cue_ids: Iterable[str] = (),
+) -> None:
+    """The sham cue is in ``cue_library``, declared ``protocol="sham"``, and untrained."""
+    ensure_sham_untrained(sham_cue_id, catalog=catalog, cue_library=cue_library, tlr_cue_ids=tlr_cue_ids)
+    cue = cue_library.by_id(sham_cue_id)
+    if cue.protocol != "sham":
+        raise ValueError(f"sham cue {sham_cue_id} must use protocol='sham' in the cue library")
 
 
 def _scheduled_puzzles(

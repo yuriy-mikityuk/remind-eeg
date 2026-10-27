@@ -21,8 +21,21 @@ class TestCueLibrary(unittest.TestCase):
         report = library.validate()
 
         self.assertTrue(report.is_valid)
-        self.assertEqual({cue.protocol for cue in library.cues}, {"puzzle", "tlr", "generic"})
+        self.assertEqual({cue.protocol for cue in library.cues}, {"puzzle", "tlr", "generic", "sham"})
         self.assertEqual(library.by_id("puzzle_soft_tone").cue_type, "generated_tone")
+
+    def test_the_starter_library_has_an_untrained_sham_tone(self):
+        from muse_tmr.audio import DEFAULT_SHAM_CUE_ID
+        from muse_tmr.protocol import ensure_sham_untrained, validate_sham_cue
+
+        library = default_cue_library()
+        sham = library.by_id(DEFAULT_SHAM_CUE_ID)
+        self.assertEqual((sham.cue_id, sham.protocol, sham.cue_type), ("sham_soft_tone", "sham", "generated_tone"))
+        self.assertIn("untrained", sham.tags)
+        self.assertNotIn(sham.frequency_hz, {cue.frequency_hz for cue in library.cues if cue.cue_id != sham.cue_id})
+        self.assertEqual(library.filter(protocol="sham"), (sham,))
+        ensure_sham_untrained(DEFAULT_SHAM_CUE_ID, cue_library=library, tlr_cue_ids=("tlr_soft_tone",))
+        validate_sham_cue(DEFAULT_SHAM_CUE_ID, catalog=None, cue_library=library)
 
     def test_duplicate_cue_ids_are_blocking_validation_errors(self):
         cue = CueMetadata(
@@ -86,7 +99,7 @@ class TestCueLibrary(unittest.TestCase):
         self.assertEqual(loaded.library_id, "starter")
         self.assertEqual(len(tlr), 1)
         self.assertEqual(tlr[0].cue_id, "tlr_soft_tone")
-        self.assertEqual(len(generated), 2)
+        self.assertEqual(len(generated), 3)
 
     def test_invalid_generated_tone_requires_frequency(self):
         library = CueLibrary(cues=(
