@@ -313,6 +313,32 @@ class TestCli(unittest.TestCase):
         self.assertEqual(args.features, ["p_rem", "feature_score_stillness"])
         self.assertEqual(args.epochs, 500)
         self.assertEqual(args.threshold, 0.6)
+        self.assertIsNone(args.init)
+        args = build_parser().parse_args(
+            ["train-rem-classifier", "rows.csv", "--output", "m.json", "--init", "boas_v1_personal_rem_model.json"]
+        )
+        self.assertEqual(args.init, Path("boas_v1_personal_rem_model.json"))
+
+    def test_validate_external_command_parses_its_options(self):
+        from muse_tmr.validation.external_labels import GATE_THRESHOLD_CHOICES
+
+        args = build_parser().parse_args(
+            ["validate-external", "--root", "ds005555", "--splits", "splits.json", "--output-dir", "out"]
+        )
+        self.assertEqual((args.command, args.dataset, args.root), ("validate-external", "boas", Path("ds005555")))
+        self.assertEqual((args.splits, args.output_dir, args.make_splits, args.seed), (Path("splits.json"), Path("out"), False, 0))
+        self.assertEqual((args.fit_fraction, args.gate_thresholds, args.reference), (0.5, None, None))
+        self.assertEqual((args.nights, args.jobs, args.rescore, args.gssc_python), (None, 1, False, None))
+        args = build_parser().parse_args([
+            "validate-external", "--root", "r", "--splits", "s.json", "--output-dir", "o", "--make-splits", "--seed", "3",
+            "--gate-thresholds", "p21", "--gate-thresholds", "boas_v1", "--reference", "gssc", "--reference", "yasa",
+            "--nights", "sub-3,sub-4", "--jobs", "4", "--rescore",
+        ])
+        self.assertEqual(args.gate_thresholds, list(GATE_THRESHOLD_CHOICES))
+        self.assertEqual((args.reference, args.nights, args.jobs, args.seed), (["gssc", "yasa"], "sub-3,sub-4", 4, 3))
+        for bad in (["--gate-thresholds", "p1034"], ["--reference", "luna"], ["--dataset", "shhs"]):
+            with self.subTest(bad=bad), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                build_parser().parse_args(["validate-external", "--root", "r", "--splits", "s", "--output-dir", "o", *bad])
 
     def test_cue_library_commands_parse_paths_and_filters(self):
         create_args = build_parser().parse_args([

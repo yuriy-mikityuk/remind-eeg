@@ -24,7 +24,8 @@ def build_html(result: Dict[str, object]) -> str:
             "t": round(int(m["epoch"]) * epoch_seconds / 3600.0, 4),
             "p": round(float(m["p_rem"]), 4),
             "g": 1 if m["gate_open"] else 0,
-            "s": str(m["ref_stage"]),
+            # External labels that say only NREM are drawn on the N2 line.
+            "s": "N2" if str(m["ref_stage"]) == "NREM" else str(m["ref_stage"]),
             "r": int(m["ref_rem"]),
         }
         for m in matched
@@ -59,21 +60,44 @@ def build_html(result: Dict[str, object]) -> str:
     provenance = result.get("provenance") or {}
     stager = provenance.get("stager") or {}
     run_line = f"Kappa: {result.get('kappa_definition', 'binary REM-vs-not')}."
-    if stager:
+    if stager.get("tool"):
         run_line += (
             f" Stager {stager.get('tool')} {stager.get('package_version') or 'version unknown'}"
             f"; channels not given to it: {', '.join(provenance.get('channels_not_passed') or []) or 'none'}"
             f"; commit {str(provenance.get('git_commit') or 'unknown')[:12]}."
         )
+    elif stager:
+        run_line += f" No stager; commit {str(provenance.get('git_commit') or 'unknown')[:12]}."
+    if provenance.get("labels_source"):
+        version = provenance.get("dataset_version")
+        run_line += (
+            f" Labels {provenance['labels_source']}"
+            + (f", dataset version {version}" if version else "")
+            + f", sha256 {str(provenance.get('labels_file_sha256') or '')[:12]}."
+        )
     if provenance.get("weight_overrides"):
         run_line += " Detector weights from --weights: " + ", ".join(
             f"{name} {weight:.3f}" for name, weight in (provenance.get("weights") or {}).items()
         ) + "."
+    stager_vs_labels = result.get("stager_vs_labels")
+    if stager_vs_labels:
+        run_line += (
+            f" {str(stager_vs_labels['tool']).upper()} against the same labels: "
+            f"kappa {stat(stager_vs_labels['kappa'])}, precision {stat(stager_vs_labels['precision'])}, "
+            f"recall {stat(stager_vs_labels['recall'])}."
+        )
 
+    reference = result["reference"]
+    if tool == "EXTERNAL":
+        subtitle = f"Heuristic p_rem &amp; live gate vs external labels ({html.escape(str(reference.get('labels')))})"
+    else:
+        subtitle = (
+            f"Heuristic p_rem &amp; live gate vs {tool} auto-staging (eeg {reference['eeg']}, "
+            f"eog {reference.get('eog') or 'none'}) &middot; proxy reference, not PSG"
+        )
     return _TEMPLATE.format(
         recording=result["recording"],
-        eeg=result["reference"]["eeg"],
-        eog=result["reference"].get("eog") or "none",
+        subtitle=subtitle,
         run_line=html.escape(run_line),
         tool=tool,
         caveat=_CAVEATS.get(tool.lower(), _CAVEATS["yasa"]),
@@ -155,6 +179,12 @@ _CAVEATS = {
         "forehead-only EEG like the Muse. It is an automated proxy, not PSG. Validate against a few "
         "manually-scored nights before treating its REM calls as ground truth."
     ),
+    "external": (
+        "<strong>External labels, taken as they are.</strong> On a BOAS night they are the PSG consensus "
+        "of three scorers, and the recording is a Bitbrain Ikon headband referenced to the mastoid: a result "
+        "on a frontal montage, not on a Muse, and one night says little. <code>muse-tmr validate-external</code> "
+        "scores participant-grouped report folds."
+    ),
 }
 
 
@@ -201,7 +231,7 @@ svg{{display:block; width:100%; height:auto; overflow:visible}}
 </style>
 <div class="vr"><div class="wrap">
 <h1>REM detection vs {tool} reference &mdash; {recording}</h1>
-<p class="sub">Heuristic p_rem &amp; live gate vs {tool} auto-staging (eeg {eeg}, eog {eog}) &middot; proxy reference, not PSG</p>
+<p class="sub">{subtitle}</p>
 <p class="sub">{run_line}</p>
 <div class="tiles">{stat_tiles}</div>
 <div class="legend">
