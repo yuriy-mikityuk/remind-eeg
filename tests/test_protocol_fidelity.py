@@ -185,6 +185,7 @@ class GateSequenceTest(unittest.TestCase):
         self.assertEqual((stable["status"], stable["observed"]), ("as_published", [60.0]))
         self.assertEqual(report.checks["pause_rules"]["status"], "as_published")
         self.assertEqual(report.checks["tlr_block"]["status"], "not_used")
+        self.assertEqual(report.checks["tlr_tone"]["status"], "not_used")
         self.assertEqual(report.limitations, ("no_audio_log",))
 
     def test_a_pause_shorter_than_published_is_found(self):
@@ -302,6 +303,37 @@ class GateSequenceTest(unittest.TestCase):
         )
         counts = build_protocol_fidelity(night).checks["cues_per_rem_period"]["streams"]["tlr"]
         self.assertEqual((counts["status"], counts["per_block"], counts["blocks_over_max"]), ("differs", [[12]], 1))
+
+    def test_the_tlr_tone_against_the_presets(self):
+        # The plan's tone, which a night only starts with when its library holds it (#264).
+        nijmegen = write_night(self.root / "nijmegen", [0.9] * 6, preset="konkoly2021_nijmegen", tlr=True)
+        report = build_protocol_fidelity(nijmegen)
+        tone = report.checks["tlr_tone"]
+        self.assertEqual(tone["status"], "as_published")
+        self.assertEqual(tone["observed"], {"cue_id": "tlr_soft_tone", "frequency_hz": 600.0, "duration_seconds": 0.65})
+        self.assertEqual(tone["published"], {"frequency_hz": 600.0, "duration_seconds": 0.65})
+        self.assertIn("| tlr_tone | as_published |", report.to_markdown())
+
+        default = write_night(self.root / "default", [0.9] * 6, tlr=True)
+        self.assertEqual(build_protocol_fidelity(default).checks["tlr_tone"]["status"], "as_published")
+        # The repository's 396 Hz tone of 1 s is not that preset's.
+        other = build_protocol_fidelity(default, preset_name="konkoly2021_nijmegen").checks["tlr_tone"]
+        self.assertEqual((other["status"], other["observed"]["frequency_hz"]), ("differs", 396.0))
+        # Nor is a tone whose length was overridden.
+        longer = write_night(
+            self.root / "longer", [0.9] * 6, preset="konkoly2024_exp2",
+            overrides={"tlr_tone_duration_seconds": 1.0}, tlr=True,
+        )
+        self.assertEqual(build_protocol_fidelity(longer).checks["tlr_tone"]["status"], "differs")
+        # A night whose gate never opened played no TLR cue.
+        quiet = write_night(self.root / "quiet", [0.2] * 6, preset="konkoly2021_nijmegen", tlr=True)
+        self.assertEqual(build_protocol_fidelity(quiet).checks["tlr_tone"]["status"], "no_cues")
+        # A plan from before #264 does not say which tone played.
+        metadata = json.loads((nijmegen / "metadata.json").read_text(encoding="utf-8"))
+        del metadata["tlr_block_plan"]["tone"]
+        (nijmegen / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+        tone = build_protocol_fidelity(nijmegen).checks["tlr_tone"]
+        self.assertEqual((tone["status"], tone["observed"]), ("not_available", None))
 
     def test_the_stable_window_against_the_published_start(self):
         probabilities = [0.2, 0.9, 0.9, 0.9, 0.9]

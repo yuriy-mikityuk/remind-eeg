@@ -1089,6 +1089,8 @@ class TestPresetTlrToneFromTheCommandLine(unittest.TestCase):
         self.assertIn(f"create-cue-library --protocol-preset {self.PRESET}", stderr)
 
     def test_one_library_plays_the_trained_tone(self):
+        from muse_tmr.reports.protocol_fidelity import build_protocol_fidelity
+
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self._run("create-cue-library", "--output", root / "starter.json", "--protocol-preset", self.PRESET)
@@ -1097,6 +1099,7 @@ class TestPresetTlrToneFromTheCommandLine(unittest.TestCase):
             )
             training = json.loads((root / "training.json").read_text(encoding="utf-8"))
             plan = json.loads((root / "plan.json").read_text(encoding="utf-8"))
+            tone = build_protocol_fidelity(root / "night").checks["tlr_tone"]
 
         played = {
             (request.frequency_hz, request.duration_seconds)
@@ -1110,6 +1113,7 @@ class TestPresetTlrToneFromTheCommandLine(unittest.TestCase):
         )
         self.assertEqual(plan["tone"], training["tone"])
         self.assertEqual(plan["metadata"]["training"]["session_id"], "tlr-training")
+        self.assertEqual((tone["status"], tone["observed"]["frequency_hz"]), ("as_published", 600.0))
 
 
 ARMS = ("cue", "sham", "no_cue")
