@@ -190,7 +190,8 @@ def export_bids(
         root=str(bids_root),
         subject=subject,
         session=session,
-        files=tuple(str(path.relative_to(bids_root)) for path in files),
+        # BIDS paths, with forward slashes on every system.
+        files=tuple(path.relative_to(bids_root).as_posix() for path in files),
         edf=edf_result,
         events=len(events),
         stages=len(stages),
