@@ -16,6 +16,8 @@ RETIRED_PHRASES = (
     "far better fit",
     "Konkoly-like",
     "Konkoly-style",
+    # Presets say "parameters from <paper, arm>" (#231).
+    "Konkoly protocol",
     "configs/",
 )
 SEARCH_ROOTS = ("README.md", "docs", "src", "scripts")

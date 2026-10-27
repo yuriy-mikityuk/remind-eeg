@@ -37,6 +37,11 @@ Protocol settings are the dataclass defaults in code, versioned with the release
 
 [`numbers.md`](numbers.md) lists each default with its source and status.
 
+These defaults are the protocol preset `remind_default_v1`. The other presets in
+[`protocol_presets.md`](protocol_presets.md) take their timing from a paper and arm, each
+with its citation, its content hash and where REMind cannot follow it; `--protocol-preset`
+loads one, and `muse-tmr protocol-fidelity` compares a night with it.
+
 ## Pre-Sleep Puzzle Sessions
 
 Puzzle session management lives in `muse_tmr.protocol.puzzle_protocol`. It is the M5
@@ -177,6 +182,10 @@ morning retest, optional dream report, and optional scheduler JSONL events into 
 descriptive analysis report. It reports cued vs uncued solve rates, dream incorporation
 rates, retest duration/confidence, and puzzle cue timing from `TmrSchedulerEvent`
 records.
+
+Before the retest, the morning sound check (`muse-tmr record-cue-recall`, or the app's
+Morning tab) plays each puzzle's sound and asks which puzzle it belongs to, as Sanders et
+al. 2019 and Konkoly et al. 2026 did; the analysis reports the recall rate by condition.
 
 The CLI command is:
 

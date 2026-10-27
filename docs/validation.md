@@ -58,7 +58,9 @@ with assumptions.
 | Scheduler behavior | Counts of `play`, `skip`, `pause`, `stop`; cooldown and interval reason codes | Scheduler JSONL | Audits whether cue timing rules were enforced. |
 | Arousal guard burden | Counts by guard action and reason code: motion, alpha, HR jump, artifact quality | Guard decisions, scheduler metadata | Explains cue suppression or volume lowering. |
 | Audio calibration status | Comfortable volume, detectable volume, scheduler max volume, device name | Volume calibration JSON, scheduler metadata | Missing calibration should block planned sleep-time cue sessions. |
-| TLR block fidelity | TLR block repetitions, inter-cue intervals, post-block pause, training event count | TLR training JSONL, block plan | Verifies that TLR was administered as planned before sleep or before puzzle cues. |
+| TLR block fidelity | TLR block repetitions, inter-cue intervals, post-block pause, training event count; per REM period the TLR cues played against the plan, and their spacing as played (at the decisions of the epochs that played them) against the planned spacing | TLR training JSONL, block plan, `protocol_fidelity.json` (`checks.tlr_block`) | Verifies that TLR was administered as planned before sleep or before puzzle cues. At a 30 s stride cues planned closer than 30 s play back to back. |
+| Protocol preset fidelity | Intervals between cues, cues per REM period, stable REM before the first cue, pause rules, cue gain and length, each against the night's protocol preset | `protocol_fidelity.json` from `protocol-fidelity`, the `protocol` block of `metadata.json` | How closely the night's timing followed a paper's parameters. Parameter fidelity, not result fidelity: no PSG, no EOG, gain not dB SPL (`docs/protocol_presets.md`). |
+| Sound check (manipulation check) | Recall rate of the sound-to-puzzle check by condition, and whether it came before the retest | `<night>_cue_recall.json`, analysis `cue_recall` | Whether the pairings still held in the morning. A low rate limits what any cued-vs-uncued delta can mean; it is not an outcome. |
 
 ## Safety Outcome Metrics
 

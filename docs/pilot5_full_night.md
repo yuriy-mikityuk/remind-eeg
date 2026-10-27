@@ -57,6 +57,13 @@ Use `--backend system` for `train-tlr-cue` only if you intentionally want audibl
 pre-sleep TLR familiarization. Without `afplay` on PATH it then exits with code 2
 instead of training in silence.
 
+To run a night with a protocol preset (`docs/protocol_presets.md`), give the same
+`--protocol-preset` to `create-tlr-cue`, `plan-tlr-block`, `generate-puzzle-session`,
+`assign-puzzle-cues` and `run-pilot5-full-night`, and leave out the flags it sets, for
+example the `--repetitions`, `--interval-seconds` and `--post-block-pause-seconds` above.
+Each file records the preset it was made with; a night whose plan or assignment was made
+with another preset says so in a warning and in `metadata.json`.
+
 ## Dry-Run Smoke
 
 ```bash
@@ -149,11 +156,14 @@ cue-attributed awakening rate in the report and in that block counts them:
 .venv/bin/python -m muse_tmr.cli.main score-cue-arousal "$OUTDIR"
 ```
 
-In the morning, the app's Morning tab does the next two steps without flags: pick the
-night, write the dream report, then do the blind retest with a timer per puzzle. It
-finds the night's catalog and assignment in `data/protocol` and saves to the same
-`data/reports/<night>_dream_report.json` and `<night>_retest.json` as the commands
-below. From the terminal:
+In the morning, the app's Morning tab does the next three steps without flags: pick the
+night, write the dream report, then the sound check (play each sound and pick its
+puzzle), then the blind retest with a timer per puzzle. It finds the night's catalog
+and assignment in `data/protocol`, the cues in `data/cues` and the calibration in
+`data/calibration`, and saves to the same `data/reports/<night>_dream_report.json`,
+`<night>_cue_recall.json` and `<night>_retest.json` as the commands below. Its sounds
+play on `afplay`; start the app with `--cue-backend dry-run` (or `--allow-dry-run`) to
+go through the step without sound. From the terminal:
 
 Record dream report:
 
@@ -167,6 +177,22 @@ Record dream report:
   --confidence 0.5 \
   --dream-text ""
 ```
+
+Play each puzzle's sound and say which puzzle it belongs to, before the retest:
+
+```bash
+.venv/bin/python -m muse_tmr.cli.main record-cue-recall \
+  data/protocol/night-001_puzzles.json \
+  --catalog data/protocol/puzzle_catalog.json \
+  --assignment data/protocol/night-001_assignment.json \
+  --cue-library data/cues/starter.json \
+  --calibration data/calibration/volume_calibration.json \
+  --output data/reports/night-001_cue_recall.json \
+  --backend system
+```
+
+The sounds come in an order that does not depend on which puzzles were cued, and the
+command never prints which answers were right.
 
 Record the blind morning puzzle retest before looking at cue conditions:
 
@@ -199,9 +225,20 @@ Generate analysis:
   --retest data/reports/night-001_retest.json \
   --dream-report data/reports/night-001_dream_report.json \
   --scheduler-events "$OUTDIR/scheduler_events.jsonl" \
+  --cue-recall data/reports/night-001_cue_recall.json \
+  --protocol-metadata "$OUTDIR/metadata.json" \
   --output data/reports/night-001_analysis.json \
   --markdown-output data/reports/night-001_analysis.md
 ```
+
+Compare the night with its protocol preset:
+
+```bash
+.venv/bin/python -m muse_tmr.cli.main protocol-fidelity "$OUTDIR"
+```
+
+Its `tlr_block` check shows how the TLR cues played against the plan: at a 30 s stride
+cues planned closer than 30 s play back to back.
 
 ## Outputs
 
@@ -214,7 +251,8 @@ The output directory contains:
 - `audio_playback.jsonl`;
 - `awakening_events.jsonl`;
 - `cue_arousal_events.jsonl`, `cue_arousal_report.json`, `cue_arousal_report.md`;
-- `pilot5_summary.json`.
+- `pilot5_summary.json`;
+- `protocol_fidelity.json`, `protocol_fidelity.md` once `protocol-fidelity` ran on it.
 
 The summary passes only when the Pilot 4 safety criteria pass and at least one TLR
 block cue was logged as a scheduler `play` event. A night with no puzzle cues can still

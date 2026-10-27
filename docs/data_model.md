@@ -578,12 +578,14 @@ writes or appends them. One line:
 | `stable_seconds`, `cooldown_remaining_seconds`, `reason_codes` | As in `RemGateDecision`. |
 
 `gate_open_runs(records)` and `load_gate_open_runs(source)` give the gate-open runs, the
-REM periods of the cue arousal scorer and of the protocol fidelity report that follows
-it (Initiative 7): consecutive epochs whose decision left the gate open. A
-`GateOpenRun` starts at the first one's `decision_seconds` and ends at the
-`decision_seconds` of the first decision after them that closed the gate (`closed`
-true), or at the last open one's when the log ends open (`closed` false). It is the
-gate's REM, not a scored REM period.
+REM periods of the cue arousal scorer and of the protocol fidelity report: consecutive
+epochs whose decision left the gate open. A `GateOpenRun` starts at the first one's
+`decision_seconds` and ends at the `decision_seconds` of the first decision after them
+that closed the gate (`closed` true), or at the last open one's when the log ends open
+(`closed` false). It is the gate's REM, not a scored REM period. Both reports place a
+scheduler `play` with `emitting_record()`, the first epoch starting at or after its
+`timestamp_seconds` (a puzzle cue is logged at its epoch's start, a TLR cue at its
+planned time), and find its run with `run_at()`.
 
 ## Audio Playback
 
@@ -695,7 +697,9 @@ uncued assignment for one `NightPuzzleSession`:
 - generation timestamp and metadata
 
 `muse-tmr assign-puzzle-cues <session.json> --seed <n> --output <assignment.json>`
-splits half of the session puzzles into the cued group by default. The assignment must
+splits half of the session puzzles into the cued group by default, or as many as the
+protocol preset says (`--protocol-preset`); its `metadata.protocol` is the preset block,
+and so is a session's from `generate-puzzle-session`. The assignment must
 cover exactly the session puzzle IDs with no overlap. Scheduler code should call
 `scheduled_puzzle_ids` or `scheduled_cue_ids(catalog)` so uncued controls are never
 eligible for cue playback.
@@ -710,7 +714,8 @@ reactivation:
 - `TlrTrainingSession`: training summary with one event per cue presentation
 - `TlrTrainingEvent`: playback status, requested/effective volume, reason codes, and scheduled offset
 - `TlrBlockConfig`: REM block repetitions, interval, post-block pause, and enabled flag
-- `TlrBlockPlan`: cue offsets and `puzzle_cue_start_offset_seconds`
+- `TlrBlockPlan`: cue offsets, `puzzle_cue_start_offset_seconds` and `metadata`, which
+  holds the protocol preset block the plan was made with (`metadata.protocol`, #231)
 
 `muse-tmr create-tlr-cue` writes a `CueLibrary` containing a generated TLR cue.
 `train-tlr-cue` plays or dry-runs the cue through `AudioCuePlayer` and writes both a
@@ -860,12 +865,92 @@ prompts.
 audit puzzle cue timing. The output is descriptive only and includes machine-readable
 limitations such as `small_n`, `missing_scheduler_events`, or `uncued_cue_play_observed`.
 
+Schema 2 (#231) adds `cue_recall`, the morning sound check by condition: `available`,
+`trial_count`, `answered_count`, `correct_count`, `recall_rate` (a sound not placed counts
+as wrong), `by_condition` (`trial_count`, `correct_count`, `recall_rate` for `cued` and
+`uncued`), `recall_rate_difference_cued_minus_uncued`, `completed_at_utc`,
+`retest_reported_at_utc` and `before_retest`; each row's `cue_recalled`; the limitations
+`cue_recall_missing` and `cue_recall_after_retest`; and in `metadata` the night's
+`protocol` block with `protocol_source` (the `--protocol-metadata` file's name, or
+`assignment`).
+
+## Cue Recall Tests
+
+`muse_tmr.reports.cue_recall` (`record-cue-recall`, and the app's Morning tab) writes
+`<night>_cue_recall.json`, version 1 (`CueRecallTest`, `load_cue_recall_test()`):
+
+| Field | Content |
+|---|---|
+| `schema_version`, `test_id`, `session_id` | 1, `<session>-cue-recall`, the night's session. |
+| `started_at_utc`, `completed_at_utc` | When the first sound played and when the check was saved. |
+| `order_seed` | The seed of the play order, made from the session ID alone (`cue_recall_order()`). |
+| `trial_count`, `answered_count`, `correct_count`, `recall_rate`, `by_condition` | As in the analysis. |
+| `trials` | One per puzzle in play order: `trial` (the number shown), `puzzle_id` and `cue_id` of the sound, `response_puzzle_id` (`null`: not sure), `correct`, `cue_condition` (for the analysis only), `play_count` and `plays` (each play's `status`, `backend_name`, `requested_volume`, `capped_volume`, `effective_volume`, `max_volume`, `reason_codes`, `started_at`). |
+| `notes`, `metadata` | Free text; the audio log's name, the requested and resolved backend, and a note that the condition was not shown. |
+
+Each play also goes to `<night>_cue_recall_audio.jsonl` through `AudioCuePlayer`'s log.
+The app's Morning tab sends the page only the sound numbers, whether they can play and,
+once saved, the answers by number.
+
+## Protocol Presets
+
+`muse_tmr.protocol.protocol_presets` defines the records of a protocol preset and
+`muse_tmr.protocol.protocol_registry` the presets (#231, [`protocol_presets.md`](protocol_presets.md)):
+
+- `ProtocolPreset`: `name`, `version`, `title`, `runnable` (with `not_runnable_reason`),
+  `design_note`, `caveats`, `citations`, `cues`, `timing`, `pauses`, `ramp`, `training`,
+  `morning`, `runner`, `deviations`
+- `Citation`: authors, year, title, venue, URL, DOI, arm, `source_check`
+  (`verified_full_text` or `notes_only`) and a note
+- `CueSpec`: a cue as published, by stream (`tlr`, `puzzle` or `any`): description,
+  duration, frequencies
+- `CueTiming`: a stream's published interval range and limit of cues per REM period
+- `PauseRules`: REM before the first cue and before resuming, pauses by trigger
+  (movement, alpha, blink, poor_signal, heart_rate, arousal), pauses that lasted until a
+  sign was gone, the pause after an awakening, what stopped cueing
+- `IntensityRamp`: the published level, start, step per cue or per cycle, cap and what an
+  arousal did; documentation and a fidelity-report input only
+- `PlatformDeviation`: a parameter, the published value and what REMind does
+- `RunnerSettings`: what the runners use; the only part that reaches them, through
+  `scheduler_config()`, `tlr_block_config()`, `tlr_cue_config()`, `gate_overrides()` and
+  `puzzle_counts()`
+
+`content_hash()` is the sha256 of the preset's canonical JSON (sorted keys, no spaces).
+`manifest(overrides)` is the `protocol` block a run records: `schema_version` (1),
+`name`, `version`, `registry_version`, `content_hash`, `runnable`, `overrides` (the
+explicit flags, by setting), `effective_hash` (the sha256 of the content hash and the
+overrides) and `settings` (the runner settings with the overrides). A run whose
+assignment or TLR plan was made with a preset adds `inputs`, their `name`, `version`,
+`content_hash` and `effective_hash`.
+
+## Protocol Fidelity Reports
+
+`muse_tmr.reports.protocol_fidelity` (`protocol-fidelity`) writes
+`protocol_fidelity.json`, version 1, and `protocol_fidelity.md` into the night's
+directory or the Pilot 3 report's (#231):
+
+| Field | Content |
+|---|---|
+| `schema_version`, `recording`, `generated_at_utc` | 1, the directory's name, the time it was written. |
+| `synthetic`, `note` | `true` and "synthetic input, not sleep" for a synthetic recording. |
+| `parameter_fidelity_is_not_result_fidelity` | Always there: `statement`, `no_psg_verified_rem`, `no_eog`, `gain_not_db_spl`, `first_cue_latency`. |
+| `preset` | The preset compared with: `name`, `version`, `title`, `content_hash`, `runnable`, `source` (the night's, the one asked for, or the default) and its `citations`. |
+| `night_protocol`, `settings` | The night's `protocol` block and the runner settings it ran with. |
+| `inputs` | Which files were read. |
+| `summary` | `rem_periods`, `rem_periods_with_cues`, `plays` by stream, `plays_outside_rem_periods`, `uncued_puzzle_play_count`, `stride_seconds`. |
+| `rem_periods` | Each gate-open run with its plays by stream, `first_cue_seconds_after_gate_open` and `stable_rem_seconds_at_first_cue`. |
+| `checks` | `inter_cue_intervals`, `cues_per_rem_period`, `stable_rem_before_first_cue`, `pause_rules`, `volume_ramp`, `cue_duration`, `tlr_block`: each a `status` with `observed` and `published` and its detail. |
+| `deviations` | The preset's platform deviations. |
+| `limitations` | Codes: `synthetic_input`, `no_protocol_block`, `preset_changed_since_night`, `night_overrode_preset_settings`, `compared_with_another_preset`, `unknown_preset_in_night`, `no_gate_log`, `no_scheduler_events`, `no_audio_log`, `pilot3_plan_not_played`, `awakening_markers_unplaced`. |
+
 Puzzle protocol files may contain private puzzle content, responses, and night/session
 metadata, so `data/protocol/` is gitignored.
 
 ## Pilot Time Base And Awakening Markers
 
-`pilot4_summary.json` and `pilot5_summary.json` are schema 2 since #227. They add
+`pilot4_summary.json` and `pilot5_summary.json` are schema 3 since #231, which adds
+`protocol`, the night's preset block (also in `metadata.json`, with the TLR plan the night
+used as `tlr_block_plan`); a Pilot 3 report has the same `protocol`. Schema 2 (#227) added
 `first_epoch_start`, the first epoch's start in the frames' clock (Unix seconds, `null`
 without an epoch), which every `timestamp_seconds` of the night counts from;
 `rem_gate_decisions_path`; and `cue_arousal`, the scorer's block below. Schema 1

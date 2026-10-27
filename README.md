@@ -41,7 +41,7 @@ The pictures show the app on example data.
 - **Pluggable acquisition:** amused-py BLE (default), OpenMuse LSL, and BrainFlow backends, all mapped to one `MuseFrame` contract; a Polar H10 chest strap can record ECG, RR and chest motion alongside, in its own process
 - **Local app, REMind:** live contact check per sensor, session, night, guided-meditation and calibration recordings that start once the contact holds and run as their own process, a recordings page with the reports and EEG numbers, and auto-update from `main`
 - **Reproducible validation:** five staged pilots, each with a runbook and an automated validator
-- **Engineering hygiene:** 45 CLI commands, pytest suite with CI on GitHub Actions, and a privacy-aware gitignore — volume calibration, puzzle content, and dream reports never leave the machine
+- **Engineering hygiene:** 48 CLI commands, pytest suite with CI on GitHub Actions, and a privacy-aware gitignore — volume calibration, puzzle content, and dream reports never leave the machine
 
 ## Install
 
@@ -139,8 +139,10 @@ A one-way, REM-timed cue protocol combined with puzzle-based TMR. A cue is paire
 1. **Pre-sleep:** timed puzzle attempts against a private catalog, cue–solution association checks, TLR cue familiarization, and per-device volume calibration (detectable / identifiable / comfortable thresholds — the comfortable level becomes the hard scheduler cap).
 2. **Session generation:** a seeded night session of four eligible unsolved puzzles; a second seeded step assigns half to the **cued** group. The scheduler only ever sees the cued IDs, so uncued puzzles physically cannot be played.
 3. **Night:** overnight recording (2–8 h) with real-time REM detection. When the stable gate opens and the arousal guard allows it, the scheduler optionally plays a TLR block, then cued puzzle cues — respecting per-cue intervals, cooldowns, and max-per-block limits, and logging structured `play` / `skip` / `pause` / `stop` events.
-4. **Morning:** dream report (lucidity, cues heard, confidence, free recall, validated per-puzzle links) and a **blind**, timed puzzle retest where the cued/uncued condition is never revealed to the subject, from the CLI or the app's Morning tab.
-5. **Analysis:** cued-vs-uncued solve rates, dream-incorporation rates, retest durations and confidence, and cue timing — intentionally descriptive, with explicit small-sample limitations.
+4. **Morning:** dream report (lucidity, cues heard, confidence, free recall, validated per-puzzle links), a sound check that plays each puzzle's sound and asks which puzzle it belongs to, and a **blind**, timed puzzle retest where the cued/uncued condition is never revealed to the subject, from the CLI or the app's Morning tab.
+5. **Analysis:** cued-vs-uncued solve rates, dream-incorporation rates, the sound check's recall rate by condition, retest durations and confidence, and cue timing — intentionally descriptive, with explicit small-sample limitations.
+
+The timing settings can come from a protocol preset: the parameters of one paper and arm, cited, versioned and hashed into each night's `metadata.json`, or REMind's own defaults (`remind_default_v1`). `muse-tmr protocol-fidelity` then compares a night with its preset. That measures how closely the cue timing followed the paper, not whether anything the paper found happened ([`docs/protocol_presets.md`](docs/protocol_presets.md)).
 
 ## ML pipeline: personal REM classifier
 
@@ -166,7 +168,7 @@ The same headband also runs guided A/B meditation sessions from the local app: a
 
 ## CLI overview
 
-45 commands under one `muse-tmr` entry point. Full invocations with all flags: [`docs/USAGE.md`](docs/USAGE.md).
+48 commands under one `muse-tmr` entry point. Full invocations with all flags: [`docs/USAGE.md`](docs/USAGE.md).
 
 | Group | Commands |
 | ----- | -------- |
@@ -174,11 +176,11 @@ The same headband also runs guided A/B meditation sessions from the local app: a
 | Diagnostics | `status` · `diagnose-blink-artifacts` · `compare-source-diagnostics` · `inspect-blink-channels` · `analyze-optics-agreement` |
 | Annotation & training | `annotate-template` · `train-rem-classifier` |
 | Audio & cue libraries | `play-test-cue` · `calibrate-volume` · `create-cue-library` · `validate-cue-library` · `list-cues` |
-| TLR cues | `create-tlr-cue` · `train-tlr-cue` · `plan-tlr-block` |
+| TLR cues and protocol presets | `create-tlr-cue` · `train-tlr-cue` · `plan-tlr-block` · `protocol-presets` |
 | Puzzle protocol | `import-puzzles` · `record-puzzle-attempt` · `generate-puzzle-session` · `assign-puzzle-cues` · `record-association-check` |
-| Morning & analysis | `record-dream-report` · `record-puzzle-retest` · `analyze-cued-uncued` |
+| Morning & analysis | `record-dream-report` · `record-cue-recall` · `record-puzzle-retest` · `analyze-cued-uncued` |
 | Meditation (side track) | `meditation-plan` · `analyze-meditation` · `aggregate-meditation` · `calibration-run` · `calibration-guide` · `calibration-report` |
-| Pilots & validation | `validate-pilot1-recording` · `validate-pilot2-calibration` · `simulate-replay-cues` · `run-pilot4-cueing` · `log-pilot4-awakening` · `run-pilot5-full-night` · `score-cue-arousal` |
+| Pilots & validation | `validate-pilot1-recording` · `validate-pilot2-calibration` · `simulate-replay-cues` · `run-pilot4-cueing` · `log-pilot4-awakening` · `run-pilot5-full-night` · `score-cue-arousal` · `protocol-fidelity` |
 | Synthetic nights | `demo` · `synthesize-night` |
 
 ## Testing

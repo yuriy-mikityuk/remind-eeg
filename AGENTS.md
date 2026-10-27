@@ -190,10 +190,11 @@ Put new engine code in the matching `muse_tmr` subpackage and new commands in
   structured, local-first, and versioned; link dream content to generated session puzzle
   IDs only after validating against `NightPuzzleSession`. Do not commit real dream
   reports, private recall text, or morning session outputs.
-- The app's Morning tab (`muse_tmr.app.morning`) saves both through `build_dream_report`
-  and `build_morning_retest`, into the paths the Pilot 5 runbook uses. Nothing it sends
-  to the page may say which puzzles were cued: no assignment IDs and no `cue_condition`,
-  also not when it shows a saved retest again.
+- The app's Morning tab (`muse_tmr.app.morning`) saves through `build_dream_report`,
+  `build_cue_recall_test` and `build_morning_retest`, into the paths the Pilot 5 runbook
+  uses. Nothing it sends to the page may say which puzzles were cued: no assignment IDs
+  and no `cue_condition`, also not when it shows a saved retest or sound check again, and
+  not through the sound check's sounds, their order, their number or their labels.
 - Morning puzzle retest capture lives in `muse_tmr.reports.morning_retest`. Keep the
   retest blind during administration, but save `cue_condition` from `PuzzleCueAssignment`
   in the output for later analysis. Require solved/unsolved, duration, and confidence
@@ -202,6 +203,20 @@ Put new engine code in the matching `muse_tmr` subpackage and new commands in
   versioned, and local-first; combine session, assignment, retest, optional dream report,
   and scheduler events without copying raw dream text into summary outputs. Always record
   limitations such as small-N or missing timing data.
+- Protocol presets live in `muse_tmr.protocol.protocol_presets` (the records) and
+  `muse_tmr.protocol.protocol_registry` (the presets); see `docs/protocol_presets.md`.
+  Name a preset after a paper's parameters and arm, never after a lab's protocol; set
+  `source_check` to `verified_full_text` only for a paper whose full text was read, else
+  `notes_only`. Keep `remind_default_v1` equal to the dataclass defaults and the default
+  of every runner. No preset may set a volume or lower the gate's 60 s stable window. A
+  change to a preset raises its `version` and renews its pinned hash in
+  `tests/test_protocol_presets.py` in the same commit.
+- The protocol fidelity report (`muse_tmr.reports.protocol_fidelity`,
+  `protocol-fidelity`) reads REM periods only through `muse_tmr.validation.gate_log`,
+  plays nothing, and always writes its `parameter_fidelity_is_not_result_fidelity` block.
+  The morning sound check (`muse_tmr.reports.cue_recall`, `record-cue-recall`) plays
+  through `AudioCuePlayer` with the backend resolved as for a night and the calibrated
+  cap; its play order comes from the session ID alone. Never commit its output.
 - M8 validation planning lives in `docs/validation.md`. Keep validation metrics tied to
   concrete logs or artifact fields, separate protocol fidelity from behavioral deltas,
   and include limitations instead of claiming clinical or lucid-dreaming efficacy.
