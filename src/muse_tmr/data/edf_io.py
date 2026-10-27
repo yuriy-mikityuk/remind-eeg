@@ -538,7 +538,9 @@ def _read(path: Path):
     if path.suffix.lower() == ".bdf":
         edf = edfio.read_bdf(path)
     else:
-        edf = edfio.read_edf(path)
+        # Read at once: a lazily read file stays memory-mapped, and Windows cannot delete
+        # or replace a mapped file.
+        edf = edfio.read_edf(path, lazy_load_data=False)
     reserved = edf.reserved.strip().upper()
     if reserved.startswith(("EDF+D", "BDF+D")):
         raise ValueError(

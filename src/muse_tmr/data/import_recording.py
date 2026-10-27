@@ -270,7 +270,9 @@ def _frames_from_columns(
 def _read_csv(path: Path, **kwargs):
     import pandas as pd
 
-    return pd.read_csv(path, **kwargs)
+    # One pass over the whole file: Mind Monitor's Elements column mixes text and blanks,
+    # which chunked type guessing warns about.
+    return pd.read_csv(path, low_memory=False, **kwargs)
 
 
 def _eeg_columns(frame, names: Sequence[str], aliases: Mapping[str, str]) -> Dict[str, np.ndarray]:
