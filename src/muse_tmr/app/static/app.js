@@ -1839,8 +1839,8 @@ function formatStart(startedAt, fallback) {
 
 // --- the morning after a puzzle night --------------------------------------------
 // The dream report, the sound check and the blind retest save through the same code as
-// the CLI. The server never sends which puzzles were cued, so the page cannot give it
-// away: the sound check knows its sounds only by number.
+// the CLI. The server never sends which puzzles were cued or which arm the night had, so
+// the page cannot give either away: the sound check knows its sounds only by number.
 
 const tabMorning = document.querySelector("#tab-morning");
 const screenMorning = document.querySelector("#screen-morning");
@@ -1854,6 +1854,7 @@ const dreamConfidence = document.querySelector("#dream-confidence");
 const dreamText = document.querySelector("#dream-text");
 const dreamLinks = document.querySelector("#dream-links");
 const dreamNotes = document.querySelector("#dream-notes");
+const dreamEyeSignals = document.querySelector("#dream-eye-signals");
 const dreamError = document.querySelector("#dream-error");
 const recallForm = document.querySelector("#recall-form");
 const recallStatus = document.querySelector("#recall-status");
@@ -1864,6 +1865,7 @@ const recallError = document.querySelector("#recall-error");
 const recallSave = document.querySelector("#recall-save");
 const retestForm = document.querySelector("#retest-form");
 const retestStatus = document.querySelector("#retest-status");
+const retestWave = document.querySelector("#retest-wave");
 const retestList = document.querySelector("#retest-list");
 const retestNotes = document.querySelector("#retest-notes");
 const retestError = document.querySelector("#retest-error");
@@ -1885,8 +1887,11 @@ dreamForm.addEventListener("input", () => {
 recallForm.addEventListener("input", () => {
   recallUnsaved = true;
 });
-retestForm.addEventListener("input", () => {
-  retestUnsaved = true;
+// Picking a wave is no answer: the select fires input before its change handler asks.
+retestForm.addEventListener("input", (event) => {
+  if (event.target !== retestWave) {
+    retestUnsaved = true;
+  }
 });
 
 function morningUnsaved() {
@@ -1986,10 +1991,12 @@ function renderDreamForm(night) {
   const saved = night.dream_report;
   dreamStatus.textContent = savedText(saved);
   setRadio("dream-lucid", saved ? (saved.lucid ? "yes" : "no") : "");
-  setRadio("dream-cues", saved ? (saved.cues_heard ? "yes" : "no") : "");
+  setRadio("dream-perception", saved ? saved.cue_perception : "");
+  setRadio("dream-woke", saved ? saved.woke_from_sound : "");
   confidenceOptions(dreamConfidence, saved ? saved.confidence : null);
   dreamText.value = saved ? saved.dream_text : "";
   dreamNotes.value = saved ? saved.notes : "";
+  dreamEyeSignals.value = saved ? (saved.eye_signal_attempt_times || []).join(", ") : "";
   dreamLinks.innerHTML = "";
   const intro = document.createElement("p");
   intro.className = "muted";
@@ -2035,7 +2042,9 @@ dreamForm.addEventListener("submit", async (event) => {
     {
       night: morningNight.name,
       lucid: radioValue("dream-lucid"),
-      cues_heard: radioValue("dream-cues"),
+      cue_perception: radioValue("dream-perception"),
+      woke_from_sound: radioValue("dream-woke"),
+      eye_signal_attempt_times: dreamEyeSignals.value,
       confidence: dreamConfidence.value === "" ? "" : Number(dreamConfidence.value) / 10,
       dream_text: dreamText.value,
       puzzle_links: links,
@@ -2150,8 +2159,18 @@ recallForm.addEventListener("submit", async (event) => {
   );
 });
 
+// The retest of the wave picked: this morning's, a week's or ten days' later.
+function savedRetest(night, wave) {
+  if (night.retests && wave in night.retests) {
+    return night.retests[wave];
+  }
+  return wave === "morning" ? night.retest : null;
+}
+
 function renderRetestForm(night) {
-  const saved = night.retest;
+  const wave = retestWave.value || "morning";
+  retestWave.dataset.shown = wave;
+  const saved = savedRetest(night, wave);
   retestStatus.textContent = savedText(saved);
   retestNotes.value = saved ? saved.notes : "";
   retestTimers.clear();
@@ -2284,6 +2303,17 @@ window.setInterval(() => {
   });
 }, 1000);
 
+retestWave.addEventListener("change", () => {
+  if (retestUnsaved && !window.confirm("Leave the retest answers that are not saved?")) {
+    retestWave.value = retestWave.dataset.shown || "morning";
+    return;
+  }
+  stopRetestTimers();
+  if (morningNight) {
+    renderRetestForm(morningNight);
+  }
+});
+
 retestForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   stopRetestTimers();
@@ -2310,7 +2340,7 @@ retestForm.addEventListener("submit", async (event) => {
   }
   await saveMorningForm(
     "/api/morning/retest",
-    { night: morningNight.name, results, notes: retestNotes.value },
+    { night: morningNight.name, wave: retestWave.value || "morning", results, notes: retestNotes.value },
     retestError,
     "retest",
     renderRetestForm

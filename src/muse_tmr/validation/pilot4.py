@@ -37,11 +37,14 @@ from muse_tmr.features import (
 from muse_tmr.models import HeuristicRemDetector, RemGateConfig, StableRemGate
 from muse_tmr.protocol import PuzzleCatalog, PuzzleCueAssignment
 from muse_tmr.protocol.arousal_guard import ArousalGuard, ArousalGuardConfig
+from muse_tmr.protocol.night_schedule import PLAYING_ARMS, NightArmContext
 from muse_tmr.protocol.puzzle_protocol import NightPuzzleSession
 from muse_tmr.protocol.tmr_scheduler import (
     TmrCueScheduler,
     TmrSchedulerConfig,
     TmrSchedulerEvent,
+    tlr_cue_ids_of,
+    validate_sham_cue,
 )
 from muse_tmr.protocol.tlr_protocol import TlrBlockPlan
 from muse_tmr.sources.base_source import BaseMuseSource, MuseSourceMetadata
@@ -50,10 +53,13 @@ from muse_tmr.validation.gate_log import (
     gate_decision_record,
     write_rem_gate_decisions,
 )
+from muse_tmr.validation.pilot3 import arm_context_for, arm_criteria
 
 # 2 adds first_epoch_start, rem_gate_decisions_path and cue_arousal (#227); 3 adds
-# protocol, the preset block of the night (#231).
-PILOT4_SCHEMA_VERSION = 3
+# protocol, the preset block of the night (#231); 4 adds arm, night_id,
+# schedule_commitment_sha256, virtual_play_count and, on a night with an arm, the
+# criteria no_play_in_no_cue_arm and arm_matches_sealed_schedule (#228).
+PILOT4_SCHEMA_VERSION = 4
 # What the sleeper says about an awakening: did a cue wake them?
 AWAKENING_ATTRIBUTIONS = ("yes", "no", "unsure")
 
@@ -105,6 +111,9 @@ class Pilot4CueingConfig:
     # The protocol preset block (ProtocolPreset.manifest()) metadata.json and the
     # summary record; the configs above are what runs.
     protocol: Mapping[str, object] = field(default_factory=dict)
+    # The night's arm (muse_tmr.protocol.night_schedule); None runs the cue arm as every
+    # night did before arms, and records no arm.
+    night_arm: Optional[NightArmContext] = None
 
     def validate(self) -> None:
         if self.duration_seconds <= 0:
@@ -123,6 +132,8 @@ class Pilot4CueingConfig:
             raise ValueError("summary_filename must not be empty")
         if Path(self.summary_filename).name != self.summary_filename:
             raise ValueError("summary_filename must be a file name, not a path")
+        # Raises when night_arm and the scheduler config name two different arms.
+        arm_context_for(self.night_arm, self.scheduler_config)
 
 
 @dataclass(frozen=True)
@@ -175,6 +186,12 @@ class Pilot4CueingSummary:
     cue_arousal: Mapping[str, object] = field(default_factory=dict)
     # The protocol preset block of the night, as in metadata.json.
     protocol: Mapping[str, object] = field(default_factory=dict)
+    # The night's arm, its ID and the sealed schedule's commitment; None without an arm.
+    arm: Optional[str] = None
+    night_id: Optional[str] = None
+    schedule_commitment_sha256: Optional[str] = None
+    # A no_cue night's skips where another arm would have played.
+    virtual_play_count: int = 0
     generated_at_utc: str = ""
     schema_version: int = PILOT4_SCHEMA_VERSION
     pilot_id: str = "m8_pilot4_low_volume_rem_gated_cueing"
@@ -224,6 +241,9 @@ class Pilot4CueingSummary:
             "rem_gate_decisions_path": self.rem_gate_decisions_path,
             "cue_arousal": dict(self.cue_arousal),
             "protocol": dict(self.protocol) if self.protocol else None,
+            "arm": self.arm,
+            "night_id": self.night_id,
+            "schedule_commitment_sha256": self.schedule_commitment_sha256,
             "modality_counts": dict(self.modality_counts),
             "scheduler_event_type_counts": dict(self.scheduler_event_type_counts),
             "audio_status_counts": dict(self.audio_status_counts),
@@ -231,6 +251,7 @@ class Pilot4CueingSummary:
             "puzzle_cue_play_count": self.puzzle_cue_play_count,
             "tlr_cue_play_count": self.tlr_cue_play_count,
             "uncued_puzzle_play_count": self.uncued_puzzle_play_count,
+            "virtual_play_count": self.virtual_play_count,
             "max_requested_volume": self.max_requested_volume,
             "max_effective_volume": self.max_effective_volume,
             "calibration_device_name": self.calibration_device_name,
@@ -365,9 +386,21 @@ async def run_pilot4_cueing_night(
             allow_dry_run_fallback=config.allow_dry_run_fallback,
         ).backend
     assignment.validate_against_session(session)
-    _validate_pilot4_cues(catalog, assignment, cue_library, tlr_block_plan=tlr_block_plan)
+    night_arm = arm_context_for(config.night_arm, config.scheduler_config)
+    # The sham cue is checked whenever the night names one, whatever its arm, so that a
+    # refusal says nothing about the arm.
+    _validate_pilot4_cues(
+        catalog,
+        assignment,
+        cue_library,
+        tlr_block_plan=tlr_block_plan,
+        sham_cue_id=night_arm.sham_cue_id if night_arm is not None else None,
+    )
     if config.require_tlr_block and tlr_block_plan is None:
         raise ValueError("Pilot run requires a TLR block plan")
+    scheduler_config = config.scheduler_config
+    if night_arm is not None:
+        scheduler_config = replace(scheduler_config, arm=night_arm.arm, sham_cue_id=night_arm.sham_cue_id)
 
     output_dir = config.output_dir.expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -404,6 +437,7 @@ async def run_pilot4_cueing_night(
         started_at_dt,
         resolved_backend.name,
         tlr_block_plan=tlr_block_plan,
+        night_arm=night_arm,
     )
     _append_jsonl(
         recording_events_path,
@@ -442,7 +476,7 @@ async def run_pilot4_cueing_night(
         assignment=assignment,
         catalog=catalog,
         cue_library=cue_library,
-        config=config.scheduler_config,
+        config=scheduler_config,
         tlr_block_plan=tlr_block_plan,
         event_log_path=scheduler_events_path,
         playback_config=player.config,
@@ -516,7 +550,14 @@ async def run_pilot4_cueing_night(
                     # client stamps each packet when the event loop takes it, so a tone
                     # played on the loop would stamp every packet of its length late and
                     # the cue arousal scorer would read them as lost.
-                    result = await asyncio.to_thread(_play_scheduler_event, event, cue_library, player)
+                    result = await asyncio.to_thread(
+                        _play_scheduler_event,
+                        event,
+                        cue_library,
+                        player,
+                        arm=scheduler_config.arm,
+                        stands_in_for=_cue_stood_in_for(event, catalog, tlr_block_plan),
+                    )
                     state.playback_results.append(result)
                     _append_jsonl(
                         recording_events_path,
@@ -563,6 +604,7 @@ async def run_pilot4_cueing_night(
         calibration=calibration,
         player=player,
         assignment=assignment,
+        night_arm=night_arm,
     )
     summary.save(summary_path)
     if config.score_cue_arousal:
@@ -703,12 +745,30 @@ def _play_scheduler_event(
     event: TmrSchedulerEvent,
     cue_library: CueLibrary,
     player: AudioCuePlayer,
+    *,
+    arm: str = "cue",
+    stands_in_for: Optional[str] = None,
 ) -> CuePlaybackResult:
+    """Play one scheduler play event of a night run in ``arm``.
+
+    Only the cue and sham arms play, and only events their own scheduler logged; a
+    no-cue night never gets here. The cue arm plays the library cue for its own length
+    and with its own hint. A sham play is the sham cue's tone with the length and hint
+    of ``stands_in_for``, the library cue the cue arm plays in its place
+    (``_cue_stood_in_for()``), so the two arms differ in the tone alone.
+    """
+    if arm not in PLAYING_ARMS or event.arm != arm:
+        raise ValueError("cues play in the cue and sham arms only, and only that night's own events")
     if event.cue_id is None:
         raise ValueError("scheduler play event is missing cue_id")
     cue = cue_library.by_id(event.cue_id)
     if cue.frequency_hz is None:
         raise ValueError(f"pilot4 cue must include frequency_hz: {cue.cue_id}")
+    played_as = cue
+    if arm == "sham":
+        if stands_in_for is None:
+            raise ValueError("a sham play needs the cue it stands in for")
+        played_as = cue_library.by_id(stands_in_for)
     # The cue's hint, or the player's default without one. The player caps it and only
     # then applies a lower_volume multiplier, so every cap still holds and the cue plays
     # at that fraction of its normal volume.
@@ -716,11 +776,29 @@ def _play_scheduler_event(
         TestCue(
             cue_id=cue.cue_id,
             frequency_hz=cue.frequency_hz,
-            duration_seconds=cue.duration_seconds,
+            duration_seconds=played_as.duration_seconds,
         ),
-        volume=cue.volume_hint,
+        volume=played_as.volume_hint,
         volume_multiplier=float(event.metadata.get("volume_multiplier", 1.0)),
+        arm=arm,
     )
+
+
+def _cue_stood_in_for(
+    event: TmrSchedulerEvent,
+    catalog: PuzzleCatalog,
+    tlr_block_plan: Optional[TlrBlockPlan],
+) -> Optional[str]:
+    """The cue the cue arm plays where a sham night plays ``event``: its puzzle's cue, or
+    the TLR plan's cue at its place in the block. The plan's length can differ from that
+    library cue's, and the cue arm plays the library cue's."""
+    if event.protocol == "puzzle" and event.puzzle_id is not None:
+        return catalog.get_puzzle(event.puzzle_id).cue_id
+    if event.protocol == "tlr" and tlr_block_plan is not None:
+        index = int(event.metadata.get("tlr_event_index", 0)) - 1
+        if 0 <= index < len(tlr_block_plan.events):
+            return tlr_block_plan.events[index].cue_id
+    return None
 
 
 def _maybe_trigger_emergency_stop(
@@ -765,6 +843,7 @@ def _build_summary(
     calibration: VolumeCalibration,
     player: AudioCuePlayer,
     assignment: PuzzleCueAssignment,
+    night_arm: Optional[NightArmContext] = None,
 ) -> Pilot4CueingSummary:
     scheduler_event_type_counts = _event_type_counts(scheduler_events)
     audio_status_counts = _audio_status_counts(state.playback_results)
@@ -790,6 +869,14 @@ def _build_summary(
         (result.effective_volume for result in state.playback_results),
         default=0.0,
     )
+    virtual_plays = tuple(event for event in scheduler_events if event.virtual_play)
+    # A no_cue night's TLR block counts when its virtual plays show it would have played.
+    tlr_block_count = tlr_cue_play_count
+    if night_arm is not None and night_arm.arm == "no_cue":
+        tlr_block_count = sum(1 for event in virtual_plays if event.protocol == "tlr")
+    played_audio_rows = sum(
+        1 for row in _read_jsonl(audio_log_path) if row.get("status") == "played"
+    )
     criteria = _build_criteria(
         epoch_count=state.epoch_count,
         scheduler_events=scheduler_events,
@@ -802,7 +889,14 @@ def _build_summary(
         arousal_guard_events_path=arousal_guard_events_path,
         emergency_stop_path=emergency_stop_path,
         tlr_block_required=config.require_tlr_block,
+        tlr_block_count=tlr_block_count,
+    ) + arm_criteria(
+        night_arm,
+        scheduler_plays=cue_play_count,
+        played_audio_rows=played_audio_rows,
+        criterion=Pilot4Criterion,
     )
+    arm_fields = night_arm.summary_fields() if night_arm is not None else {}
     return Pilot4CueingSummary(
         output_dir=str(output_dir),
         raw_path=str(raw_path),
@@ -845,6 +939,10 @@ def _build_summary(
         first_epoch_start=state.first_epoch_start,
         rem_gate_decisions_path=str(rem_gate_decisions_path),
         protocol=dict(config.protocol),
+        arm=arm_fields.get("arm"),
+        night_id=arm_fields.get("night_id"),
+        schedule_commitment_sha256=arm_fields.get("schedule_commitment_sha256"),
+        virtual_play_count=len(virtual_plays),
         pilot_id=config.pilot_id,
     )
 
@@ -862,6 +960,7 @@ def _build_criteria(
     arousal_guard_events_path: Path,
     emergency_stop_path: Path,
     tlr_block_required: bool,
+    tlr_block_count: Optional[int] = None,
 ) -> Tuple[Pilot4Criterion, ...]:
     scheduler_plays = tuple(event for event in scheduler_events if event.event_type == "play")
     stable_rem_plays = all("rem_gate_open" in event.reason_codes for event in scheduler_plays)
@@ -910,12 +1009,13 @@ def _build_criteria(
         ),
     ]
     if tlr_block_required:
+        block_count = tlr_cue_play_count if tlr_block_count is None else tlr_block_count
         criteria.append(
             Pilot4Criterion(
                 name="tlr_block_played",
-                passed=tlr_cue_play_count > 0,
-                observed=tlr_cue_play_count,
-                target="at least one scheduler play event with protocol=tlr",
+                passed=block_count > 0,
+                observed=block_count,
+                target="at least one scheduler play event with protocol=tlr (on a no_cue night, a virtual_play skip)",
             )
         )
     return tuple(criteria)
@@ -927,7 +1027,18 @@ def _validate_pilot4_cues(
     cue_library: CueLibrary,
     *,
     tlr_block_plan: Optional[TlrBlockPlan] = None,
+    sham_cue_id: Optional[str] = None,
 ) -> None:
+    if sham_cue_id:
+        validate_sham_cue(
+            sham_cue_id,
+            catalog=catalog,
+            cue_library=cue_library,
+            tlr_cue_ids=tlr_cue_ids_of(tlr_block_plan),
+        )
+        sham = cue_library.by_id(sham_cue_id)
+        if sham.cue_type != "generated_tone" or sham.frequency_hz is None:
+            raise ValueError(f"pilot4 plays a generated_tone sham cue with frequency_hz only: {sham_cue_id}")
     for puzzle_id in assignment.scheduled_puzzle_ids:
         cue = cue_library.by_id(catalog.get_puzzle(puzzle_id).cue_id)
         if cue.cue_type != "generated_tone":
@@ -955,6 +1066,7 @@ def _write_metadata(
     resolved_backend_name: str,
     *,
     tlr_block_plan: Optional[TlrBlockPlan] = None,
+    night_arm: Optional[NightArmContext] = None,
 ) -> None:
     payload = {
         "started_at": started_at.isoformat(),
@@ -977,6 +1089,8 @@ def _write_metadata(
             "calibration": calibration.to_dict(),
         },
     }
+    if night_arm is not None:
+        payload["night_arm"] = night_arm.to_dict()
     metadata_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 

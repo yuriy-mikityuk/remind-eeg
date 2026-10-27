@@ -618,6 +618,10 @@ class _NightInputs:
     first_epoch_start: Optional[float]
     pilot3: bool
     sources: Mapping[str, Optional[str]]
+    # The night's arm from its summary or Pilot 3 report (#228), and a no_cue night's
+    # skips where another arm would have played.
+    arm: Optional[str] = None
+    virtual_play_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -649,6 +653,7 @@ def _night_inputs(
             event for event in report.get("scheduler_events", ()) or () if event.get("event_type") == "play"
         ) + tuple(event for event in report.get("injected_cues", ()) or () if event.get("event_type") == "play")
         metrics = dict(report.get("metrics", {}) or {})
+        virtual_plays = _virtual_play_count(report.get("scheduler_events", ()) or ())
         sources["pilot3_report"] = report_path.name
         gate_records = load_rem_gate_decisions(
             Path(gate_log_path).expanduser() if gate_log_path else report
@@ -666,11 +671,14 @@ def _night_inputs(
             first_epoch_start=_optional_float(metrics.get("first_epoch_start")),
             pilot3=True,
             sources=sources,
+            arm=_optional_arm(report.get("arm")),
+            virtual_play_count=virtual_plays,
         )
 
     summary, summary_name = _read_summary(recording_dir, summary_path)
     events_path = Path(scheduler_events_path).expanduser() if scheduler_events_path else recording_dir / "scheduler_events.jsonl"
-    plays = tuple(event for event in _read_jsonl(events_path) if event.get("event_type") == "play")
+    events = _read_jsonl(events_path)
+    plays = tuple(event for event in events if event.get("event_type") == "play")
     sources["scheduler_events"] = events_path.name if events_path.exists() else None
     audio_path = Path(audio_log_path).expanduser() if audio_log_path else recording_dir / "audio_playback.jsonl"
     audio, found, mismatch = audio_for_plays(plays, audio_path)
@@ -692,7 +700,21 @@ def _night_inputs(
         first_epoch_start=_optional_float(summary.get("first_epoch_start")) if summary else None,
         pilot3=False,
         sources=sources,
+        arm=_optional_arm(summary.get("arm")) if summary else None,
+        virtual_play_count=_virtual_play_count(events),
     )
+
+
+def _virtual_play_count(events: Iterable[Mapping[str, object]]) -> int:
+    return sum(
+        1
+        for event in events
+        if event.get("event_type") == "skip" and dict(event.get("metadata", {}) or {}).get("virtual_play")
+    )
+
+
+def _optional_arm(value: object) -> Optional[str]:
+    return None if value in (None, "") else str(value)
 
 
 def find_night_summary(recording_dir: Path, summary_path: Optional[Path] = None) -> Optional[Path]:
@@ -1718,7 +1740,27 @@ def _limitations(
                 ),
             )
         )
-    if not cues:
+    if inputs.arm == "sham":
+        items.append(
+            AnalysisLimitation(
+                code="sham_arm",
+                severity="info",
+                message="A sham night: every cue was the untrained sham sound, played where a trained cue would have been.",
+            )
+        )
+    if not cues and inputs.arm == "no_cue":
+        items.append(
+            AnalysisLimitation(
+                code="no_cue_arm",
+                severity="info",
+                message=(
+                    "A no_cue night: nothing played, by design. Its virtual_play skips mark where a cue night "
+                    "would have played; they are not scored."
+                ),
+                metadata={"virtual_play_count": inputs.virtual_play_count},
+            )
+        )
+    elif not cues:
         items.append(AnalysisLimitation(code="no_cues", severity="warning", message="The night has no play event to score."))
     elif len(played) < config.min_cues_for_rates:
         items.append(

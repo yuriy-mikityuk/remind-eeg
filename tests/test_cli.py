@@ -662,6 +662,57 @@ class TestCli(unittest.TestCase):
         self.assertEqual(assignment_args.command, "assign-puzzle-cues")
         self.assertEqual(assignment_args.seed, 17)
 
+    def test_night_arm_flags_parse_on_the_three_runners(self):
+        base = {
+            "simulate-replay-cues": ["recording", "--output", "r.json"],
+            "run-pilot4-cueing": ["--output-dir", "night", "--calibration", "c.json"],
+            "run-pilot5-full-night": ["--output-dir", "night", "--calibration", "c.json", "--tlr-block", "t.json"],
+        }
+        inputs = ["--catalog", "c.json", "--session", "s.json", "--assignment", "a.json", "--cue-library", "l.json"]
+        for command, extra in base.items():
+            with self.subTest(command=command):
+                plain = build_parser().parse_args([command, *extra, *inputs])
+                self.assertEqual(
+                    (plain.arm, plain.night_schedule, plain.night_id, plain.sham_cue_id), (None, None, None, None)
+                )
+                armed = build_parser().parse_args(
+                    [command, *extra, *inputs, "--arm", "sham", "--night-id", "n1", "--sham-cue-id", "chime"]
+                )
+                self.assertEqual((armed.arm, armed.night_id, armed.sham_cue_id), ("sham", "n1", "chime"))
+                sealed = build_parser().parse_args(
+                    [command, *extra, *inputs, "--night-schedule", "series.json", "--night-id", "night-002"]
+                )
+                self.assertEqual((sealed.night_schedule, sealed.night_id), (Path("series.json"), "night-002"))
+                with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                    build_parser().parse_args([command, *extra, *inputs, "--arm", "washout"])
+                with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                    build_parser().parse_args(
+                        [command, *extra, *inputs, "--arm", "cue", "--night-schedule", "series.json"]
+                    )
+
+    def test_night_schedule_commands_parse(self):
+        plan = build_parser().parse_args(["plan-night-schedule", "--blocks", "2"])
+        self.assertEqual(
+            (plan.blocks, plan.washout_nights, plan.seed, plan.schedule_id, plan.night_prefix, plan.sham_cue_id, plan.output),
+            (2, 0, None, None, "night-", "sham_soft_tone", None),
+        )
+        show = build_parser().parse_args(["show-night-schedule", "series.json", "--json"])
+        unseal = build_parser().parse_args(["unseal-night-schedule", "series.json", "--sealed", "s.sealed.json"])
+        self.assertEqual((show.schedule, show.json, show.sealed), (Path("series.json"), True, None))
+        self.assertEqual((unseal.command, unseal.sealed), ("unseal-night-schedule", Path("s.sealed.json")))
+        dream = build_parser().parse_args([
+            "record-dream-report", "s.json", "--output", "d.json", "--lucid", "no", "--confidence", "0.5",
+            "--dream-text", "", "--cue-perception", "in_dream", "--eye-signal-attempt", "04:20",
+        ])
+        self.assertEqual(
+            (dream.cues_heard, dream.cue_perception, dream.woke_from_sound, dream.eye_signal_attempt),
+            (None, "in_dream", "unknown", ["04:20"]),
+        )
+        retest = build_parser().parse_args([
+            "record-puzzle-retest", "s.json", "--catalog", "c.json", "--assignment", "a.json", "--output", "r.json",
+        ])
+        self.assertEqual(retest.wave, "morning")
+
     def test_morning_report_command_parses_dream_report_fields(self):
         args = build_parser().parse_args([
             "record-dream-report",

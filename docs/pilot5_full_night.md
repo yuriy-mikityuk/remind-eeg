@@ -127,6 +127,25 @@ in `audio_playback.jsonl` carry `volume_multiplier` 0.5 and an `effective_volume
 the `capped_volume`, the volume after the calibration and hard caps (#255). A pause or
 stop reason in the same epoch still wins.
 
+## A Night Of A Sealed Series
+
+A night of an N-of-1 series (`docs/nof1_protocol.md`) adds the schedule and the night's
+ID to the command above:
+
+```bash
+  --night-schedule data/protocol/night_schedules/<schedule-id>.json \
+  --night-id night-001
+```
+
+The night then runs the arm the sealed schedule gives it: `cue` as above, `sham` with the
+untrained sound in place of every TLR and puzzle cue, or `no_cue` with nothing played.
+The command never prints the arm. Leave `pilot5_summary.json`, `metadata.json`, the logs
+and the `cue_arousal_report.*` and `protocol_fidelity.*` files closed, and do not run
+`score-cue-arousal` or `protocol-fidelity` on the night, until the last delayed retest of
+the series is saved and `unseal-night-schedule` has run. They name the arm, and the arms
+of earlier nights narrow down the later ones (`docs/nof1_protocol.md`). On a no-cue night
+`tlr_block_played` passes on the block's virtual plays.
+
 ## Emergency Stop
 
 Creating the emergency stop file blocks future playback while the recording continues:
@@ -150,7 +169,8 @@ As in Pilot 4, the night ends by scoring what followed each TLR and puzzle cue a
 paired quiet control (`docs/safety_outcomes.md`) and puts a `cue_arousal` block in
 `pilot5_summary.json`. The cue index table separates the TLR cues (`tlr 1`, `tlr 2`,
 ...) from the puzzle cues. After logging awakenings, score it again so the
-cue-attributed awakening rate in the report and in that block counts them:
+cue-attributed awakening rate in the report and in that block counts them (on a night of
+a sealed series, only after unsealing):
 
 ```bash
 .venv/bin/python -m muse_tmr.cli.main score-cue-arousal "$OUTDIR"
@@ -158,10 +178,13 @@ cue-attributed awakening rate in the report and in that block counts them:
 
 In the morning, the app's Morning tab does the next three steps without flags: pick the
 night, write the dream report, then the sound check (play each sound and pick its
-puzzle), then the blind retest with a timer per puzzle. It finds the night's catalog
-and assignment in `data/protocol`, the cues in `data/cues` and the calibration in
-`data/calibration`, and saves to the same `data/reports/<night>_dream_report.json`,
-`<night>_cue_recall.json` and `<night>_retest.json` as the commands below. Its sounds
+puzzle), then the blind retest with a timer per puzzle; above the retest, pick "A week
+later" or "Ten days later" for a delayed one. The night's logs name the cued puzzles, so
+open them only after the last retest you plan, a delayed one included. The tab finds the
+night's catalog and assignment in `data/protocol`, the cues in `data/cues` and the
+calibration in `data/calibration`, and saves to the same
+`data/reports/<night>_dream_report.json`, `<night>_cue_recall.json` and
+`<night>_retest.json` as the commands below. Its sounds
 play on `afplay`; start the app with `--cue-backend dry-run` (or `mock`) to go through
 the step without sound. `--allow-dry-run` only matters where `afplay` is missing: it
 then plays the sounds silently instead of refusing them. From the terminal:
@@ -174,10 +197,16 @@ Record dream report:
   --catalog data/protocol/puzzle_catalog.json \
   --output data/reports/night-001_dream_report.json \
   --lucid no \
-  --cues-heard no \
+  --cue-perception not_perceived \
+  --woke-from-sound no \
   --confidence 0.5 \
   --dream-text ""
 ```
+
+`--cue-perception` says whether a sound was heard and where (`not_perceived`,
+`in_dream`, `awake`, `unsure`, `unknown`), `--woke-from-sound` whether one woke you, and
+`--eye-signal-attempt 04:20`, repeated, marks when you think you made the eye signal.
+`--cues-heard yes|no` still works and is read as `unsure` or `not_perceived`.
 
 Play each puzzle's sound and say which puzzle it belongs to, before the retest:
 
@@ -216,6 +245,10 @@ Record the blind morning puzzle retest before looking at cue conditions:
   --confidence "p3=0.0" \
   --confidence "p4=0.0"
 ```
+
+A week and ten days later, retest the same puzzles again with `--wave day7` and
+`--wave day10`, saved as `data/reports/night-001_retest_day7.json` and
+`night-001_retest_day10.json` (the Morning tab's wave selector writes the same files).
 
 Generate analysis:
 

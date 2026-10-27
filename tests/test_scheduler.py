@@ -1,6 +1,6 @@
 import unittest
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
@@ -28,7 +28,10 @@ from muse_tmr.protocol.tmr_scheduler import (
     TmrSchedulerEvent,
     arousal_guard_decision,
     calibrated_cue_decision,
+    ensure_sham_untrained,
     load_tmr_scheduler_events,
+    tlr_cue_ids_of,
+    validate_sham_cue,
 )
 
 
@@ -324,6 +327,182 @@ class TestTmrCueScheduler(unittest.TestCase):
         self.assertEqual([event.event_type for event in events], ["skip", "play", "stop"])
 
 
+class TestSchedulerArms(unittest.TestCase):
+    """cue, sham and no_cue (#228): the arm changes what a cue becomes, never when."""
+
+    def _night(self, arm, *, log_path=None):
+        tlr_plan = plan_tlr_block(
+            default_tlr_cue(),
+            config=TlrBlockConfig(repetitions=2, interval_seconds=5.0, post_block_pause_seconds=0.0),
+        )
+        scheduler = _scheduler(
+            tlr_block_plan=tlr_plan,
+            config=TmrSchedulerConfig(
+                puzzle_cue_interval_seconds=10.0,
+                cooldown_seconds=30.0,
+                max_puzzle_cues_per_block=2,
+                enable_tlr_block=True,
+                arm=arm,
+                sham_cue_id="sham_soft_tone" if arm == "sham" else None,
+            ),
+            playback_config=AudioPlaybackConfig(max_volume=0.06, default_volume=0.02),
+            event_log_path=log_path,
+        )
+        events = []
+        for timestamp, gate, guard in (
+            (0.0, _gate_closed("not_rem"), None),
+            (100.0, _gate_open(), None),
+            (105.0, _gate_open(), _lower_volume()),
+            (106.0, _gate_open(), None),
+            (110.0, _gate_open(), None),
+            (116.0, _gate_open(), None),
+            (130.0, _gate_closed("below_exit_threshold"), None),
+            (140.0, _gate_open(), None),
+            (200.0, _gate_open(), None),
+        ):
+            events.extend(scheduler.update(gate, timestamp_seconds=timestamp, guard_decision=guard))
+        return scheduler, events
+
+    def test_sham_changes_only_the_cue_id_and_adds_its_reason(self):
+        _, cue = self._night("cue")
+        _, sham = self._night("sham")
+
+        plays = [event for event in cue if event.event_type == "play"]
+        # Two TLR cues (one lowered), two puzzle cues, then a new REM block's first TLR cue.
+        self.assertEqual([(event.protocol, event.timestamp_seconds) for event in plays], [
+            ("tlr", 100.0), ("tlr", 105.0), ("puzzle", 106.0), ("puzzle", 116.0), ("tlr", 200.0),
+        ])
+        self.assertEqual(len(cue), len(sham))
+        for original, stand_in in zip(cue, sham):
+            self.assertEqual(stand_in.arm, "sham")
+            self.assertEqual(original.arm, "cue")
+            if original.event_type != "play":
+                self.assertEqual(replace(stand_in, arm="cue"), original)
+                continue
+            self.assertEqual(stand_in.cue_id, "sham_soft_tone")
+            self.assertEqual(stand_in.reason_codes, original.reason_codes + ("sham_arm",))
+            self.assertEqual(
+                replace(stand_in, arm="cue", cue_id=original.cue_id, reason_codes=original.reason_codes), original
+            )
+        # Length and volume stay those of the cue each sham play stands in for.
+        self.assertEqual(
+            [event.metadata for event in sham if event.event_type == "play"], [event.metadata for event in plays]
+        )
+
+    def test_no_cue_logs_a_virtual_play_where_the_cue_arm_plays(self):
+        _, cue = self._night("cue")
+        _, quiet = self._night("no_cue")
+
+        self.assertEqual([event for event in quiet if event.event_type == "play"], [])
+        self.assertEqual(len(cue), len(quiet))
+        for original, virtual in zip(cue, quiet):
+            self.assertEqual(virtual.arm, "no_cue")
+            if original.event_type != "play":
+                self.assertEqual(replace(virtual, arm="cue"), original)
+                self.assertFalse(virtual.virtual_play)
+                continue
+            self.assertTrue(virtual.virtual_play)
+            self.assertEqual(virtual.event_type, "skip")
+            self.assertEqual(virtual.reason_codes, original.reason_codes + ("no_cue_arm",))
+            self.assertEqual(
+                (virtual.timestamp_seconds, virtual.cue_id, virtual.protocol, virtual.puzzle_id),
+                (original.timestamp_seconds, original.cue_id, original.protocol, original.puzzle_id),
+            )
+            self.assertEqual(dict(virtual.metadata), {**dict(original.metadata), "virtual_play": True})
+
+    def test_uncued_puzzles_stay_unschedulable_in_every_arm(self):
+        for arm in ("cue", "sham", "no_cue"):
+            with self.subTest(arm=arm):
+                scheduler, events = self._night(arm)
+                self.assertEqual(scheduler.scheduled_puzzle_ids, ("p1", "p3"))
+                self.assertEqual({event.puzzle_id for event in events if event.puzzle_id}, {"p1", "p3"})
+                for uncued in ("p2", "p4"):
+                    with self.assertRaises(ValueError):
+                        scheduler.assignment.ensure_schedulable(uncued)
+
+    def test_a_no_cue_night_never_records_a_play(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "scheduler.jsonl"
+            scheduler, _ = self._night("no_cue", log_path=log_path)
+            before = log_path.read_text(encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                scheduler._record(TmrSchedulerEvent("play", 300.0, cue_id="cue-p1", protocol="puzzle", puzzle_id="p1"))
+            self.assertEqual(log_path.read_text(encoding="utf-8"), before)
+            loaded = load_tmr_scheduler_events(log_path)
+        self.assertEqual({event.arm for event in loaded}, {"no_cue"})
+        self.assertNotIn("play", {event.event_type for event in loaded})
+
+    def test_the_log_leaves_the_cue_arm_out(self):
+        _, cue = self._night("cue")
+        _, sham = self._night("sham")
+        self.assertTrue(all("arm" not in event.to_dict() for event in cue))
+        self.assertTrue(all(event.to_dict()["arm"] == "sham" for event in sham))
+        old = {"event_type": "play", "timestamp_seconds": 1.0, "cue_id": "cue-p1", "reason_codes": [], "metadata": {}}
+        self.assertEqual(TmrSchedulerEvent.from_dict(old).arm, "cue")
+        self.assertEqual([TmrSchedulerEvent.from_dict(event.to_dict()) for event in sham], list(sham))
+        with self.assertRaises(ValueError):
+            TmrSchedulerEvent("skip", 0.0, arm="washout")
+
+    def test_the_arm_needs_a_runnable_config(self):
+        with self.assertRaises(ValueError):
+            TmrSchedulerConfig(arm="washout").validate()
+        with self.assertRaises(ValueError):
+            TmrSchedulerConfig(arm="sham").validate()
+        TmrSchedulerConfig(arm="sham", sham_cue_id="sham_soft_tone").validate()
+        with self.assertRaises(ValueError):
+            _scheduler(config=TmrSchedulerConfig(arm="sham", sham_cue_id="cue-p2"))
+        with self.assertRaises(KeyError):
+            _scheduler(config=TmrSchedulerConfig(arm="sham", sham_cue_id="not-in-the-library"))
+
+    def test_a_sham_cue_must_be_untrained(self):
+        scheduler = _scheduler()
+        catalog, library = scheduler.catalog, scheduler.cue_library
+        tlr_plan = plan_tlr_block(default_tlr_cue())
+        ensure_sham_untrained("sham_soft_tone", catalog=catalog, cue_library=library, tlr_cue_ids=tlr_cue_ids_of(tlr_plan))
+        validate_sham_cue("sham_soft_tone", catalog=catalog, cue_library=library)
+        self.assertEqual(tlr_cue_ids_of(tlr_plan), ("tlr_soft_tone",))
+        self.assertEqual(tlr_cue_ids_of(None), ())
+        refused = {
+            "cue-p1": "the cue of puzzle p1",
+            # An uncued puzzle's cue was trained before sleep too.
+            "cue-p4": "the cue of puzzle p4",
+            "tlr_soft_tone": "a TLR cue",
+        }
+        for cue_id, what in refused.items():
+            with self.assertRaises(ValueError) as raised:
+                ensure_sham_untrained(cue_id, catalog=catalog, tlr_cue_ids=tlr_cue_ids_of(tlr_plan))
+            self.assertIn(what, str(raised.exception))
+        with self.assertRaises(ValueError):
+            ensure_sham_untrained("tlr_soft_tone", cue_library=library)
+        lookalike = CueLibrary(cues=library.cues + (
+            CueMetadata("echo", "generated_tone", 1.0, protocol="sham", frequency_hz=528.0),
+        ))
+        with self.assertRaises(ValueError) as raised:
+            ensure_sham_untrained("echo", catalog=catalog, cue_library=lookalike)
+        self.assertIn("sounds like cue-p1", str(raised.exception))
+        # A sham sound from the file of a puzzle's or a TLR sound is that sound.
+        sounds = CueLibrary(cues=library.cues + (
+            CueMetadata("bell", "sound", 1.0, protocol="puzzle", path="cues/private/bell.wav"),
+            CueMetadata("tlr_bell", "sound", 1.0, protocol="tlr", path="cues/private/tlr_bell.wav"),
+            CueMetadata("sham_bell", "sound", 1.0, protocol="sham", path="cues/private/bell.wav"),
+            CueMetadata("sham_tlr_bell", "sound", 1.0, protocol="sham", path="cues/private/tlr_bell.wav"),
+            CueMetadata("sham_gong", "sound", 1.0, protocol="sham", path="cues/private/gong.wav"),
+        ))
+        bell_catalog = replace(catalog, puzzles=catalog.puzzles + (PuzzleTask("p9", "nine", "nine", cue_id="bell"),))
+        for sham_cue_id, trained_cue_id in (("sham_bell", "bell"), ("sham_tlr_bell", "tlr_bell")):
+            with self.assertRaises(ValueError) as raised:
+                ensure_sham_untrained(sham_cue_id, catalog=bell_catalog, cue_library=sounds)
+            self.assertIn(f"sounds like {trained_cue_id}", str(raised.exception))
+        validate_sham_cue("sham_gong", catalog=bell_catalog, cue_library=sounds)
+        generic = CueLibrary(cues=library.cues + (
+            CueMetadata("plain", "generated_tone", 1.0, protocol="generic", frequency_hz=880.0),
+        ))
+        with self.assertRaises(ValueError):
+            validate_sham_cue("plain", catalog=catalog, cue_library=generic)
+        with self.assertRaises(ValueError):
+            ensure_sham_untrained("")
+
+
 class TestSchedulerReplayValidation(unittest.TestCase):
     def test_simulated_replay_does_not_play_without_stable_rem(self):
         events, decisions, scheduler = _run_scheduler_replay(
@@ -482,6 +661,15 @@ def _scheduler(config=None, tlr_block_plan=None, event_log_path=None, playback_c
                 volume_hint=0.10,
             ),
             default_tlr_cue(),
+            CueMetadata(
+                cue_id="sham_soft_tone",
+                cue_type="generated_tone",
+                protocol="sham",
+                duration_seconds=1.0,
+                frequency_hz=330.0,
+                volume_hint=0.05,
+                tags=("sham", "untrained"),
+            ),
         )
     )
     return TmrCueScheduler(

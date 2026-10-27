@@ -173,6 +173,13 @@ Put new engine code in the matching `muse_tmr` subpackage and new commands in
   `PuzzleCueAssignment` records and make scheduler code consume `scheduled_puzzle_ids`
   or `scheduled_cue_ids()`, never all session puzzle IDs, so uncued controls cannot be
   scheduled.
+- Night arms and sealed N-of-1 schedules live in `muse_tmr.protocol.night_schedule`
+  (see `docs/nof1_protocol.md`). The scheduler's `arm` decides only what a gated cue
+  becomes (`cue`, `sham` with an untrained `sham_cue_id`, `no_cue` with `virtual_play`
+  skips), never when it comes, and uncued puzzles stay unschedulable in every arm. A
+  runner never prints a night's arm or the counts that would give it away, checks the
+  sham cue in every arm, and sends nothing to the player in `no_cue`. Keep schedules,
+  their salts and everything a series writes under the gitignored `data/`.
 - TLR cue support lives in `muse_tmr.protocol.tlr_protocol`. Keep default cue metadata,
   pre-sleep training events, and REM TLR block planning separate from the final scheduler.
   Training should use `AudioCuePlayer` with mock or dry-run backends in tests and must
@@ -192,9 +199,10 @@ Put new engine code in the matching `muse_tmr` subpackage and new commands in
   reports, private recall text, or morning session outputs.
 - The app's Morning tab (`muse_tmr.app.morning`) saves through `build_dream_report`,
   `build_cue_recall_test` and `build_morning_retest`, into the paths the Pilot 5 runbook
-  uses. Nothing it sends to the page may say which puzzles were cued: no assignment IDs
-  and no `cue_condition`, also not when it shows a saved retest or sound check again, and
-  not through the sound check's sounds, their order, their number or their labels.
+  uses. Nothing it sends to the page may say which puzzles were cued or which arm the
+  night had: no assignment IDs, no `cue_condition` and no arm, also not when it shows a
+  saved retest or sound check again, and not through the sound check's sounds, their
+  order, their number or their labels.
 - Morning puzzle retest capture lives in `muse_tmr.reports.morning_retest`. Keep the
   retest blind during administration, but save `cue_condition` from `PuzzleCueAssignment`
   in the output for later analysis. Require solved/unsolved, duration, and confidence

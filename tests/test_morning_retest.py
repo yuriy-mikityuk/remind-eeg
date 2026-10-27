@@ -20,6 +20,64 @@ from muse_tmr.reports import (
 )
 
 
+class TestRetestWaves(unittest.TestCase):
+    """retest_wave in schema 2 (#228)."""
+
+    def test_a_schema_1_retest_loads_as_the_morning_one(self):
+        payload = {
+            "schema_version": 1,
+            "retest_id": "night-001-morning-retest",
+            "session_id": "night-001",
+            "reported_at_utc": "2026-10-01T07:00:00+00:00",
+            "result_count": 1,
+            "solved_count": 1,
+            "unsolved_count": 0,
+            "mean_duration_seconds": 12.0,
+            "results": [
+                {"puzzle_id": "p1", "cue_id": "cue-p1", "cue_condition": "cued", "blind_index": 1,
+                 "response": "Answer 1", "solved": True, "duration_seconds": 12.0, "confidence": 0.9, "notes": ""}
+            ],
+            "notes": "",
+            "metadata": {},
+        }
+        retest = MorningRetest.from_dict(payload)
+        self.assertEqual((retest.schema_version, retest.retest_wave), (1, "morning"))
+        self.assertEqual(retest.retest_id, "night-001-morning-retest")
+        self.assertEqual(retest.results[0].cue_condition, "cued")
+
+    def test_each_wave_has_its_own_id(self):
+        results = (MorningRetestResult("p1", "Answer 1", True, 12.0, 0.8),)
+        self.assertEqual(MorningRetest(session_id="night-001", results=results).retest_id, "night-001-morning-retest")
+        later = MorningRetest(session_id="night-001", results=results, retest_wave="day10")
+        self.assertEqual((later.retest_id, later.to_dict()["retest_wave"]), ("night-001-day10-retest", "day10"))
+        self.assertEqual(MorningRetest.from_dict(later.to_dict()), later)
+        with self.assertRaises(ValueError):
+            MorningRetest(session_id="night-001", results=results, retest_wave="day3")
+
+    def test_cli_records_a_delayed_wave(self):
+        session, catalog, assignment = _session_catalog_assignment()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            session.save(tmp_path / "session.json")
+            catalog.save(tmp_path / "catalog.json")
+            assignment.save(tmp_path / "assignment.json")
+            with redirect_stdout(io.StringIO()) as output:
+                code = main([
+                    "record-puzzle-retest", str(tmp_path / "session.json"),
+                    "--catalog", str(tmp_path / "catalog.json"), "--assignment", str(tmp_path / "assignment.json"),
+                    "--output", str(tmp_path / "night-001_retest_day7.json"), "--wave", "day7",
+                    "--result", "p1=Answer 1", "--result", "p2=",
+                    "--solved", "p1",
+                    "--duration", "p1=10", "--duration", "p2=20",
+                    "--confidence", "p1=0.9", "--confidence", "p2=0.1",
+                ])
+            retest = load_morning_retest(tmp_path / "night-001_retest_day7.json")
+        self.assertEqual(code, 0)
+        self.assertIn("wave=day7", output.getvalue())
+        self.assertEqual((retest.retest_wave, retest.retest_id), ("day7", "night-001-day7-retest"))
+        self.assertEqual([result.cue_condition for result in retest.results], ["cued", "uncued"])
+
+
 class TestMorningRetest(unittest.TestCase):
     def test_retest_round_trips_json_and_counts_solved_results(self):
         retest = MorningRetest(
@@ -129,7 +187,8 @@ class TestMorningRetest(unittest.TestCase):
         self.assertEqual(retest.solved_count, 1)
         self.assertEqual(retest.unsolved_count, 1)
         self.assertEqual([result.cue_condition for result in retest.results], ["cued", "uncued"])
-        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["retest_wave"], "morning")
         self.assertEqual(payload["result_count"], 2)
 
 

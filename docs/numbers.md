@@ -125,7 +125,7 @@ The defaults of `SyntheticNightConfig` and `script_night()` in `src/muse_tmr/tes
 
 | Figure | Quoted in | Source | Status |
 |---|---|---|---|
-| 48 CLI commands | README | `add_parser(` calls in `src/muse_tmr/cli/main.py` | count: 48 since `protocol-presets`, `protocol-fidelity` and `record-cue-recall` (#231), 45 before. About a dozen are diagnostics or side tracks (meditation, calibration, Polar), two run on synthetic nights |
+| 51 CLI commands | README | `add_parser(` calls in `src/muse_tmr/cli/main.py` | count: 51 since `plan-night-schedule`, `show-night-schedule` and `unseal-night-schedule` (#228), 48 since `protocol-presets`, `protocol-fidelity` and `record-cue-recall` (#231), 45 before. About a dozen are diagnostics or side tracks (meditation, calibration, Polar), two run on synthetic nights |
 | Five staged pilots, each with a runbook and a validator | README, `validation.md` | `docs/pilot1_no_audio.md` to `docs/pilot5_full_night.md`, `src/muse_tmr/validation/` | count |
 | 1008 tests passing and 5 skipped on Ubuntu and macOS with Python 3.11 to 3.13; on Windows 994 and 19 with 3.11 and 3.12, 997 and 16 with 3.13; 0 failing; 82 % line coverage (15,483 of 18,965 lines) on Ubuntu with 3.11, 81.5 to 81.7 % over the nine cells; of those lines `muse_tmr.ble` has 1,138 of 3,029 covered (37.6 %) and the rest of the package 14,345 of 15,936 (90.0 %); Windows skips 11 more tests, and 3 more before 3.13 | `TEST_STATUS.md` | the pytest summary and the printed total of each `tests` cell of run [40378740941](https://github.com/yuriy-mikityuk/remind-eeg/actions/runs/40378740941), at commit `fc701c2`; the line counts from its `coverage.xml` artifacts | CI, one run on 2026-10-26. Replaced 1004 passed and 6 skipped from run 40366821742, before `CITATION.cff` existed and its version check could run; those had replaced 985 passed and 90 % (14,299 of 15,894 lines) from run 40281779150, before #232 moved the BLE layer into the measured package, and those 724 passed, 5 skipped and 88 %, written by hand at release 0.3.0 |
 | Coverage per module: `cli/main.py` 66 %, `data/watchdog.py` 78 %, `app/auto_update.py` 79 %, `reports/source_diagnostics.py` 80 %, `sources/polar_h10.py` 81 %, app server 87 %, well-covered modules 92 to 98 % | `TEST_STATUS.md` | written by hand at release 0.3.0 | self-reported, not re-measured; the `coverage.xml` artifacts of each CI run have the current figures |
@@ -189,6 +189,15 @@ Each preset in `src/muse_tmr/protocol/protocol_registry.py` (a config dataclass)
 | Stand-in TLR tone 600 Hz for 0.65 s | `protocol_presets.md`, (config dataclass) | the middle pitch and the total length of the published three-beep cue | code (#231) |
 | A TLR block of 3 cues planned 8 s apart plays at a 30 s stride as one cue and then two back to back: played intervals of 30 s and 0 s | CHANGELOG, `validation.md`, `protocol_presets.md`, Pilot 5 runbook | `test_tlr_cues_planned_closer_than_the_stride_play_back_to_back` in `tests/test_protocol_fidelity.py`, a scripted gate sequence through `StableRemGate` and `TmrCueScheduler` | synthetic input, not sleep; follows from the scheduler running once per epoch |
 
+## Night arms and delayed retests
+
+| Figure | Quoted in | Source | Status |
+|---|---|---|---|
+| Three arms a block (cue, sham, no-cue); within each group of three blocks each arm takes each place in its block once; washout nights only between blocks | `nof1_protocol.md`, `protocol.md`, `USAGE.md`, `data_model.md`, README, CHANGELOG | `generate_night_schedule()` and `_block_orders()` in `src/muse_tmr/protocol/night_schedule.py` | code (#228) |
+| A salt of 16 random bytes (32 hex characters) from `secrets`; without `--seed` a seed of 32 random bits | `data_model.md` | `_SALT_BYTES` in `night_schedule.py`; `_plan_night_schedule()` in `src/muse_tmr/cli/main.py` | code (#228) |
+| Starter sham tone 330 Hz, 1 s, volume hint 0.05 | `nof1_protocol.md`, `data_model.md`, CHANGELOG | `default_cue_library()` in `src/muse_tmr/audio/cue_library.py` | code (#228); a frequency no other starter cue or preset uses, no other rationale. A sham play keeps the length and hint of the cue it stands in for |
+| Delayed retests at day 7 and day 10 | `nof1_protocol.md`, `protocol.md`, `USAGE.md`, `data_model.md`, README, Pilot 5 runbook, CHANGELOG | `RETEST_WAVES` in `src/muse_tmr/reports/morning_retest.py` | code (#228), after the two literature rows below |
+
 ## Other people's figures
 
 | Figure | Quoted in | Source | Status |
@@ -200,6 +209,8 @@ Each preset in `src/muse_tmr/protocol/protocol_registry.py` (a config dataclass)
 | Cues disrupted sleep in about a quarter of cued REM periods (23.7 %) | `references.md`, `safety_outcomes.md` | [Picard-Deland et al., v2](https://www.biorxiv.org/content/10.1101/2024.06.21.600133) | preprint |
 | AASM-scored arousals within 10 s after 57.9 % of loud (about 43 dBA) and 43.0 % of soft (about 28 dBA) cues, arousal analyses on 23 participants | `references.md`, `safety_outcomes.md` | [Whitmore & Paller 2023](https://pmc.ncbi.nlm.nih.gov/articles/PMC10027237), as corrected in [`verify_tmr_tlr_science.md`](research/2026-10-uniqueness/notes/verify_tmr_tlr_science.md) row 9 (the notes had 59 %) | literature |
 | 0.19 movement events per cue against 0.10 in silent periods | `references.md`, `safety_outcomes.md`, `validation.md` | [Konkoly et al. 2024](https://pmc.ncbi.nlm.nih.gov/articles/PMC11542932), `verify_tmr_tlr_science.md` row 7 | literature; a phone's motion sensor at home, no EEG |
+| REM cueing helped rule abstraction at a retest a week later, not the next day | `references.md`, `nof1_protocol.md`, `protocol.md` | Pereira et al. 2023, via [`verify_tmr_tlr_science.md`](research/2026-10-uniqueness/notes/verify_tmr_tlr_science.md) row 12 | literature; research notes only |
+| A TMR benefit in NREM sleep at 10 days, not at 24 h or 6 weeks | `references.md`, `nof1_protocol.md`, `protocol.md` | Rakowska et al. 2021, via [`tmr_tlr_science.md`](research/2026-10-uniqueness/notes/tmr_tlr_science.md) | literature; research notes only |
 | 100 home nights of forehead EEG | `references.md` | [Parry & Briganti 2026](https://www.medrxiv.org/content/10.64898/2026.06.01.26354591v1.full) | preprint |
 | Portiloop detect-and-stimulate F1 0.71 on MODA | `compare.md` | Valenchon et al. 2022, PLoS ONE, via [`verify_cueing_tools_landscape.md`](research/2026-10-uniqueness/notes/verify_cueing_tools_landscape.md) row 3 | literature |
 | EazzZyLearn_pc 85.88 % staging accuracy | `compare.md` | a code comment in that repository about 46 lab recordings, not Muse | another project's unpublished figure |

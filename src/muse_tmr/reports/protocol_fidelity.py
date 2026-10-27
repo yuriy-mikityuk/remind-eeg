@@ -15,6 +15,11 @@ A REM period here is a gate-open run as ``muse_tmr.validation.gate_log`` defines
 the decision of the epoch that played it (``emitting_record()``). It is retrospective,
 decides and plays nothing, and imports nothing from ``muse_tmr.audio``.
 
+A night with an arm (#228) says so: a sham night's plays are the untrained sound and are
+checked like any others (limitation ``sham_arm``), and a no-cue night plays nothing by
+design, so its checks find no cues and the summary counts its ``virtual_plays`` instead
+(limitation ``no_cue_arm``).
+
 Parameter fidelity is not result fidelity: every report carries the
 ``parameter_fidelity_is_not_result_fidelity`` block that says why.
 """
@@ -206,6 +211,19 @@ class ProtocolFidelityReport:
             f"{summary.get('plays_outside_rem_periods')}",
             f"- blocked or skipped by the player, left out of the checks: TLR {not_played.get('tlr', 0)}, "
             f"puzzle {not_played.get('puzzle', 0)}",
+        ])
+        night_arm = summary.get("arm")
+        if night_arm == "no_cue":
+            virtual = summary.get("virtual_plays", {}) or {}
+            lines.append(
+                "- arm: no_cue, so nothing played, by design; the scheduler logged virtual plays where a cue "
+                f"night would have played: TLR {virtual.get('tlr', 0)}, puzzle {virtual.get('puzzle', 0)}"
+            )
+        elif night_arm == "sham":
+            lines.append("- arm: sham, so the plays are the untrained sham sound, checked like any others")
+        elif night_arm:
+            lines.append(f"- arm: {night_arm}")
+        lines.extend([
             "",
             "## Checks",
             "",
@@ -257,6 +275,10 @@ def build_protocol_fidelity(
         limitations.append("pilot3_plan_not_played")
     elif not night.audio_found:
         limitations.append("no_audio_log")
+    if night.arm == "sham":
+        limitations.append("sham_arm")
+    elif night.arm == "no_cue":
+        limitations.append("no_cue_arm")
 
     placed, not_played = _place_plays(night)
     pause_times = _guard_pause_times(night)
@@ -284,6 +306,8 @@ def build_protocol_fidelity(
         "plays_outside_rem_periods": plays_outside,
         "uncued_puzzle_play_count": night.uncued_puzzle_play_count,
         "stride_seconds": stride,
+        "arm": night.arm,
+        "virtual_plays": dict(night.virtual_plays),
     }
     return ProtocolFidelityReport(
         recording=recording_dir.name,
@@ -345,6 +369,9 @@ class _Night:
     pilot3: bool
     synthetic: bool
     sources: Dict[str, Optional[str]]
+    # The night's arm, and by stream a no_cue night's skips where another arm would have played.
+    arm: Optional[str] = None
+    virtual_plays: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -386,6 +413,8 @@ def _load_night(recording_dir: Path, pilot3_report: Optional[Path]) -> _Night:
             pilot3=True,
             synthetic=synthetic or bool(report.get("synthetic")),
             sources=sources,
+            arm=_optional_str(report.get("arm")),
+            virtual_plays=_virtual_plays(events),
         )
 
     events_path = recording_dir / "scheduler_events.jsonl"
@@ -428,7 +457,25 @@ def _load_night(recording_dir: Path, pilot3_report: Optional[Path]) -> _Night:
         pilot3=False,
         synthetic=synthetic,
         sources=sources,
+        arm=_optional_str(summary.get("arm")) or _optional_str(dict(metadata.get("night_arm") or {}).get("arm")),
+        virtual_plays=_virtual_plays(events),
     )
+
+
+def _virtual_plays(events: Sequence[Mapping[str, object]]) -> Dict[str, int]:
+    """By stream, a no_cue night's skips where another arm would have played."""
+    counts = {stream: 0 for stream in STREAMS}
+    for event in events:
+        if event.get("event_type") != "skip" or not dict(event.get("metadata", {}) or {}).get("virtual_play"):
+            continue
+        stream = str(event.get("protocol") or "")
+        if stream in counts:
+            counts[stream] += 1
+    return counts
+
+
+def _optional_str(value: object) -> Optional[str]:
+    return None if value in (None, "") else str(value)
 
 
 def _preset_for(

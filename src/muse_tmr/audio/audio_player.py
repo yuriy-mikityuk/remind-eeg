@@ -147,6 +147,9 @@ class CuePlaybackResult:
     started_at: Optional[str] = None
     ended_at: Optional[str] = None
     volume_multiplier: float = 1.0
+    # The night's arm (#228): "sham" when the untrained sham sound stood in for a cue.
+    # "cue", the default, is left out of the log, so a cue night logs what it did before.
+    arm: str = "cue"
 
     @property
     def played(self) -> bool:
@@ -157,7 +160,7 @@ class CuePlaybackResult:
         return min(self.requested_volume, self.max_volume)
 
     def to_dict(self) -> Dict[str, object]:
-        return {
+        payload: Dict[str, object] = {
             "cue_id": self.cue_id,
             "status": self.status,
             "backend_name": self.backend_name,
@@ -174,6 +177,9 @@ class CuePlaybackResult:
             "started_at": self.started_at,
             "ended_at": self.ended_at,
         }
+        if self.arm != "cue":
+            payload["arm"] = self.arm
+        return payload
 
 
 class AudioBackend:
@@ -259,10 +265,12 @@ class AudioCuePlayer:
         *,
         volume: Optional[float] = None,
         volume_multiplier: float = 1.0,
+        arm: str = "cue",
     ) -> CuePlaybackResult:
         """Play ``cue`` at ``volume`` (``default_volume`` when None), capped at
         ``max_volume`` and then scaled by ``volume_multiplier``, as
-        ``AudioPlaybackConfig.cue_volume()`` computes it."""
+        ``AudioPlaybackConfig.cue_volume()`` computes it. ``arm`` is the night's arm,
+        which the result and its log line record; it changes nothing about the sound."""
         cue = cue or TestCue()
         cue.validate()
         volume_plan = self.config.cue_volume(volume, volume_multiplier=volume_multiplier)
@@ -285,6 +293,7 @@ class AudioCuePlayer:
                 backend_name=self.backend.name,
                 status="blocked",
                 reason_codes=("emergency_stop_active",),
+                arm=arm,
             )
             self._log_result(result)
             return result
@@ -310,6 +319,7 @@ class AudioCuePlayer:
             reason_codes=_unique(reasons),
             started_at=started_at,
             ended_at=ended_at,
+            arm=arm,
         )
         self._log_result(result)
         return result
@@ -419,6 +429,7 @@ def _result_from_request(
     reason_codes: Tuple[str, ...],
     started_at: Optional[str] = None,
     ended_at: Optional[str] = None,
+    arm: str = "cue",
 ) -> CuePlaybackResult:
     return CuePlaybackResult(
         cue_id=request.cue_id,
@@ -435,6 +446,7 @@ def _result_from_request(
         started_at=started_at,
         ended_at=ended_at,
         volume_multiplier=request.volume_multiplier,
+        arm=arm,
     )
 
 

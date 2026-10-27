@@ -35,6 +35,15 @@ PROTOCOL_PRESET_COMMANDS = (
     "assign-puzzle-cues",
 )
 PROTOCOL_PRESET_DEFAULT_HELP = "Default: the protocol preset's."
+# The arms a cueing night runs: muse_tmr.protocol.night_schedule.CUEING_ARMS (#228).
+NIGHT_ARM_CHOICES = ("cue", "sham", "no_cue")
+# The protocol roles of a cue: muse_tmr.audio.cue_library.CUE_PROTOCOLS.
+CUE_PROTOCOL_CHOICES = ("puzzle", "tlr", "test", "generic", "sham")
+# What a runner prints in place of its cue counts on a night with an arm.
+BLINDED_NOTE = (
+    "blinded night: plays, counts and volumes are in the summary, which names the arm; "
+    "in a sealed series leave it closed until unseal-night-schedule has run"
+)
 ALLOW_DRY_RUN_HELP = "Run silently on dry-run when afplay is missing, instead of exiting with code 2."
 # `muse-tmr status` prints it and `muse-tmr --help` ends with it (#232).
 BANNER = f"REMind {__version__}: n = 1 research software, not a medical device"
@@ -394,6 +403,7 @@ def build_parser() -> argparse.ArgumentParser:
     pilot3_parser.add_argument("--exit-threshold", type=float, default=None,
                                help="Override gate exit threshold (default: preset-aware).")
     _add_night_protocol_args(pilot3_parser)
+    _add_night_arm_args(pilot3_parser)
     pilot3_parser.add_argument("--disable-arousal-guard", action="store_true")
     pilot3_parser.add_argument(
         "--inject-cues-every-seconds",
@@ -445,6 +455,7 @@ def build_parser() -> argparse.ArgumentParser:
     pilot4_parser.add_argument("--exit-threshold", type=float, default=None,
                                help="Override gate exit threshold (default: preset-aware).")
     _add_night_protocol_args(pilot4_parser)
+    _add_night_arm_args(pilot4_parser)
     pilot4_parser.add_argument("--allow-short", action="store_true", help="Allow short smoke-test cueing runs.")
     pilot4_parser.add_argument("--quiet", action="store_true")
     _add_guard_hr_rule_args(pilot4_parser)
@@ -493,6 +504,7 @@ def build_parser() -> argparse.ArgumentParser:
     pilot5_parser.add_argument("--exit-threshold", type=float, default=None,
                                help="Override gate exit threshold (default: preset-aware).")
     _add_night_protocol_args(pilot5_parser)
+    _add_night_arm_args(pilot5_parser)
     pilot5_parser.add_argument("--allow-short", action="store_true", help="Allow short smoke-test cueing runs.")
     pilot5_parser.add_argument("--quiet", action="store_true")
     _add_guard_hr_rule_args(pilot5_parser)
@@ -588,7 +600,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_cues_parser = subparsers.add_parser("list-cues", help="List cues from a cue metadata library.")
     list_cues_parser.add_argument("input", type=Path, help="Input cue library .json path.")
-    list_cues_parser.add_argument("--protocol", choices=("puzzle", "tlr", "test", "generic"))
+    list_cues_parser.add_argument("--protocol", choices=CUE_PROTOCOL_CHOICES)
     list_cues_parser.add_argument("--tag")
 
     presets_parser = subparsers.add_parser(
@@ -697,7 +709,30 @@ def build_parser() -> argparse.ArgumentParser:
     dream_report_parser.add_argument("session", type=Path, help="Input night puzzle session .json path.")
     dream_report_parser.add_argument("--output", type=Path, required=True, help="Output dream report .json path.")
     dream_report_parser.add_argument("--lucid", choices=("yes", "no"), required=True)
-    dream_report_parser.add_argument("--cues-heard", choices=("yes", "no"), required=True)
+    dream_report_parser.add_argument(
+        "--cues-heard",
+        choices=("yes", "no"),
+        help="Heard any sound in the night. Give it, --cue-perception or both.",
+    )
+    dream_report_parser.add_argument(
+        "--cue-perception",
+        choices=("not_perceived", "in_dream", "awake", "unsure", "unknown"),
+        help="Where a sound was heard: not at all, in a dream, awake, heard but unsure where, or unknown.",
+    )
+    dream_report_parser.add_argument(
+        "--woke-from-sound",
+        choices=("yes", "no", "unknown"),
+        default="unknown",
+        help="Whether a sound woke you (default unknown).",
+    )
+    dream_report_parser.add_argument(
+        "--eye-signal-attempt",
+        action="append",
+        default=[],
+        metavar="TIME",
+        help="When you think you made the eye signal (LRLR), HH:MM or an ISO time. Repeat for each. "
+        "A marking only: nothing detects the signal.",
+    )
     dream_report_parser.add_argument("--confidence", type=float, required=True, help="Self-report confidence 0.0-1.0.")
     dream_report_parser.add_argument("--dream-text", required=True, help="Free-text dream recall.")
     dream_report_parser.add_argument(
@@ -782,6 +817,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional per-puzzle retest note.",
     )
     retest_parser.add_argument("--retest-id", default="")
+    retest_parser.add_argument(
+        "--wave",
+        choices=("morning", "day7", "day10"),
+        default="morning",
+        help="The retest of the night's puzzles this is: the morning after, a week or ten days later.",
+    )
     retest_parser.add_argument("--notes", default="")
 
     analysis_parser = subparsers.add_parser(
@@ -823,6 +864,49 @@ def build_parser() -> argparse.ArgumentParser:
         "of the session tasks unless the preset says otherwise.",
     )
     _add_protocol_preset_arg(assignment_parser)
+
+    plan_schedule_parser = subparsers.add_parser(
+        "plan-night-schedule",
+        help="Seal an N-of-1 series: blocks of a cue, a sham and a no-cue night in a counterbalanced order.",
+    )
+    plan_schedule_parser.add_argument("--blocks", type=int, required=True, help="Blocks of one night per arm.")
+    plan_schedule_parser.add_argument(
+        "--washout-nights", type=int, default=0, help="Washout nights between two blocks (default 0)."
+    )
+    plan_schedule_parser.add_argument(
+        "--seed",
+        type=int,
+        help="Seed of the order. Default: drawn at random and kept only in the schedule file.",
+    )
+    plan_schedule_parser.add_argument("--schedule-id", help="Default: series-<UTC time>.")
+    plan_schedule_parser.add_argument("--night-prefix", default="night-", help="Night IDs are <prefix>001, <prefix>002, ...")
+    plan_schedule_parser.add_argument(
+        "--sham-cue-id",
+        default="sham_soft_tone",
+        help="The untrained cue sham nights play (default sham_soft_tone, in the starter cue library).",
+    )
+    plan_schedule_parser.add_argument(
+        "--output",
+        type=Path,
+        help="Schedule .json path. Default: data/protocol/night_schedules/<schedule-id>.json; the sealed "
+        "companion goes next to it as <name>.sealed.json.",
+    )
+
+    show_schedule_parser = subparsers.add_parser(
+        "show-night-schedule",
+        help="Show a night schedule's nights and check it against its seal; arms only once unsealed.",
+    )
+    show_schedule_parser.add_argument("schedule", type=Path, help="Night schedule .json path.")
+    show_schedule_parser.add_argument("--sealed", type=Path, help="Sealed companion. Default: <name>.sealed.json next to it.")
+    show_schedule_parser.add_argument("--json", action="store_true", help="Print it as JSON.")
+
+    unseal_schedule_parser = subparsers.add_parser(
+        "unseal-night-schedule",
+        help="Check a night schedule against its seal, record when it was unsealed and show the arms.",
+    )
+    unseal_schedule_parser.add_argument("schedule", type=Path, help="Night schedule .json path.")
+    unseal_schedule_parser.add_argument("--sealed", type=Path, help="Sealed companion. Default: <name>.sealed.json next to it.")
+    unseal_schedule_parser.add_argument("--json", action="store_true", help="Print it as JSON.")
 
     meditation_plan_parser = subparsers.add_parser(
         "meditation-plan",
@@ -1110,6 +1194,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _analyze_cued_uncued(args)
     if args.command == "assign-puzzle-cues":
         return _assign_puzzle_cues(args)
+    if args.command == "plan-night-schedule":
+        return _plan_night_schedule(args)
+    if args.command == "show-night-schedule":
+        return _show_night_schedule(args)
+    if args.command == "unseal-night-schedule":
+        return _unseal_night_schedule(args)
     if args.command == "meditation-plan":
         return _meditation_plan(args)
     if args.command == "analyze-meditation":
@@ -2273,7 +2363,11 @@ def _resolve_gate_thresholds(args: argparse.Namespace) -> Tuple[float, float]:
 
 
 async def _simulate_replay_cues(args: argparse.Namespace) -> int:
-    report = await _replay_cue_report(args)
+    try:
+        report = await _replay_cue_report(args)
+    except _NightArmError as exc:
+        print(f"simulate-replay-cues: {exc}", file=sys.stderr)
+        return 2
     # A cue plan from a synthetic night must not read as a recorded night's.
     note = ""
     if _says_synthetic(Path(report.recording_input) / "metadata.json"):
@@ -2289,20 +2383,35 @@ async def _simulate_replay_cues(args: argparse.Namespace) -> int:
             _resolve_output_path(args.scheduler_events_output)
         )
 
-    print(
-        "pilot3 replay cue simulation complete "
-        f"passed={report.passed} "
-        f"epochs={report.metrics.get('epoch_count', 0)} "
-        f"stride_seconds={report.metrics.get('stride_seconds')} "
-        f"gate_open={report.metrics.get('gate_open_count', 0)} "
-        f"first_gate_open_seconds={report.metrics.get('first_gate_open_seconds')} "
-        f"cue_plan={report.metrics.get('cue_plan_count', 0)} "
-        f"first_play_seconds={report.metrics.get('first_play_seconds')} "
-        f"injected_cues={report.metrics.get('injected_cue_count', 0)} "
-        f"audio_playback_executed={report.audio_playback_executed} "
-        f"protocol={report.protocol.get('name')} "
-        f"output={output_path}{note}"
-    )
+    if report.arm is not None:
+        # Never the arm, nor what would give it away: the plan and its first play.
+        print(
+            "pilot3 replay simulation complete "
+            f"passed={report.passed} "
+            f"epochs={report.metrics.get('epoch_count', 0)} "
+            f"stride_seconds={report.metrics.get('stride_seconds')} "
+            f"gate_open={report.metrics.get('gate_open_count', 0)} "
+            f"first_gate_open_seconds={report.metrics.get('first_gate_open_seconds')} "
+            f"audio_playback_executed={report.audio_playback_executed} "
+            f"protocol={report.protocol.get('name')} "
+            + (f"night_id={report.night_id} " if report.night_id else "")
+            + f"output={output_path}{note} ({BLINDED_NOTE})"
+        )
+    else:
+        print(
+            "pilot3 replay cue simulation complete "
+            f"passed={report.passed} "
+            f"epochs={report.metrics.get('epoch_count', 0)} "
+            f"stride_seconds={report.metrics.get('stride_seconds')} "
+            f"gate_open={report.metrics.get('gate_open_count', 0)} "
+            f"first_gate_open_seconds={report.metrics.get('first_gate_open_seconds')} "
+            f"cue_plan={report.metrics.get('cue_plan_count', 0)} "
+            f"first_play_seconds={report.metrics.get('first_play_seconds')} "
+            f"injected_cues={report.metrics.get('injected_cue_count', 0)} "
+            f"audio_playback_executed={report.audio_playback_executed} "
+            f"protocol={report.protocol.get('name')} "
+            f"output={output_path}{note}"
+        )
     if scheduler_events_output is not None:
         print(f"scheduler_events={scheduler_events_output}")
     return 0 if report.passed else 1
@@ -2322,10 +2431,12 @@ async def _replay_cue_report(args: argparse.Namespace):
     from muse_tmr.protocol.arousal_guard import ArousalGuardConfig
     from muse_tmr.validation import simulate_replay_cue_plan
 
+    night_arm = _night_arm_from_args(args)
     catalog = load_puzzle_catalog(_resolve_output_path(args.catalog))
     session = load_night_puzzle_session(_resolve_output_path(args.session))
     assignment = load_puzzle_cue_assignment(_resolve_output_path(args.assignment))
     cue_library = load_cue_library(_resolve_output_path(args.cue_library))
+    _check_sham_cue(night_arm, catalog=catalog, cue_library=cue_library)
     preset, overrides = _protocol_from_args(args, _NIGHT_PRESET_FLAGS)
     settings = preset.runner_settings(overrides)
     enter_threshold, exit_threshold = _resolve_gate_thresholds(args)
@@ -2358,6 +2469,7 @@ async def _replay_cue_report(args: argparse.Namespace):
         ),
         inject_cues_every_seconds=getattr(args, "inject_cues_every_seconds", None),
         protocol=_protocol_block(preset, overrides, assignment=assignment.metadata),
+        night_arm=night_arm,
     )
 
 
@@ -2884,6 +2996,12 @@ async def _run_live_cueing_pilot(
     )
     from muse_tmr.validation import run_pilot4_cueing_night
 
+    command = getattr(args, "command", None) or command_label
+    try:
+        night_arm = _night_arm_from_args(args)
+    except _NightArmError as exc:
+        print(f"{command}: {exc}", file=sys.stderr)
+        return 2
     store = load_volume_calibrations(_resolve_output_path(args.calibration))
     calibration = (
         store.latest_for_device(args.device_name)
@@ -2899,6 +3017,17 @@ async def _run_live_cueing_pilot(
         if enable_tlr_block
         else None
     )
+    try:
+        _check_sham_cue(
+            night_arm,
+            catalog=catalog,
+            cue_library=cue_library,
+            tlr_block_plan=tlr_block_plan,
+            generated_tone_only=True,
+        )
+    except _NightArmError as exc:
+        print(f"{command}: {exc}", file=sys.stderr)
+        return 2
     config = _live_cueing_config(
         args,
         pilot_id=pilot_id,
@@ -2907,6 +3036,7 @@ async def _run_live_cueing_pilot(
         require_tlr_block=require_tlr_block,
         assignment=assignment,
         tlr_block_plan=tlr_block_plan,
+        night_arm=night_arm,
     )
     source = _build_source(args, duration_seconds=int(config.duration_seconds))
     summary = await run_pilot4_cueing_night(
@@ -2919,6 +3049,23 @@ async def _run_live_cueing_pilot(
         calibration=calibration,
         tlr_block_plan=tlr_block_plan,
     )
+    if night_arm is not None:
+        # Never the arm, nor what would give it away: the plays, their volumes, the
+        # first play and the scorer's status.
+        print(
+            f"{command_label} complete "
+            f"passed={summary.passed} "
+            f"epochs={summary.epoch_count} "
+            f"stride_seconds={summary.stride_seconds} "
+            f"first_gate_open_seconds={summary.first_gate_open_seconds} "
+            f"requested_backend={summary.requested_audio_backend_name} "
+            f"resolved_backend={summary.resolved_audio_backend_name} "
+            f"emergency_stop={summary.emergency_stop_path} "
+            f"protocol={config.protocol.get('name')} "
+            + (f"night_id={summary.night_id} " if summary.night_id else "")
+            + f"summary={summary.summary_path} ({BLINDED_NOTE})"
+        )
+        return 0 if summary.passed else 1
     print(
         f"{command_label} complete "
         f"passed={summary.passed} "
@@ -2950,9 +3097,11 @@ def _live_cueing_config(
     require_tlr_block: bool,
     assignment=None,
     tlr_block_plan=None,
+    night_arm=None,
 ):
     """The Pilot 4/5 config for ``args``: the protocol preset's gate and scheduler
-    settings, explicit flags over them, and the audio caps from the flags alone."""
+    settings, explicit flags over them, the audio caps from the flags alone, and the
+    night's arm, which changes what a cue becomes but none of those settings."""
     from muse_tmr.features import EpochConfig
     from muse_tmr.models import RemGateConfig
     from muse_tmr.presets import preset_provides_optics
@@ -3010,6 +3159,7 @@ def _live_cueing_config(
             assignment=assignment.metadata if assignment is not None else None,
             tlr_block_plan=tlr_block_plan.metadata if tlr_block_plan is not None else None,
         ),
+        night_arm=night_arm,
     )
 
 
@@ -3489,23 +3639,36 @@ def _record_dream_report(args: argparse.Namespace) -> int:
         if args.catalog is not None
         else None
     )
-    report = build_dream_report(
-        session,
-        catalog=catalog,
-        report_id=args.report_id,
-        lucid=_yes_no(args.lucid),
-        cues_heard=_yes_no(args.cues_heard),
-        confidence=args.confidence,
-        dream_text=args.dream_text,
-        puzzle_incorporation_text=_parse_puzzle_links(args.puzzle_link),
-        notes=args.notes,
-    )
+    if args.cues_heard is None and args.cue_perception is None:
+        print("record-dream-report: give --cue-perception, --cues-heard or both", file=sys.stderr)
+        return 2
+    try:
+        report = build_dream_report(
+            session,
+            catalog=catalog,
+            report_id=args.report_id,
+            lucid=_yes_no(args.lucid),
+            cues_heard=_yes_no(args.cues_heard) if args.cues_heard is not None else None,
+            cue_perception=args.cue_perception,
+            woke_from_sound=args.woke_from_sound,
+            eye_signal_attempt_times=tuple(args.eye_signal_attempt),
+            confidence=args.confidence,
+            dream_text=args.dream_text,
+            puzzle_incorporation_text=_parse_puzzle_links(args.puzzle_link),
+            notes=args.notes,
+        )
+    except ValueError as exc:
+        print(f"record-dream-report: {exc}", file=sys.stderr)
+        return 2
     output_path = report.save(_resolve_output_path(args.output))
     print(
         "dream report recorded "
         f"session={report.session_id} "
         f"lucid={report.lucid} "
         f"cues_heard={report.cues_heard} "
+        f"cue_perception={report.cue_perception} "
+        f"woke_from_sound={report.woke_from_sound} "
+        f"eye_signal_attempts={len(report.eye_signal_attempt_times)} "
         f"linked_puzzles={report.puzzle_incorporation_count} "
         f"output={output_path}"
     )
@@ -3556,16 +3719,137 @@ def _record_puzzle_retest(args: argparse.Namespace) -> int:
         assignment=assignment,
         retest_id=args.retest_id,
         notes=args.notes,
+        retest_wave=args.wave,
     )
     output_path = retest.save(_resolve_output_path(args.output))
     print(
         "morning puzzle retest recorded "
         f"session={retest.session_id} "
+        f"wave={retest.retest_wave} "
         f"results={len(retest.results)} "
         f"solved={retest.solved_count} "
         f"unsolved={retest.unsolved_count} "
         f"output={output_path}"
     )
+    return 0
+
+
+def _plan_night_schedule(args: argparse.Namespace) -> int:
+    """Write a sealed series and its companion; print neither an arm nor the seed."""
+    import secrets
+
+    from muse_tmr.protocol import generate_night_schedule, write_night_schedule
+
+    seed = args.seed if args.seed is not None else secrets.randbits(32)
+    try:
+        schedule = generate_night_schedule(
+            seed,
+            args.blocks,
+            args.washout_nights,
+            schedule_id=args.schedule_id,
+            night_prefix=args.night_prefix,
+            sham_cue_id=args.sham_cue_id,
+        )
+        output_path = (
+            _resolve_output_path(args.output)
+            if args.output is not None
+            else _default_path_base() / "data" / "protocol" / "night_schedules" / f"{schedule.schedule_id}.json"
+        )
+        schedule_path, sealed_path = write_night_schedule(schedule, output_path)
+    except (OSError, ValueError) as exc:
+        print(f"plan-night-schedule: {exc}", file=sys.stderr)
+        return 2
+    nights = ",".join(
+        f"{night.night_id}(washout)" if night.arm == "washout" else night.night_id for night in schedule.nights
+    )
+    print(
+        "night schedule sealed "
+        f"schedule_id={schedule.schedule_id} "
+        f"blocks={schedule.blocks} "
+        f"washout_nights={schedule.washout_nights} "
+        f"sham_cue_id={schedule.sham_cue_id} "
+        f"commitment_sha256={schedule.commitment_sha256()} "
+        f"schedule={schedule_path} "
+        f"sealed={sealed_path}"
+    )
+    print(f"nights={nights}")
+    print("The arms stay sealed until unseal-night-schedule; do not open the schedule file before then.")
+    return 0
+
+
+def _show_night_schedule(args: argparse.Namespace) -> int:
+    return _print_night_schedule(args, unseal=False)
+
+
+def _unseal_night_schedule(args: argparse.Namespace) -> int:
+    return _print_night_schedule(args, unseal=True)
+
+
+def _print_night_schedule(args: argparse.Namespace, *, unseal: bool) -> int:
+    """show-night-schedule and unseal-night-schedule. The arms show only once unsealed;
+    a washout night's place follows from the blocks, so it always shows."""
+    from muse_tmr.protocol import (
+        SealMismatch,
+        load_night_schedule,
+        load_sealed_commitment,
+        sealed_path_for,
+        unseal_night_schedule,
+    )
+
+    command = "unseal-night-schedule" if unseal else "show-night-schedule"
+    schedule_path = _resolve_output_path(args.schedule)
+    sealed_path = _resolve_output_path(args.sealed) if args.sealed is not None else sealed_path_for(schedule_path)
+    try:
+        if unseal:
+            schedule = unseal_night_schedule(schedule_path, sealed_path=sealed_path)
+            seal = "matches"
+        else:
+            schedule = load_night_schedule(schedule_path)
+            try:
+                seal = "matches" if schedule.commitment_sha256() == load_sealed_commitment(sealed_path) else "does_not_match"
+            except FileNotFoundError:
+                seal = "companion_missing"
+    except SealMismatch as exc:
+        print(f"{command}: {exc}", file=sys.stderr)
+        return 1
+    except (OSError, KeyError, ValueError) as exc:
+        print(f"{command}: {exc}", file=sys.stderr)
+        return 2
+    shown = not schedule.sealed
+    nights = [
+        {
+            "night_id": night.night_id,
+            "position": night.position,
+            "block": night.block,
+            "arm": night.arm if shown or night.arm == "washout" else "sealed",
+        }
+        for night in schedule.nights
+    ]
+    payload = {
+        "schedule_id": schedule.schedule_id,
+        "created_at_utc": schedule.created_at_utc,
+        "blocks": schedule.blocks,
+        "washout_nights": schedule.washout_nights,
+        "sham_cue_id": schedule.sham_cue_id,
+        "commitment_sha256": schedule.commitment_sha256(),
+        "seal": seal,
+        "unsealed_at_utc": schedule.unsealed_at_utc,
+        "nights": nights,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        state = f"unsealed at {schedule.unsealed_at_utc}" if shown else "sealed"
+        print(
+            f"night schedule {schedule.schedule_id}: {len(nights)} nights, {schedule.blocks} blocks, "
+            f"{schedule.washout_nights} washout nights between blocks, sham cue {schedule.sham_cue_id}; {state}"
+        )
+        print(f"commitment_sha256={payload['commitment_sha256']} seal={seal} ({sealed_path})")
+        for night in nights:
+            block = "-" if night["block"] is None else night["block"]
+            print(f"{night['position']:>3}  {night['night_id']}  block {block}  {night['arm']}")
+    if seal != "matches":
+        return 1
     return 0
 
 
@@ -3788,6 +4072,88 @@ def _add_night_protocol_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--scheduler-cooldown-seconds", type=float, default=None, help=PROTOCOL_PRESET_DEFAULT_HELP)
     parser.add_argument("--max-puzzle-cues-per-block", type=int, default=None, help=PROTOCOL_PRESET_DEFAULT_HELP)
     _add_protocol_preset_arg(parser)
+
+
+def _add_night_arm_args(parser: argparse.ArgumentParser) -> None:
+    """The arm flags of a cueing night or a replay (#228). The command never prints the arm."""
+    arm = parser.add_mutually_exclusive_group()
+    arm.add_argument(
+        "--arm",
+        choices=NIGHT_ARM_CHOICES,
+        default=None,
+        help="Run the night as this arm, open label: cue plays the cues, sham an untrained sound in "
+        "their place, no_cue nothing. Default: as before arms, the cues.",
+    )
+    arm.add_argument(
+        "--night-schedule",
+        type=Path,
+        default=None,
+        help="A sealed schedule from plan-night-schedule: the night's arm comes from it after its "
+        "commitment is checked, and is never printed.",
+    )
+    parser.add_argument("--night-id", default=None, help="The night's ID; required with --night-schedule.")
+    parser.add_argument(
+        "--sham-cue-id",
+        default=None,
+        help="The untrained cue of the sham arm. Default: the schedule's, else sham_soft_tone.",
+    )
+
+
+class _NightArmError(Exception):
+    """The arm flags cannot run. The message never says which arm the night has."""
+
+
+def _night_arm_from_args(args: argparse.Namespace):
+    """The night's NightArmContext from --arm or --night-schedule, or None without them."""
+    from muse_tmr.audio import DEFAULT_SHAM_CUE_ID
+    from muse_tmr.protocol import NightArmContext, night_arm_from_schedule
+
+    schedule_path = getattr(args, "night_schedule", None)
+    arm = getattr(args, "arm", None)
+    night_id = getattr(args, "night_id", None)
+    sham_cue_id = getattr(args, "sham_cue_id", None)
+    try:
+        if schedule_path is not None:
+            if not night_id:
+                raise _NightArmError("--night-schedule needs --night-id")
+            return night_arm_from_schedule(
+                _resolve_output_path(schedule_path), night_id, sham_cue_id=sham_cue_id
+            )
+        if arm is not None:
+            return NightArmContext(
+                arm=arm,
+                night_id=night_id,
+                sham_cue_id=sham_cue_id or (DEFAULT_SHAM_CUE_ID if arm == "sham" else None),
+            )
+    except KeyError as exc:
+        raise _NightArmError(exc.args[0] if exc.args else str(exc)) from None
+    except (OSError, ValueError) as exc:
+        raise _NightArmError(str(exc)) from None
+    if night_id is not None or sham_cue_id is not None:
+        raise _NightArmError("--night-id and --sham-cue-id go with --arm or --night-schedule")
+    return None
+
+
+def _check_sham_cue(night_arm, *, catalog, cue_library, tlr_block_plan=None, generated_tone_only=False) -> None:
+    """The sham cue of a night that names one, checked before anything runs, in every arm."""
+    from muse_tmr.protocol import tlr_cue_ids_of, validate_sham_cue
+
+    if night_arm is None or not night_arm.sham_cue_id:
+        return
+    try:
+        validate_sham_cue(
+            night_arm.sham_cue_id,
+            catalog=catalog,
+            cue_library=cue_library,
+            tlr_cue_ids=tlr_cue_ids_of(tlr_block_plan),
+        )
+        sham = cue_library.by_id(night_arm.sham_cue_id)
+    except KeyError as exc:
+        raise _NightArmError(f"sham cue: {exc.args[0] if exc.args else exc}") from None
+    except ValueError as exc:
+        raise _NightArmError(str(exc)) from None
+    if generated_tone_only and (sham.cue_type != "generated_tone" or sham.frequency_hz is None):
+        raise _NightArmError(f"sham cue {sham.cue_id} must be a generated_tone with frequency_hz")
 
 
 def _add_guard_hr_rule_args(parser: argparse.ArgumentParser) -> None:

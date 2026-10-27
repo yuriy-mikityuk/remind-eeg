@@ -606,7 +606,8 @@ captures:
 - backend name and reason codes, `volume_lowered` when the multiplier is below 1
 
 `CuePlaybackResult` records `played`, `skipped`, `blocked`, or `stopped` outcomes and
-can be appended to a JSONL log. `AudioPlaybackConfig.cue_volume()` computes the four
+can be appended to a JSONL log. On a sham night (#228) each line adds `arm: "sham"`; the
+cue arm, the default, is left out, so a cue night's log reads as before. `AudioPlaybackConfig.cue_volume()` computes the four
 volumes for the player and for the scheduler. `capped_volume` and `volume_multiplier`
 are in the log since #255; the other fields keep their values on a cue the guard did not
 lower. Before, a lowered cue was logged with the halved request and no multiplier.
@@ -655,12 +656,14 @@ private audio files. A cue has:
 
 - `cue_id`: stable identifier used by protocol and scheduler layers
 - `cue_type`: `sound`, `generated_tone`, or `silence`
-- `protocol`: `puzzle`, `tlr`, `test`, or `generic`
+- `protocol`: `puzzle`, `tlr`, `test`, `generic`, or `sham` (an untrained sound a sham
+  night plays in place of the trained cues, #228)
 - `duration_seconds`, tags, optional description, and optional volume hint
 - `path` for private sound files or `frequency_hz` for generated tones
 
 `muse-tmr create-cue-library --output <catalog.json>` creates a starter metadata
-catalog with puzzle, TLR, and silence-control cues. `validate-cue-library` checks
+catalog with puzzle, TLR, silence-control and sham (`sham_soft_tone`, a 330 Hz tone
+tagged `untrained`) cues. `validate-cue-library` checks
 metadata and, by default, verifies that `sound` cue paths exist relative to the catalog
 directory before a session starts. `list-cues` filters by protocol or tag.
 
@@ -733,6 +736,14 @@ future scheduler code should insert before puzzle cues when the REM gate opens.
 - optional `cue_id`, `protocol`, and `puzzle_id`
 - `reason_codes`
 - metadata such as duration, volume hint, next allowed cue time, or cooldown end time
+- `arm`: the night's arm, written only when it is not `cue` (#228), so a cue night's
+  events read as before and an event without it is a cue night's
+
+On a sham night a `play` names the sham cue as `cue_id`, keeps the `puzzle_id`,
+`protocol` and metadata of the cue it stands in for and adds the reason `sham_arm`. On a
+no-cue night there is no `play`: in its place a `skip` with the same `cue_id`,
+`protocol`, `puzzle_id` and metadata, the added reason `no_cue_arm` and
+`metadata.virtual_play: true` (`TmrSchedulerEvent.virtual_play`).
 
 The scheduler consumes `RemGateDecision`, `PuzzleCueAssignment`, `PuzzleCatalog`,
 `CueLibrary`, and optional `TlrBlockPlan`. It uses only `scheduled_puzzle_ids` from
@@ -831,6 +842,15 @@ its cap, `pause` records a pause and cooldown, and `stop` records a stop event.
 
 `build_dream_report()` validates links against `NightPuzzleSession` and can enrich links
 with cue IDs from `PuzzleCatalog`. `muse-tmr record-dream-report` writes the report JSON.
+
+Schema 2 (#228) adds `woke_from_sound` (`yes`, `no`, `unknown`), `cue_perception`
+(`not_perceived`, `in_dream`, `awake`, `unsure` for heard but not sure whether dreaming,
+`unknown`) and `eye_signal_attempt_times` (clock times `HH:MM[:SS]` or ISO times, as the
+sleeper marks them; nothing detects an eye signal). `cues_heard` stays and equals
+`cue_perception` in `in_dream`, `awake` or `unsure`; the two must agree unless the
+perception is `unknown`. A schema 1 file loads as it was: `cue_perception` from
+`cues_heard` (true: `unsure`, false: `not_perceived`), `woke_from_sound` `unknown`, no
+attempt times, and `schema_version` 1.
 Dream text and puzzle-link excerpts are private morning data and should stay in
 gitignored report locations.
 
@@ -845,7 +865,9 @@ gitignored report locations.
 
 `build_morning_retest()` validates results against `NightPuzzleSession`, enriches cue
 IDs from `PuzzleCatalog`, and stores cued/uncued condition from `PuzzleCueAssignment`
-for analysis. `muse-tmr record-puzzle-retest` writes the retest JSON. The retest should
+for analysis. Schema 2 (#228) adds `retest_wave`: `morning`, `day7` or `day10`, with
+`retest_id` `<session>-<wave>-retest`; the app saves a delayed wave as
+`<night>_retest_<wave>.json`. A schema 1 file loads as a `morning` retest. `muse-tmr record-puzzle-retest` writes the retest JSON. The retest should
 be administered blind; `cue_condition` is for downstream analysis, not subject-facing
 prompts.
 
@@ -938,19 +960,50 @@ directory or the Pilot 3 report's (#231):
 | `preset` | The preset compared with: `name`, `version`, `title`, `content_hash`, `runnable`, `source` (the night's, the one asked for, or the default) and its `citations`. |
 | `night_protocol`, `settings` | The night's `protocol` block and the runner settings it ran with. |
 | `inputs` | Which files were read. |
-| `summary` | `rem_periods`, `rem_periods_with_cues`, `plays` by stream (the plays the player played), `plays_blocked_or_skipped` by stream (left out of every check), `plays_outside_rem_periods`, `uncued_puzzle_play_count`, `stride_seconds`. |
+| `summary` | `rem_periods`, `rem_periods_with_cues`, `plays` by stream (the plays the player played), `plays_blocked_or_skipped` by stream (left out of every check), `plays_outside_rem_periods`, `uncued_puzzle_play_count`, `stride_seconds`, the night's `arm` (from its summary or `metadata.json`, `null` without one) and `virtual_plays` by stream, a no-cue night's skips where a cue night would have played. |
 | `rem_periods` | Each gate-open run with its plays by stream, `first_cue_seconds_after_gate_open` and `stable_rem_seconds_at_first_cue`. |
 | `checks` | `inter_cue_intervals`, `cues_per_rem_period`, `stable_rem_before_first_cue`, `pause_rules`, `volume_ramp`, `cue_duration`, `tlr_block`: each a `status` with `observed` and `published` and its detail. |
 | `deviations` | The preset's platform deviations. |
-| `limitations` | Codes: `synthetic_input`, `no_protocol_block`, `preset_changed_since_night`, `night_overrode_preset_settings`, `compared_with_another_preset`, `unknown_preset_in_night`, `no_gate_log`, `no_scheduler_events`, `no_audio_log`, `audio_log_mismatch`, `plays_blocked_or_skipped`, `pilot3_plan_not_played`, `awakening_markers_unplaced`. |
+| `limitations` | Codes: `synthetic_input`, `no_protocol_block`, `preset_changed_since_night`, `night_overrode_preset_settings`, `compared_with_another_preset`, `unknown_preset_in_night`, `no_gate_log`, `no_scheduler_events`, `no_audio_log`, `audio_log_mismatch`, `plays_blocked_or_skipped`, `pilot3_plan_not_played`, `awakening_markers_unplaced`, `sham_arm` and `no_cue_arm` (#228). |
 
 Puzzle protocol files may contain private puzzle content, responses, and night/session
 metadata, so `data/protocol/` is gitignored.
 
+## Night Schedules
+
+`muse_tmr.protocol.night_schedule` (`plan-night-schedule`, #228) writes a series'
+schedule and its sealed companion into the gitignored `data/protocol/night_schedules/`.
+The schedule, `<schedule-id>.json`, version 1 (`NightSchedule`, `load_night_schedule()`):
+
+| Field | Content |
+|---|---|
+| `schema_version`, `schedule_id`, `created_at_utc` | 1, the series' name, when it was drawn. |
+| `seed`, `blocks`, `washout_nights`, `arms` | What drew it: `random.Random(seed)` orders the `arms` (`cue`, `sham`, `no_cue`) of each block; within every group of three blocks the orders are rows of one Latin square. |
+| `sham_cue_id` | The untrained sound of the sham nights. |
+| `nights` | In series order: `night_id`, `position` (1, 2, ...), `block` (`null` for a washout night) and `arm` (`cue`, `sham`, `no_cue` or `washout`). |
+| `salt` | 32 hex characters from `secrets`. |
+| `commitment_sha256` | sha256 of the canonical JSON (sorted keys, no spaces, UTF-8) of the fields from `schema_version` to `nights`, followed by the salt. |
+| `unsealed_at_utc` | `null` until `unseal-night-schedule`, then the first time it ran. |
+
+The sealed companion, `<schedule-id>.sealed.json`, holds only `{"commitment_sha256": ...}`.
+`unseal_night_schedule()` and every runner check the schedule against it first
+(`SealMismatch` otherwise); `arm_for(night_id)` gives a night's arm.
+
+A night run with an arm writes a `night_arm` block into its `metadata.json` (Pilot 4/5):
+`arm`, `night_id`, `sham_cue_id`, `sealed_schedule` (whether the arm came from a
+schedule), `schedule_id`, `schedule_commitment_sha256` and `schedule_unsealed_at_utc`
+(the schedule's unsealing time when the night started, `null` while sealed). An
+open-label `--arm` night has `sealed_schedule: false` and no schedule fields.
+
 ## Pilot Time Base And Awakening Markers
 
-`pilot4_summary.json` and `pilot5_summary.json` are schema 3 since #231, which adds
-`protocol`, the night's preset block (also in `metadata.json`, with the TLR plan the night
+`pilot4_summary.json` and `pilot5_summary.json` are schema 4 since #228, which adds
+`arm`, `night_id` and `schedule_commitment_sha256` (all `null` on a night without an
+arm), `virtual_play_count` and, on a night with an arm, the criteria
+`no_play_in_no_cue_arm` and, with a sealed schedule, `arm_matches_sealed_schedule`; such
+a night's `metadata.json` adds the `night_arm` block (Night Schedules, above). A Pilot 3 report is
+schema 2 with the same three fields, criteria and `metrics.virtual_play_count`. Schema 3
+(#231) added `protocol`, the night's preset block (also in `metadata.json`, with the TLR plan the night
 used as `tlr_block_plan`); a Pilot 3 report has the same `protocol`. Schema 2 (#227) added
 `first_epoch_start`, the first epoch's start in the frames' clock (Unix seconds, `null`
 without an epoch), which every `timestamp_seconds` of the night counts from;

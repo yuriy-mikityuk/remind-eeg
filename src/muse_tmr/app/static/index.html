@@ -328,9 +328,18 @@
               <label><input type="radio" name="dream-lucid" value="no"> No</label>
             </fieldset>
             <fieldset class="choice">
-              <legend>Heard any of the cues?</legend>
-              <label><input type="radio" name="dream-cues" value="yes" required> Yes</label>
-              <label><input type="radio" name="dream-cues" value="no"> No</label>
+              <legend>Did you hear any sound in the night?</legend>
+              <label><input type="radio" name="dream-perception" value="not_perceived" required> No</label>
+              <label><input type="radio" name="dream-perception" value="in_dream"> Yes, in a dream</label>
+              <label><input type="radio" name="dream-perception" value="awake"> Yes, while awake</label>
+              <label><input type="radio" name="dream-perception" value="unsure"> Yes, not sure whether dreaming</label>
+              <label><input type="radio" name="dream-perception" value="unknown"> Can't say</label>
+            </fieldset>
+            <fieldset class="choice">
+              <legend>Did a sound wake you?</legend>
+              <label><input type="radio" name="dream-woke" value="yes" required> Yes</label>
+              <label><input type="radio" name="dream-woke" value="no"> No</label>
+              <label><input type="radio" name="dream-woke" value="unknown"> Can't say</label>
             </fieldset>
             <label class="field">How sure are you of what you remember? (0-10)
               <select id="dream-confidence" required><option value="">-</option><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option></select>
@@ -339,6 +348,9 @@
               <textarea id="dream-text" rows="6"></textarea>
             </label>
             <div class="dream-links" id="dream-links"></div>
+            <label class="field">When you tried the eye signal (left-right-left-right), if you did: clock times such as 04:20, separated by commas
+              <input id="dream-eye-signals" maxlength="200" placeholder="04:20, 05:45">
+            </label>
             <label class="field">Notes
               <input id="dream-notes" maxlength="500">
             </label>
@@ -360,6 +372,13 @@
           <form class="panel morning-form" id="retest-form">
             <h2>Blind retest</h2>
             <p class="muted">Try each puzzle again; its timer runs while you work on it. Leave an answer empty if nothing comes.</p>
+            <label class="field">Which retest
+              <select id="retest-wave">
+                <option value="morning">This morning</option>
+                <option value="day7">A week later</option>
+                <option value="day10">Ten days later</option>
+              </select>
+            </label>
             <p class="muted" id="retest-status"></p>
             <ol class="retest-list" id="retest-list"></ol>
             <label class="field">Notes

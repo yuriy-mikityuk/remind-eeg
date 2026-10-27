@@ -9,7 +9,10 @@ from typing import Dict, Mapping, Optional, Tuple
 
 CUE_LIBRARY_SCHEMA_VERSION = 1
 CUE_TYPES = ("sound", "generated_tone", "silence")
-CUE_PROTOCOLS = ("puzzle", "tlr", "test", "generic")
+# "sham" marks an untrained sound that a sham night plays in place of the trained cues (#228).
+CUE_PROTOCOLS = ("puzzle", "tlr", "test", "generic", "sham")
+# The starter library's untrained sound, the sham arm's default.
+DEFAULT_SHAM_CUE_ID = "sham_soft_tone"
 
 
 @dataclass(frozen=True)
@@ -244,6 +247,19 @@ def default_cue_library() -> CueLibrary:
                 duration_seconds=1.0,
                 tags=("control", "silence"),
                 description="Silent control cue for scheduler and analysis tests.",
+            ),
+            CueMetadata(
+                cue_id=DEFAULT_SHAM_CUE_ID,
+                cue_type="generated_tone",
+                protocol="sham",
+                duration_seconds=1.0,
+                frequency_hz=330.0,
+                volume_hint=0.05,
+                tags=("sham", "generated", "untrained"),
+                description=(
+                    "Starter untrained tone for sham nights: never trained before sleep, "
+                    "played in place of the trained cues."
+                ),
             ),
         ),
     )

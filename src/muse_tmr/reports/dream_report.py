@@ -1,16 +1,32 @@
-"""Morning dream report data capture."""
+"""Morning dream report data capture.
+
+Schema 2 (#228) adds ``woke_from_sound``, ``cue_perception`` and
+``eye_signal_attempt_times``. ``cues_heard`` stays, for readers of schema 1; in schema 2
+it is ``cue_perception`` in ``in_dream``, ``awake`` or ``unsure``. A schema 1 file loads
+as it was, its ``cue_perception`` read from ``cues_heard`` (yes: ``unsure``, no:
+``not_perceived``) and ``woke_from_sound`` ``unknown``.
+"""
 
 from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Mapping, Optional, Tuple
+from typing import Dict, Iterable, Mapping, Optional, Tuple
 
 from muse_tmr.protocol import NightPuzzleSession, PuzzleCatalog
 
-DREAM_REPORT_SCHEMA_VERSION = 1
+DREAM_REPORT_SCHEMA_VERSION = 2
+WOKE_FROM_SOUND_ANSWERS = ("yes", "no", "unknown")
+# Did the sleeper hear a sound in the night, and where: not at all, inside a dream, while
+# awake, heard but unsure which, or no answer.
+CUE_PERCEPTIONS = ("not_perceived", "in_dream", "awake", "unsure", "unknown")
+# The perceptions that mean a sound was heard, which cues_heard says for schema 1.
+HEARD_PERCEPTIONS = ("in_dream", "awake", "unsure")
+# A clock time (04:12, 04:12:30) or an ISO 8601 time with a date.
+_CLOCK_TIME = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d(:[0-5]\d)?$")
 
 
 @dataclass(frozen=True)
@@ -66,12 +82,32 @@ class DreamReport:
     notes: str = ""
     metadata: Mapping[str, object] = field(default_factory=dict)
     schema_version: int = DREAM_REPORT_SCHEMA_VERSION
+    # Did a sound wake the sleeper: yes, no or unknown.
+    woke_from_sound: str = "unknown"
+    # One of CUE_PERCEPTIONS; None reads it from cues_heard (True: unsure, False:
+    # not_perceived), as for a schema 1 file.
+    cue_perception: Optional[str] = None
+    # When the sleeper thinks they made the eye signal (LRLR), as clock times or ISO
+    # times. A marking only: nothing detects or checks an eye signal.
+    eye_signal_attempt_times: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "session_id", _required_str(self.session_id, "session_id"))
         object.__setattr__(self, "dream_text", str(self.dream_text))
         object.__setattr__(self, "notes", str(self.notes))
         object.__setattr__(self, "puzzle_incorporations", tuple(self.puzzle_incorporations))
+        object.__setattr__(self, "woke_from_sound", _choice(self.woke_from_sound, WOKE_FROM_SOUND_ANSWERS, "woke_from_sound"))
+        if self.cue_perception is None:
+            object.__setattr__(self, "cue_perception", perception_from_cues_heard(self.cues_heard))
+        perception = _choice(self.cue_perception, CUE_PERCEPTIONS, "cue_perception")
+        object.__setattr__(self, "cue_perception", perception)
+        if perception != "unknown" and bool(self.cues_heard) != (perception in HEARD_PERCEPTIONS):
+            raise ValueError(f"cues_heard={self.cues_heard} contradicts cue_perception={perception}")
+        object.__setattr__(
+            self,
+            "eye_signal_attempt_times",
+            tuple(_attempt_time(item) for item in self.eye_signal_attempt_times),
+        )
         _validate_confidence(self.confidence, "confidence")
         if not self.report_id:
             object.__setattr__(self, "report_id", f"{self.session_id}-dream-report")
@@ -124,6 +160,9 @@ class DreamReport:
             ],
             "notes": self.notes,
             "metadata": dict(self.metadata),
+            "woke_from_sound": self.woke_from_sound,
+            "cue_perception": self.cue_perception,
+            "eye_signal_attempt_times": list(self.eye_signal_attempt_times),
         }
 
     def save(self, output_path: Path) -> Path:
@@ -152,6 +191,9 @@ class DreamReport:
             ),
             notes=str(payload.get("notes", "")),
             metadata=dict(payload.get("metadata", {}) or {}),
+            woke_from_sound=str(payload.get("woke_from_sound") or "unknown"),
+            cue_perception=_optional_text(payload.get("cue_perception")),
+            eye_signal_attempt_times=tuple(str(item) for item in payload.get("eye_signal_attempt_times", ()) or ()),
         )
 
     @classmethod
@@ -163,15 +205,24 @@ def build_dream_report(
     session: NightPuzzleSession,
     *,
     lucid: bool,
-    cues_heard: bool,
     confidence: float,
     dream_text: str,
+    cues_heard: Optional[bool] = None,
     puzzle_incorporation_text: Optional[Mapping[str, str]] = None,
     catalog: Optional[PuzzleCatalog] = None,
     report_id: str = "",
     reported_at_utc: str = "",
     notes: str = "",
+    woke_from_sound: str = "unknown",
+    cue_perception: Optional[str] = None,
+    eye_signal_attempt_times: Iterable[str] = (),
 ) -> DreamReport:
+    """A schema 2 report. Give ``cue_perception``, ``cues_heard`` or both; the one left
+    out is read from the other, and two that contradict each other raise."""
+    if cues_heard is None and cue_perception is None:
+        raise ValueError("give cue_perception or cues_heard")
+    if cues_heard is None:
+        cues_heard = _choice(cue_perception, CUE_PERCEPTIONS, "cue_perception") in HEARD_PERCEPTIONS
     links = []
     for puzzle_id, text in (puzzle_incorporation_text or {}).items():
         cue_id = catalog.get_puzzle(puzzle_id).cue_id if catalog is not None else ""
@@ -197,8 +248,21 @@ def build_dream_report(
             "session_puzzle_count": len(session.puzzle_ids),
             "linked_puzzle_count": len(links),
         },
+        woke_from_sound=woke_from_sound,
+        cue_perception=cue_perception,
+        eye_signal_attempt_times=tuple(eye_signal_attempt_times),
     )
     return report.validate_against_session(session)
+
+
+def perception_from_cues_heard(cues_heard: bool) -> str:
+    """What a schema 1 yes/no answer says in schema 2 terms: heard, unsure where; or not."""
+    return "unsure" if cues_heard else "not_perceived"
+
+
+def parse_eye_signal_attempt_times(text: str) -> Tuple[str, ...]:
+    """Times from a text separated by commas or semicolons, each checked as ``DreamReport`` does."""
+    return tuple(_attempt_time(item) for item in re.split(r"[,;]", str(text or "")) if item.strip())
 
 
 def load_dream_report(input_path: Path) -> DreamReport:
@@ -210,6 +274,34 @@ def _required_str(value: object, name: str) -> str:
     if not text:
         raise ValueError(f"{name} must not be empty")
     return text
+
+
+def _choice(value: object, choices: Tuple[str, ...], name: str) -> str:
+    text = str(value).strip().lower()
+    if text not in choices:
+        raise ValueError(f"{name} must be one of: {', '.join(choices)}")
+    return text
+
+
+def _optional_text(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _attempt_time(value: object) -> str:
+    """A clock time (HH:MM or HH:MM:SS) or an ISO 8601 time with a date, as given."""
+    text = str(value).strip()
+    if _CLOCK_TIME.match(text):
+        return text
+    if "T" in text or " " in text:
+        try:
+            dt.datetime.fromisoformat(text)
+            return text
+        except ValueError:
+            pass
+    raise ValueError(f"eye-signal attempt time {value!r} is not HH:MM, HH:MM:SS or an ISO date and time")
 
 
 def _validate_confidence(value: float, name: str) -> None:

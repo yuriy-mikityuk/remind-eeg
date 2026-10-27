@@ -510,5 +510,29 @@ class TestAudioBackendResolution(unittest.TestCase):
                 self.assertEqual((resolution.requested_name, resolution.resolved_name), (name, name))
 
 
+class TestPlaybackArm(unittest.TestCase):
+    """The night's arm on each audio log line (#228); the default cue arm is left out."""
+
+    def test_the_log_names_the_arm_but_not_the_cue_arm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "audio.jsonl"
+            player = AudioCuePlayer(AudioPlaybackConfig(max_volume=0.04, log_path=log_path), backend=MockAudioBackend())
+            cue = player.play_test_cue(TestCue(cue_id="cue-p1"), volume=0.1)
+            sham = player.play_test_cue(TestCue(cue_id="sham_soft_tone"), volume=0.1, arm="sham")
+            player.emergency_stop()
+            blocked = player.play_test_cue(TestCue(cue_id="sham_soft_tone"), volume=0.1, arm="sham")
+            lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual((cue.arm, sham.arm, blocked.arm), ("cue", "sham", "sham"))
+        self.assertNotIn("arm", lines[0])
+        self.assertEqual(lines[1]["arm"], "sham")
+        self.assertNotIn("arm", lines[2])
+        self.assertEqual((lines[3]["arm"], lines[3]["status"]), ("sham", "blocked"))
+        self.assertEqual(
+            {k: v for k, v in lines[1].items() if k not in ("arm", "cue_id", "started_at", "ended_at")},
+            {k: v for k, v in lines[0].items() if k not in ("cue_id", "started_at", "ended_at")},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

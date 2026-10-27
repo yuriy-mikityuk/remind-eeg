@@ -9,6 +9,7 @@ The project aims to preserve key REM-TMR/TLR protocol controls:
 - REM-gated cue playback
 - arousal and motion guardrails
 - morning dream report and puzzle retest
+- sealed night arms: cue, sham and no-cue nights in counterbalanced blocks
 - explicit analysis of limitations
 
 Cue metadata lives in `muse_tmr.audio.cue_library` and should be validated before a
@@ -108,6 +109,34 @@ reason codes, and metadata. Tests replay synthetic REM gate decisions to verify 
 ordering, puzzle-cue intervals, cooldown, max-per-block behavior, and the rule that
 uncued controls are never scheduled.
 
+## Night Arms
+
+The cued-vs-uncued split controls for the puzzle, not for the night: a delta from one
+night mixes what the cues did with what a night with sounds does. A night therefore runs
+one of three arms (`TmrSchedulerConfig.arm`, #228):
+
+- `cue`: the cues play as planned, the default and every night before arms.
+- `sham`: the scheduler names an untrained sound (`sham_cue_id`) wherever it would play a
+  puzzle or TLR cue, keeps the puzzle, protocol, length and volume of the cue it stands
+  in for, and adds the reason `sham_arm`.
+- `no_cue`: every play becomes a `skip` with `no_cue_arm` and `metadata.virtual_play`;
+  the scheduler raises rather than record a `play`, and nothing reaches the player.
+
+The arm changes what a cue becomes, never when one comes: the gate, the guard, the
+scheduler's timing and the protocol preset are the same in every arm, so one night under
+the three arms logs its cues, or their virtual plays, at the same times. Uncued puzzles
+stay unschedulable in every arm. `ensure_sham_untrained()` refuses a sham cue that is a
+catalog puzzle's cue, a TLR cue or a tone of the same frequency as one.
+
+`muse_tmr.protocol.night_schedule` seals the arms of a series before it starts: blocks
+of one night per arm in a counterbalanced order, washout nights between them, and a
+companion file with only the commitment, the sha256 of the schedule's canonical JSON and
+a random salt. The runners read a night's arm from it and never print it, and the
+Morning tab never reads it. A night's summary, logs and reports do name the arm, and so
+do `protocol-fidelity` and `score-cue-arousal`, so the runbook keeps them closed until
+the series is unsealed. Nothing hides the arms from whoever opens those files: at n = 1
+the experimenter cannot be blind. Runbook: [`nof1_protocol.md`](nof1_protocol.md).
+
 ## Arousal Guard
 
 `muse_tmr.protocol.arousal_guard.ArousalGuard` is the cue safety layer between feature
@@ -134,6 +163,11 @@ session. A report records lucid yes/no, cues heard yes/no, self-report confidenc
 free-text recall, and optional puzzle incorporation links. Puzzle links are validated
 against `NightPuzzleSession.puzzle_ids`; with a `PuzzleCatalog`, links also include the
 stable cue ID for analysis.
+
+Schema 2 (#228) adds whether a sound was heard and where (`cue_perception`:
+`not_perceived`, `in_dream`, `awake`, `unsure`, `unknown`), whether a sound woke the
+sleeper (`woke_from_sound`) and the times of eye-signal attempts the sleeper marks
+(`eye_signal_attempt_times`). Nothing detects an eye signal; the times are a marking only.
 
 The CLI command is:
 
@@ -174,6 +208,12 @@ muse-tmr record-puzzle-retest data/protocol/night-001_puzzles.json \
 
 The retest should remain blind during administration: do not reveal which puzzles were
 cued. The output stores `cue_condition` only for later analysis.
+
+REM cueing effects have shown up only at a delayed test in some studies (a week in
+Pereira et al. 2023, ten days for NREM cueing in Rakowska et al. 2021), so the same
+puzzles can be retested again: `--wave day7` or `--wave day10` (`retest_wave`, schema 2)
+saves `<night>_retest_day7.json` or `<night>_retest_day10.json`, blind like the morning
+one.
 
 ## Cued-vs-Uncued Analysis
 

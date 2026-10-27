@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence, Tuple
 
@@ -33,14 +33,19 @@ from muse_tmr.protocol.arousal_guard import (
     ArousalGuardConfig,
     ArousalGuardDecision,
 )
+from muse_tmr.protocol.night_schedule import NightArmContext
 from muse_tmr.protocol.puzzle_protocol import NightPuzzleSession
 from muse_tmr.protocol.tmr_scheduler import (
     TmrCueScheduler,
     TmrSchedulerConfig,
     TmrSchedulerEvent,
+    validate_sham_cue,
 )
 
-PILOT3_SCHEMA_VERSION = 1
+# 2 adds the night's arm, night_id and schedule_commitment_sha256, the metric
+# virtual_play_count and, on a run with an arm, the criteria no_play_in_no_cue_arm and
+# arm_matches_sealed_schedule (#228).
+PILOT3_SCHEMA_VERSION = 2
 # What an injected cue is called in its play event (--inject-cues-every-seconds, #227).
 SYNTHETIC_CUE = "synthetic_cue"
 
@@ -103,6 +108,10 @@ class Pilot3ReplayCueSimulationReport:
     injected_cues: Tuple[TmrSchedulerEvent, ...] = ()
     # The protocol preset block of the run (ProtocolPreset.manifest()), or empty.
     protocol: Mapping[str, object] = field(default_factory=dict)
+    # The night's arm, its ID and the sealed schedule's commitment; None without an arm.
+    arm: Optional[str] = None
+    night_id: Optional[str] = None
+    schedule_commitment_sha256: Optional[str] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "criteria", tuple(self.criteria))
@@ -136,6 +145,9 @@ class Pilot3ReplayCueSimulationReport:
             "audio_backend": self.audio_backend,
             "audio_playback_executed": self.audio_playback_executed,
             "protocol": dict(self.protocol) if self.protocol else None,
+            "arm": self.arm,
+            "night_id": self.night_id,
+            "schedule_commitment_sha256": self.schedule_commitment_sha256,
             "criteria": [criterion.to_dict() for criterion in self.criteria],
             "metrics": dict(self.metrics),
             "cue_plan": [event.to_dict() for event in self.cue_plan],
@@ -176,6 +188,7 @@ async def simulate_replay_cue_plan(
     arousal_guard_config: Optional[ArousalGuardConfig] = None,
     inject_cues_every_seconds: Optional[float] = None,
     protocol: Optional[Mapping[str, object]] = None,
+    night_arm: Optional[NightArmContext] = None,
 ) -> Pilot3ReplayCueSimulationReport:
     epoch_config = epoch_config or EpochConfig()
     replay = ReplaySession(
@@ -206,6 +219,7 @@ async def simulate_replay_cue_plan(
         stride_seconds=epoch_config.stride_seconds,
         inject_cues_every_seconds=inject_cues_every_seconds,
         protocol=protocol,
+        night_arm=night_arm,
     )
 
 
@@ -224,6 +238,7 @@ def simulate_cue_plan_from_epochs(
     stride_seconds: Optional[float] = None,
     inject_cues_every_seconds: Optional[float] = None,
     protocol: Optional[Mapping[str, object]] = None,
+    night_arm: Optional[NightArmContext] = None,
 ) -> Pilot3ReplayCueSimulationReport:
     """Run the detector, gate, guard and scheduler over consecutive epochs of one session.
 
@@ -241,9 +256,19 @@ def simulate_cue_plan_from_epochs(
 
     ``protocol`` is the preset block (``ProtocolPreset.manifest()``) the report records;
     the configs passed here are what runs.
+
+    ``night_arm`` runs the scheduler in that arm (``muse_tmr.protocol.night_schedule``);
+    a ``scheduler_config`` whose arm is not ``cue`` does the same. The sham cue is checked
+    whenever the run names one, whatever its arm, so a refusal says nothing about it.
     """
     assignment.validate_against_session(session)
     _validate_scheduled_cues(catalog, assignment, cue_library)
+    scheduler_config = scheduler_config or TmrSchedulerConfig(enable_tlr_block=False)
+    night_arm = arm_context_for(night_arm, scheduler_config)
+    if night_arm is not None:
+        if night_arm.sham_cue_id:
+            validate_sham_cue(night_arm.sham_cue_id, catalog=catalog, cue_library=cue_library)
+        scheduler_config = replace(scheduler_config, arm=night_arm.arm, sham_cue_id=night_arm.sham_cue_id)
     stride_seconds = _resolve_stride_seconds(epochs, stride_seconds)
     if inject_cues_every_seconds is not None and inject_cues_every_seconds <= 0:
         raise ValueError("inject_cues_every_seconds must be positive")
@@ -258,7 +283,7 @@ def simulate_cue_plan_from_epochs(
         assignment=assignment,
         catalog=catalog,
         cue_library=cue_library,
-        config=scheduler_config or TmrSchedulerConfig(enable_tlr_block=False),
+        config=scheduler_config,
     )
 
     first_start_time = epochs[0].start_time if epochs else 0.0
@@ -326,7 +351,10 @@ def simulate_cue_plan_from_epochs(
     )
     metrics["injected_cue_count"] = len(injected_cues)
     metrics["inject_cues_every_seconds"] = inject_cues_every_seconds
-    criteria = _build_criteria(metrics, audio_playback_executed=False)
+    criteria = _build_criteria(metrics, audio_playback_executed=False) + arm_criteria(
+        night_arm, scheduler_plays=int(metrics.get("cue_plan_count", 0)), criterion=Pilot3Criterion
+    )
+    arm_fields = night_arm.summary_fields() if night_arm is not None else {}
     return Pilot3ReplayCueSimulationReport(
         recording_input=recording_input,
         session_id=session.session_id,
@@ -338,7 +366,62 @@ def simulate_cue_plan_from_epochs(
         audio_playback_executed=False,
         injected_cues=tuple(injected_cues),
         protocol=dict(protocol or {}),
+        arm=arm_fields.get("arm"),
+        night_id=arm_fields.get("night_id"),
+        schedule_commitment_sha256=arm_fields.get("schedule_commitment_sha256"),
     )
+
+
+def arm_context_for(
+    night_arm: Optional[NightArmContext],
+    scheduler_config: TmrSchedulerConfig,
+) -> Optional[NightArmContext]:
+    """The night's arm: ``night_arm``, else one made from a scheduler config set to
+    another arm than ``cue``, else None. Two different arms raise."""
+    if night_arm is None:
+        if scheduler_config.arm == "cue":
+            return None
+        return NightArmContext(arm=scheduler_config.arm, sham_cue_id=scheduler_config.sham_cue_id)
+    if scheduler_config.arm not in ("cue", night_arm.arm):
+        raise ValueError("the scheduler config and night_arm name two different arms")
+    return night_arm
+
+
+def arm_criteria(
+    night_arm: Optional[NightArmContext],
+    *,
+    scheduler_plays: int,
+    criterion,
+    played_audio_rows: Optional[int] = None,
+) -> Tuple[object, ...]:
+    """The criteria a run with an arm adds, built with ``criterion`` (the pilot's
+    criterion class): ``no_play_in_no_cue_arm`` for any arm, and with a sealed schedule
+    ``arm_matches_sealed_schedule``. None, without an arm."""
+    if night_arm is None:
+        return ()
+    observed: Dict[str, object] = {"scheduler_plays": scheduler_plays}
+    if played_audio_rows is not None:
+        observed["played_audio_rows"] = played_audio_rows
+    quiet = scheduler_plays == 0 and not played_audio_rows
+    criteria = [
+        criterion(
+            name="no_play_in_no_cue_arm",
+            passed=night_arm.arm != "no_cue" or quiet,
+            observed=observed,
+            target="in the no_cue arm, zero scheduler play events and zero played audio rows",
+        )
+    ]
+    if night_arm.from_schedule:
+        check = night_arm.schedule_check()
+        criteria.append(
+            criterion(
+                name="arm_matches_sealed_schedule",
+                passed=bool(check.get("commitment_matches") and check.get("arm_matches")),
+                observed=check,
+                target="the arm the sealed night schedule gives this night, under an unchanged commitment",
+            )
+        )
+    return tuple(criteria)
 
 
 def _injected_cue(
@@ -408,10 +491,12 @@ def _build_metrics(
 ) -> Dict[str, object]:
     event_type_counts: Dict[str, int] = {}
     play_by_puzzle: Dict[str, int] = {}
+    virtual_play_count = 0
     for event in scheduler_events:
         event_type_counts[event.event_type] = event_type_counts.get(event.event_type, 0) + 1
         if event.event_type == "play" and event.puzzle_id is not None:
             play_by_puzzle[event.puzzle_id] = play_by_puzzle.get(event.puzzle_id, 0) + 1
+        virtual_play_count += int(event.virtual_play)
 
     uncued_plays = {
         puzzle_id: count
@@ -445,6 +530,8 @@ def _build_metrics(
         "event_type_counts": event_type_counts,
         "scheduler_event_count": len(scheduler_events),
         "cue_plan_count": len(cue_plan),
+        # A no_cue night's skips where another arm would have played.
+        "virtual_play_count": virtual_play_count,
         "play_by_puzzle": play_by_puzzle,
         "cued_puzzle_ids": list(assignment.cued_puzzle_ids),
         "uncued_puzzle_ids": list(assignment.uncued_puzzle_ids),
