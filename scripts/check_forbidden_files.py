@@ -51,6 +51,7 @@ FORBIDDEN_PATTERNS = (
     "data/reports/*",
     "data/sleep/*",
     "data/synthetic/*",
+    "data/validation_public/*",
     "dream_reports/*",
     "sdk/*",
     "vendor/MuseSDK/*",
@@ -64,6 +65,14 @@ ALLOWLIST = {
     "examples/recorded_sessions/muse_20250824_202226.bin",
     "muse_data/muse_20250824_172756.bin",
     "tests/test_data/muse_20250824_172756.bin",
+}
+
+# Of what validate-external writes under data/validation_public/, only the BOAS splits
+# and the pooled metrics may be published (#226, the maintainer's decision): the
+# per-night epoch files, the fit and the personal model artifact stay local.
+PUBLIC_VALIDATION_FILES = {
+    "data/validation_public/boas/splits.json",
+    "data/validation_public/boas/metrics.json",
 }
 
 
@@ -85,7 +94,7 @@ def git_files() -> List[str]:
 
 
 def is_forbidden(path: str) -> bool:
-    if path in ALLOWLIST:
+    if path in ALLOWLIST or path in PUBLIC_VALIDATION_FILES:
         return False
     return any(fnmatch.fnmatch(path, pattern) for pattern in FORBIDDEN_PATTERNS)
 

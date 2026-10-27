@@ -52,6 +52,13 @@ data/protocol/
 data/raw/
 data/sleep/
 data/reports/
+# validate-external (#226): of data/validation_public/ only the BOAS splits and pooled
+# metrics are committed; the nights, the fit and the personal model stay local.
+data/validation_public/*
+!data/validation_public/boas/
+data/validation_public/boas/*
+!data/validation_public/boas/splits.json
+!data/validation_public/boas/metrics.json
 dream_reports/
 muse_data/*.bin
 raw_data/*.bin
