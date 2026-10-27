@@ -46,6 +46,7 @@ sleep_data/
 *.btsnoop
 data/recordings/
 data/synthetic/
+data/bids/
 data/calibration/
 data/protocol/
 data/raw/
