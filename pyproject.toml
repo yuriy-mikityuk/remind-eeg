@@ -68,6 +68,11 @@ openmuse = [
 brainflow = [
     "brainflow>=5.22.1",
 ]
+# EDF+ export and import (muse_tmr.data.edf_io): edfio is pure Python on NumPy, and
+# 0.4.16 added EdfSignal.from_digital, which writes the 14-bit EEG counts unchanged.
+edf = [
+    "edfio>=0.4.16",
+]
 
 [project.urls]
 Homepage = "https://github.com/yuriy-mikityuk/remind-eeg"

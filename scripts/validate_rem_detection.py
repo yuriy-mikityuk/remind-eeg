@@ -9,14 +9,13 @@ automated stager on a recording you already have.
 
 Pipeline
     recording/
-      |-- decoded_frames.jsonl --> reconstruct continuous EEG (uV) -----+
-      |                                                                 v
-      |                                          YASA SleepStaging (.venv-yasa)
-      |                                                                 |
-      +-- raw_amused.bin -> ReplaySession -> EpochBuilder(30s)          |
-                                     -> HeuristicRemDetector -> p_rem    |
-                                     -> StableRemGate -> gate_open       |
-                                                                         v
+      +-- raw_amused.bin -> ReplaySession --+--> continuous EEG (uV), muse_tmr.data.continuous
+                                            |                                   |
+                                            |             YASA SleepStaging (.venv-yasa)
+                                            v                                   |
+                       EpochBuilder(30s) -> HeuristicRemDetector -> p_rem        |
+                                         -> StableRemGate -> gate_open          |
+                                                                                v
                           align 30s epochs by time  ->  agreement metrics
 
 What it reports
@@ -66,7 +65,6 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from array import array
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
@@ -77,6 +75,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from muse_tmr import __version__ as MUSE_TMR_VERSION  # noqa: E402
+from muse_tmr.data.continuous import ContinuousBuilder, ContinuousConfig  # noqa: E402
 from muse_tmr.data.replay import ReplayConfig, ReplaySession  # noqa: E402
 from muse_tmr.features import new_rem_event_tracker  # noqa: E402
 from muse_tmr.features.epochs import EpochBuilder, EpochConfig  # noqa: E402
@@ -100,6 +99,17 @@ EEG_CHANNELS = ("AF7", "AF8", "TP9", "TP10")
 REM_STAGES = ("R", "REM")
 NOMINAL_EEG_RATE_HZ = 256.0
 GAP_FILL_THRESHOLD_SECONDS = 0.5
+# The reconstruction the stager has always been given: frames without AF7 are dropped,
+# a dropout over 0.5 s is zero-filled by host time, and lost subpackets are not filled
+# (an export fills them; keeping them out keeps these metrics comparable with #115/#116).
+STAGER_CONTINUOUS_CONFIG = ContinuousConfig(
+    gap_policy="zero_fill",
+    gap_threshold_seconds=GAP_FILL_THRESHOLD_SECONDS,
+    nominal_rate_hz=NOMINAL_EEG_RATE_HZ,
+    channels=EEG_CHANNELS,
+    reference_channel="AF7",
+    fill_lost_samples=False,
+)
 
 # --eog when it is not given. GSSC's README documents horizontal or left/right EOG
 # only, and AF8 is a second EEG channel, so GSSC stages from AF7 alone unless asked;
@@ -172,44 +182,13 @@ async def _collect(
     YASA epoch j covers real [t0 + j*30, ...). Without the fill, a mid-night gap
     would slide every later YASA epoch earlier and mispair the two grids.
     ``weights`` replaces the detector's DEFAULT_REM_WEIGHTS (see resolve_weights).
+    The reconstruction is muse_tmr.data.continuous with STAGER_CONTINUOUS_CONFIG.
     """
-    channels: Dict[str, array] = {name: array("f") for name in EEG_CHANNELS}
-    state: Dict[str, Optional[float]] = {"t0": None, "t_last": None, "n": 0, "prev_ts": None, "prev_width": 0}
-
-    def sink(frame) -> None:
-        eeg = getattr(frame, "eeg", None)
-        if eeg is None:
-            return
-        per_channel = eeg.channels_uv or {}
-        reference = per_channel.get("AF7")
-        if not reference:
-            return
-        ts = frame.timestamp
-        width = len(reference)
-        if state["t0"] is None:
-            state["t0"] = ts
-        elif ts - state["prev_ts"] > GAP_FILL_THRESHOLD_SECONDS:
-            # Insert the missing samples for the dropout span so the timeline stays real.
-            n_fill = int(round((ts - state["prev_ts"]) * NOMINAL_EEG_RATE_HZ)) - int(state["prev_width"])
-            if n_fill > 0:
-                zeros = [0.0] * n_fill
-                for name in EEG_CHANNELS:
-                    channels[name].extend(zeros)
-                state["n"] += n_fill
-        state["prev_ts"] = ts
-        state["prev_width"] = width
-        state["t_last"] = ts
-        state["n"] += width
-        for name in EEG_CHANNELS:
-            samples = per_channel.get(name) or []
-            if len(samples) == width:
-                channels[name].extend(samples)
-            else:  # keep channels length-aligned even if one lags on a frame
-                channels[name].extend(list(samples)[:width] + [0.0] * max(0, width - len(samples)))
+    continuous = ContinuousBuilder(STAGER_CONTINUOUS_CONFIG)
 
     async def teed(stream):
         async for frame in stream:
-            sink(frame)
+            continuous.add(frame)
             yield frame
 
     session = ReplaySession(ReplayConfig(input_path=recording_dir, speed=0.0))
@@ -227,16 +206,18 @@ async def _collect(
     finally:
         await session.stop()
 
-    t0, t_last, n_samples = state["t0"], state["t_last"], int(state["n"])
-    if t0 is None or t_last is None or n_samples == 0 or t_last <= t0:
+    try:
+        eeg = continuous.result().eeg
+    except ValueError:
+        eeg = None
+    if eeg is None or eeg.n_samples == 0 or eeg.t_last <= eeg.t0:
         raise SystemExit("no usable EEG samples reconstructed from the recording")
-    arrays = {name: np.frombuffer(buf, dtype=np.float32).copy() for name, buf in channels.items()}
     return {
         "predictions": predictions,
-        "channels": arrays,
-        "sfreq": float(n_samples / (t_last - t0)),
-        "t0": float(t0),
-        "n_samples": n_samples,
+        "channels": {name: eeg.channels[name] for name in EEG_CHANNELS},
+        "sfreq": float(eeg.measured_rate_hz),
+        "t0": float(eeg.t0),
+        "n_samples": int(eeg.n_samples),
     }
 
 
@@ -251,7 +232,7 @@ def collect(
 def resample_for_stager(channels: Dict[str, np.ndarray], sfreq: float, target: float = 100.0) -> Tuple[Dict[str, np.ndarray], float]:
     """Resample to ~target Hz with a fast polyphase FIR, preserving real duration.
 
-    The Muse's empirical rate is a non-integer (~254.8 Hz). YASA resamples to 100
+    The Muse's empirical rate is a non-integer, measured per night as ``sfreq``. YASA resamples to 100
     Hz internally, and doing that from an irrational ratio on a multi-million
     sample array triggers a pathologically slow full-length FFT resample. Pre-
     resampling here (polyphase, O(n)) shrinks the array to ~target*duration
