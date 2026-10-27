@@ -39,9 +39,10 @@ The pictures show the app on example data.
 - **Safety-first cueing:** model probabilities never reach the audio path directly; a `StableRemGate` (minimum stable time, hysteresis, cooldown) and an `ArousalGuard` (motion, alpha, HR-jump, artifact proxies) decide, with hard volume caps, fade in/out, and emergency-stop artifacts; afterwards `score-cue-arousal` counts arousal proxies after each cue against paired quiet controls ([`docs/safety_outcomes.md`](docs/safety_outcomes.md))
 - **Blind experimental protocol:** seeded randomization into cued/uncued puzzle groups, uncued puzzles are never schedulable, the condition is hidden from the subject during morning retests; whole nights can be cue, sham or no-cue nights in counterbalanced, sealed N-of-1 blocks, with a delayed retest a week or ten days later, a preregistration template, blind coding of dream incorporation and a per-arm description of the series ([`docs/nof1_protocol.md`](docs/nof1_protocol.md))
 - **Pluggable acquisition:** amused-py BLE (default), OpenMuse LSL, and BrainFlow backends, all mapped to one `MuseFrame` contract; a Polar H10 chest strap can record ECG, RR and chest motion alongside, in its own process
+- **Standard data exchange:** `export-edf` and `export-bids` write a night as EDF+ or EEG-BIDS with its cue, gate, guard and stage events as annotations, `muse_tmr.data.mne_export.to_raw()` hands it to MNE, and `import` reads nights from muse-lsl, OpenMuse, BrainFlow and Mind Monitor CSVs, EDF files such as the BOAS headband nights, and `decoded_frames.jsonl`, for reports and replay simulation only ([`docs/formats.md`](docs/formats.md), [`docs/import.md`](docs/import.md))
 - **Local app, REMind:** live contact check per sensor, session, night, guided-meditation and calibration recordings that start once the contact holds and run as their own process, a recordings page with the reports and EEG numbers, and auto-update from `main`
 - **Reproducible validation:** five staged pilots, each with a runbook and an automated validator
-- **Engineering hygiene:** 56 CLI commands, pytest suite with CI on GitHub Actions, and a privacy-aware gitignore — volume calibration, puzzle content, and dream reports never leave the machine
+- **Engineering hygiene:** 59 CLI commands, pytest suite with CI on GitHub Actions, and a privacy-aware gitignore — volume calibration, puzzle content, and dream reports never leave the machine
 
 ## Install
 
@@ -56,7 +57,7 @@ pip install -e .
 muse-tmr status
 ```
 
-`muse-tmr status` prints `REMind <version>: n = 1 research software, not a medical device`. Without a clone, `pip install "git+https://github.com/yuriy-mikityuk/remind-eeg.git"` installs the command, but not the scripts or the macOS launcher.
+`muse-tmr status` prints `REMind <version>: n = 1 research software, not a medical device`. `pip install -e ".[edf]"` adds what `export-edf` and `export-bids` need. Without a clone, `pip install "git+https://github.com/yuriy-mikityuk/remind-eeg.git"` installs the command, but not the scripts or the macOS launcher.
 
 ## Quick start
 
@@ -146,7 +147,7 @@ The timing settings can come from a protocol preset: the parameters of one paper
 
 ## ML pipeline: personal REM classifier
 
-The REM detector ships in two layers. A transparent **heuristic baseline** (`HeuristicRemDetector`) scores each epoch from EEG/IMU/PPG feature rows and returns `P_REM` with human-readable reason codes — no ML, fully inspectable. On top of it, `annotate-template` exports per-epoch CSVs overlaid with `P_REM` and features for manual labeling (`wake` / `nrem` / `probable_rem`), and `train-rem-classifier` fits a **class-balanced logistic regression** on those labels. The saved artifact is versioned JSON containing the coefficients, **calibration metrics, feature importance, and training metrics** — so every model used at night is auditable. By design, model probabilities never reach the audio path directly; only the stable gate plus arousal guard can authorize a cue.
+The REM detector ships in two layers. A transparent **heuristic baseline** (`HeuristicRemDetector`) scores each epoch from EEG/IMU/PPG feature rows and returns `P_REM` with human-readable reason codes — no ML, fully inspectable. On top of it, `annotate-template` exports per-epoch CSVs overlaid with `P_REM` and features for manual labeling (`wake` / `nrem` / `probable_rem`), or labels them from another stager's hypnogram (`--from-hypnogram`), and `train-rem-classifier` fits a **class-balanced logistic regression** on those labels. The saved artifact is versioned JSON containing the coefficients, **calibration metrics, feature importance, and training metrics** — so every model used at night is auditable. By design, model probabilities never reach the audio path directly; only the stable gate plus arousal guard can authorize a cue.
 
 There is no PSG ground truth here, so `scripts/validate_rem_detection.py` replays a night through the detector and the gate and scores them against an automated stager (YASA or GSSC). The gate thresholds were raised after that check: the detector runs hot, and at the old 0.70/0.45 the gate stayed open about 75% of a night. They now depend on the recording preset: 0.90/0.85 on the EEG-only `p21`, 0.80/0.70 on optics presets, provisional. The `p21` pair was tuned in-sample on one EEG-only night (`overnight_20260707`, n=1) against GSSC, an automated proxy, and fitted and reported on the same night; kappa and epoch counts are only in [PR #115](https://github.com/yuriy-mikityuk/remind-eeg/pull/115) and [#116](https://github.com/yuriy-mikityuk/remind-eeg/issues/116). GSSC was trained mostly on C3, C4, F3, F4 (NSRR PSG); there is no published evaluation of it on forehead-only EEG. Every figure and its source: [`docs/numbers.md`](docs/numbers.md).
 
@@ -168,13 +169,14 @@ The same headband also runs guided A/B meditation sessions from the local app: a
 
 ## CLI overview
 
-56 commands under one `muse-tmr` entry point. Full invocations with all flags: [`docs/USAGE.md`](docs/USAGE.md).
+59 commands under one `muse-tmr` entry point. Full invocations with all flags: [`docs/USAGE.md`](docs/USAGE.md).
 
 | Group | Commands |
 | ----- | -------- |
 | Acquisition | `discover` · `stream` · `record` · `replay` · `app` · `record-polar` · `decode-polar` |
 | Diagnostics | `status` · `diagnose-blink-artifacts` · `compare-source-diagnostics` · `inspect-blink-channels` · `analyze-optics-agreement` |
 | Annotation & training | `annotate-template` · `train-rem-classifier` |
+| Data exchange | `export-edf` · `export-bids` · `import` |
 | Audio & cue libraries | `play-test-cue` · `calibrate-volume` · `create-cue-library` · `validate-cue-library` · `list-cues` |
 | TLR cues and protocol presets | `create-tlr-cue` · `train-tlr-cue` · `plan-tlr-block` · `protocol-presets` |
 | Puzzle protocol | `import-puzzles` · `record-puzzle-attempt` · `generate-puzzle-session` · `assign-puzzle-cues` · `record-association-check` |
