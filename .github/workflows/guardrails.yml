@@ -41,10 +41,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      # The [edf] extra runs the EDF, BIDS and EDF import tests, which skip without it.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,edf]"
       # Some tests are skipped where the monotonic clock is coarse (Windows before 3.13).
       - name: Show the monotonic clock
         run: python -c "import time; print(time.get_clock_info('monotonic'))"
@@ -104,6 +105,18 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: |
           "$WHEEL_BIN/muse-tmr" demo --hours 0.25 --no-open --output "$RUNNER_TEMP/wheel-demo"
+      # The wheel is installed without extras: muse_tmr.data imports and replays, and
+      # export-edf names the [edf] extra instead of failing on an import.
+      - name: Check the base install without the edf extra
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$WHEEL_BIN/python" -c "import sys, muse_tmr.data.edf_io, muse_tmr.data.bids_export, muse_tmr.data.mne_export, muse_tmr.data.import_recording; assert not {'edfio', 'mne'} & set(sys.modules)"
+          "$WHEEL_BIN/muse-tmr" replay "$RUNNER_TEMP/wheel-demo/clean_night_seed0"
+          code=0
+          "$WHEEL_BIN/muse-tmr" export-edf "$RUNNER_TEMP/wheel-demo/clean_night_seed0" --output "$RUNNER_TEMP/night.edf" 2> export-edf.err || code=$?
+          cat export-edf.err
+          test "$code" -eq 2
+          grep -q 'remind-eeg\[edf\]' export-edf.err
 
   # A plumbing regression check on a synthetic night (synthetic input, not sleep). It
   # says nothing about REM detection: the cued plays come at sleep onset, not in REM.
@@ -132,6 +145,34 @@ jobs:
           test -s "$RUNNER_TEMP/demo/report.html"
           grep -q "synthetic input, not sleep" "$RUNNER_TEMP/demo/report.html"
           jq -r '"raw_amused.bin sha256 \(.raw_sha256)"' "$summary"
+
+  # Exports a synthetic night (synthetic input, not sleep) as EEG-BIDS and validates it
+  # with the BIDS project's schema validator, pinned. Its npm package stopped at 1.15.0
+  # and is deprecated; the maintained one ships on JSR and on PyPI as bids-validator-deno.
+  bids:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install the package with the edf extra, MNE and the validator
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,edf]" "mne==1.13.2" "bids-validator-deno==3.0.2"
+      - name: Run the export and import tests, the MNE ones among them
+        run: |
+          python -m pytest tests/test_edf_io.py tests/test_bids_export.py tests/test_mne_export.py \
+            tests/test_import_recording.py -rfEs
+      - name: Export a synthetic night as BIDS
+        run: |
+          muse-tmr synthesize-night --scenario clean_night --hours 0.5 --output "$RUNNER_TEMP/night"
+          muse-tmr export-bids "$RUNNER_TEMP/night" --output "$RUNNER_TEMP/bids"
+          grep -q "synthetic input, not sleep" "$RUNNER_TEMP/bids/dataset_description.json"
+      - name: Validate it with bids-validator
+        run: |
+          bids-validator-deno --version
+          bids-validator-deno "$RUNNER_TEMP/bids"
 
   page:
     runs-on: ubuntu-latest

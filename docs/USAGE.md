@@ -11,6 +11,8 @@ Complete command and code reference for `muse-tmr`, organized by workflow stage.
 - [Blink and artifact diagnostics](#blink-and-artifact-diagnostics)
 - [Offline replay](#offline-replay)
 - [Synthetic nights and the demo](#synthetic-nights-and-the-demo)
+- [Exporting a night: EDF+, BIDS and MNE](#exporting-a-night-edf-bids-and-mne)
+- [Importing a night from another app](#importing-a-night-from-another-app)
 - [Epoch building](#epoch-building)
 - [Feature extraction: EEG](#feature-extraction-eeg)
 - [Feature extraction: IMU](#feature-extraction-imu)
@@ -55,6 +57,8 @@ python scripts/check_forbidden_files.py
 ```
 
 `muse-tmr status` prints `REMind <version>: n = 1 research software, not a medical device`, and `muse-tmr --help` ends with the same line. `muse-tmr --version` prints only `muse-tmr <version>`.
+
+`export-edf` and `export-bids` need the `[edf]` extra, which installs edfio: `pip install -e ".[edf]"`. Without it every other command runs, and these two say how to add it.
 
 A venv set up before the rename has the checkout installed as `athena-tmr-lucid`. Run `pip uninstall athena-tmr-lucid` before installing again, so that two distributions do not both own the `muse-tmr` command.
 
@@ -164,7 +168,7 @@ muse-tmr replay data/recordings/<session> --speed 1.0
 muse-tmr replay data/recordings/<session> --speed 20 --start-seconds 1800 --end-seconds 3600
 ```
 
-Replay accepts either a recording directory or a `raw_amused.bin` path. `--speed 1.0` is real time; `--speed 0.0` replays as fast as possible for tests and batch feature extraction.
+Replay accepts either a recording directory or a `raw_amused.bin` path. `--speed 1.0` is real time; `--speed 0.0` replays as fast as possible for tests and batch feature extraction. A directory whose `raw_amused.bin` is missing or holds no packet replays its `decoded_frames.jsonl`, with the time range counted from its first frame: an imported night, or one recorded with `--source brainflow` or `openmuse`.
 
 ## Synthetic nights and the demo
 
@@ -178,6 +182,33 @@ muse-tmr synthesize-night --scenario clean_night --hours 0.5 --output data/synth
 `synthesize-night` writes one labelled synthetic night from `muse_tmr.testing` into `--output`: `raw_amused.bin`, `metadata.json`, `events.jsonl` and `summary.json` as `record` writes them, next to the ground truth `hypnogram.csv`, `arousals.csv`, `rem_events.csv` and `generation.json`. `--hours` replaces the scenario's length, and the same `--seed` (default 0) gives the same bytes. It writes only into a new or empty directory (hidden files aside) or over an earlier synthetic night, one whose `metadata.json` says `synthetic: true`, and refuses any other. The commands that read a recording take the result, `replay`, `annotate-template`, `validate-pilot1-recording` and `simulate-replay-cues` among them.
 
 `demo` (defaults `--scenario clean_night --hours 2 --seed 0`) generates a night into `data/synthetic/demo_<timestamp>/`, or `--output`, and runs `validate-pilot1-recording` on it. It writes Pilot 3 inputs under `protocol/` (four synthetic puzzles with a generated tone each, two of them cued), runs `simulate-replay-cues --preset <the night's preset>` with mock audio, builds the REM report, scores the gate against `hypnogram.csv`, writes `demo_summary.json` and opens the report unless `--no-open`. It exits 0 when Pilot 1 and Pilot 3 pass, no uncued puzzle got a `play`, the audio stayed mock and the report was written, and 1 otherwise. It writes only into a new or empty `--output` or over an earlier demo, one whose `demo_summary.json` says `synthetic: true`, and refuses any other with exit code 2, so it never lands in a recording's folder or replaces protocol files such as `data/protocol/puzzle_catalog.json`. `--baseline FILE` also compares the run with a saved one and exits 1 on a difference; the CI `end_to_end` job runs it with `tests/fixtures/synthetic/agreement_baseline.json`. Synthetic input, not sleep: the numbers check the plumbing and say nothing about REM detection. Scenarios, output files, sizes and limits: `docs/synthetic_data.md`.
+
+## Exporting a night: EDF+, BIDS and MNE
+
+```bash
+muse-tmr export-edf data/recordings/<session>
+muse-tmr export-edf data/recordings/<session> --output exports/<session>.edf --hypnogram scored.tsv --json
+muse-tmr export-bids data/recordings/<session> --subject p01 [--session 20260114] [--power-line-frequency 50]
+```
+
+`export-edf` writes the recording as one EDF+C file, by default `<session>/<session>.edf`: EEG in µV as the headband's 14-bit counts, the accelerometer and gyroscope in g and deg/s, the optics quantised to 16 bits, and a track of annotations with the night's recorder and runner events, scheduler plays, skips, pauses and stops with their reason codes, gate-open runs, arousal guard decisions, audio results, awakening markers and, for a synthetic night, its `hypnogram.csv`. `--hypnogram` adds stages from a file whose onsets count from the recording's start (repeatable), written as `Sleep stage W`, `N`, `R` and `?`: the map is lossy, N1 to N3 all become N. A frame more than `--gap-threshold-seconds` (0.5 s) late starts a dropout, zero-filled and annotated `BAD_ACQ_SKIP`. It prints the file's size, records, signals, annotations, gaps, the measured EEG rate and the lost samples it filled, or with `--json` all of it with each signal's resolution.
+
+`export-bids` writes the same EDF into a BIDS session under `data/bids/` (gitignored) or `--output`: `channels.tsv`, `_eeg.json`, the events in `_events.tsv` and the stages in `_acq-scoring_events.tsv`, with `dataset_description.json`, `participants.tsv` and a README at the root. `--subject` is the pseudonym to file the night under (default `01`), `--session` defaults to the night's UTC date. A session that already holds files is refused, and so is a root that holds the other kind of night, synthetic or recorded.
+
+A night whose arm came from a sealed night schedule is refused by both, naming `unseal-night-schedule`, since its logs name the arm; once the schedule is unsealed, pass it with `--night-schedule` or keep it at `data/protocol/night_schedules/<schedule-id>.json`. An export of a cueing night names the cued puzzles, so make it after the morning retest. In Python, `muse_tmr.data.mne_export.to_raw(recording_dir)` returns the night as an MNE `RawArray` with the same annotations; MNE is not installed with REMind. Layouts, gap policies and the stage map: [`formats.md`](formats.md).
+
+## Importing a night from another app
+
+```bash
+muse-tmr import night.csv --format muselsl-csv --start-time 2026-01-14T23:05:00+01:00
+muse-tmr import eeg.csv --format openmuse-csv --start-time 1768428300
+muse-tmr import brainflow.csv --format brainflow-csv --source-version 5.22.1
+muse-tmr import mindmonitor.csv --format mindmonitor-csv --eeg-scale <factor to µV> --eeg-offset <µV>
+muse-tmr import sub-3_task-Sleep_acq-headband_eeg.edf --format edf --channel-map boas-headband
+muse-tmr import data/recordings/<session>/decoded_frames.jsonl --format decoded-frames
+```
+
+`import` writes a recording directory, by default `data/recordings/imported/<input name>/` (for a `decoded_frames.jsonl`, the name of its recording directory), with `decoded_frames.jsonl`, `metadata.json` and `summary.json`. It writes over an earlier import of the same file, as with another scale, and refuses one of another file. The EEG becomes centred µV through the format's row of the scale table, or `--eeg-scale` and `--eeg-offset` in its place; `mindmonitor-csv` needs `--eeg-scale`, since its units are unverified, and `brainflow-csv` needs `--source-version`, since BrainFlow before 5.23.0 scaled the Athena 4.55 times too large and did not centre it. `--start-time` (ISO 8601 or Unix seconds) anchors a clock that counts from the stream start; `--channel-map` is for `--format edf`. `replay`, the REM report, `annotate-template` and `simulate-replay-cues` read the result and say `imported: <format>, scale <x>; report and simulation only`; `validate-pilot1-recording` fails it, and nothing cues from it. Scales, clocks and what each format loses: [`import.md`](import.md).
 
 ## Epoch building
 
@@ -282,6 +313,13 @@ muse-tmr annotate-template data/recordings/<session> \
 ```
 
 The template overlays each epoch with `P_REM`, reason codes, and feature columns, including `feature_score_rem_event_density` and the `feature_value_rem_event_*` columns from one REM-event tracker over the whole recording; the first epochs carry `feature_value_rem_event_warmup` 1. The default label is `unknown`; manually edit labels to `wake`, `nrem`, or `probable_rem` before using them for training. Templates written before these columns existed still load.
+
+```bash
+muse-tmr annotate-template data/recordings/<session> --output rows.csv --from-hypnogram scored.edf
+muse-tmr annotate-template data/recordings/<session> --output rows.csv --from-hypnogram events.tsv --hypnogram-column stage_ai
+```
+
+`--from-hypnogram` labels each epoch by the stage at its middle instead: W `wake`, N, N1, N2 and N3 `nrem`, R `probable_rem`, anything else `unknown`, with `prediction_source` `hypnogram:<file>`. It reads the stage annotations of an EDF+ file, a BIDS events file (an export's `acq-scoring` file or BOAS's `stage_hum`, else `stage_ai`), a CSV with `start_s`/`end_s`, `onset`/`duration` or 30 s epoch numbers, and `annotate-template` rows. Onsets count from the recording's first frame on its sample clock, as in an `export-edf` file, also with `--start-seconds`. The rows load into `train-rem-classifier` like hand-labelled ones.
 
 ## Personal REM classifier
 

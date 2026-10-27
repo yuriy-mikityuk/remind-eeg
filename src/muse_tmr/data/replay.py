@@ -1,10 +1,18 @@
-"""Offline replay for recorded Muse sessions."""
+"""Offline replay for recorded Muse sessions.
+
+A recording directory replays its ``raw_amused.bin`` through the decoder. A directory
+whose raw file is missing or holds no packet replays its ``decoded_frames.jsonl``
+instead, one ``MuseFrame.from_json`` row at a time: what ``muse-tmr import`` writes, a
+BrainFlow or OpenMuse recording (their frames carry no raw packets, #108), or a recording
+whose raw file is gone.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+import struct
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import AsyncIterator, Mapping, Optional, Sequence
 
@@ -14,6 +22,11 @@ from muse_tmr.ble.muse_realtime_decoder import MuseRealtimeDecoder
 from muse_tmr.data.sample_types import MuseFrame, frame_from_decoded
 from muse_tmr.sources.base_source import BaseMuseSource, MuseDeviceInfo, MuseSourceMetadata
 
+RAW_FILENAME = "raw_amused.bin"
+DECODED_FRAMES_FILENAME = "decoded_frames.jsonl"
+# The header MuseRawStream.open_write() writes; a raw file no longer than it holds no packet.
+RAW_HEADER_BYTES = struct.calcsize("<4sBQ16s")
+
 
 @dataclass(frozen=True)
 class ReplayConfig:
@@ -21,7 +34,8 @@ class ReplayConfig:
 
     `speed=1.0` replays in real time, `speed=10.0` is 10x faster, and
     `speed=0.0` disables sleeps for deterministic tests and batch processing.
-    Time ranges are seconds relative to the raw recording start.
+    Time ranges are seconds relative to the raw recording start, or for a
+    `decoded_frames.jsonl` to its first frame.
     """
 
     input_path: Path
@@ -65,11 +79,15 @@ class ReplaySession(BaseMuseSource):
     async def connect(self, device: Optional[MuseDeviceInfo] = None) -> MuseSourceMetadata:
         self._stop_requested = False
         source_metadata = self._load_source_metadata()
+        capabilities = dict(_capabilities_from_metadata(source_metadata))
+        if self.decoded_frames:
+            # Decoded frames carry no raw packets, whatever the recording's source had.
+            capabilities["raw_packets"] = False
         self.metadata = MuseSourceMetadata(
             source_name=self.config.source_name,
             device_name=source_metadata.get("device_name", "recorded Muse"),
             device_id=source_metadata.get("device_id", self.raw_path.stem),
-            capabilities=_capabilities_from_metadata(source_metadata),
+            capabilities=capabilities,
             metadata={
                 "raw_path": str(self.raw_path),
                 "recording_dir": str(self.recording_dir),
@@ -79,9 +97,19 @@ class ReplaySession(BaseMuseSource):
         )
         return self.metadata
 
+    @property
+    def decoded_frames(self) -> bool:
+        """Whether this replay reads a `decoded_frames.jsonl` instead of raw packets."""
+        return self.raw_path.suffix == ".jsonl"
+
     async def stream(self) -> AsyncIterator[MuseFrame]:
         if self.metadata is None:
             await self.connect()
+
+        if self.decoded_frames:
+            async for frame in self._stream_decoded_frames():
+                yield frame
+            return
 
         decoder = MuseRealtimeDecoder()
         raw_stream = MuseRawStream(str(self.raw_path))
@@ -110,6 +138,30 @@ class ReplaySession(BaseMuseSource):
         finally:
             raw_stream.close()
 
+    async def _stream_decoded_frames(self) -> AsyncIterator[MuseFrame]:
+        previous_timestamp = None
+        first_timestamp = None
+        with self.raw_path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if self._stop_requested:
+                    break
+                if not line.strip():
+                    continue
+                frame = MuseFrame.from_json(line)
+                if first_timestamp is None:
+                    first_timestamp = frame.timestamp
+                offset_seconds = frame.timestamp - first_timestamp
+                if self.config.start_seconds is not None and offset_seconds < self.config.start_seconds:
+                    continue
+                if self.config.end_seconds is not None and offset_seconds > self.config.end_seconds:
+                    break
+
+                if previous_timestamp is not None and self.config.speed > 0:
+                    delta_seconds = frame.timestamp - previous_timestamp
+                    await asyncio.sleep(max(0.0, delta_seconds / self.config.speed))
+                previous_timestamp = frame.timestamp
+                yield replace(frame, source=self.config.source_name)
+
     async def stop(self) -> None:
         self._stop_requested = True
 
@@ -124,9 +176,16 @@ class ReplaySession(BaseMuseSource):
 
 
 def resolve_raw_path(input_path: Path) -> Path:
+    """The file a replay reads: a raw file or `decoded_frames.jsonl` as given, or a
+    directory's `raw_amused.bin`, else, when that is missing or holds no packet, its
+    `decoded_frames.jsonl` if that holds any."""
     path = input_path.expanduser()
     if path.is_dir():
-        path = path / "raw_amused.bin"
+        raw_path = path / RAW_FILENAME
+        decoded_path = path / DECODED_FRAMES_FILENAME
+        raw_has_packets = raw_path.is_file() and raw_path.stat().st_size > RAW_HEADER_BYTES
+        decoded_has_frames = decoded_path.is_file() and decoded_path.stat().st_size > 0
+        path = decoded_path if not raw_has_packets and decoded_has_frames else raw_path
     if not path.exists():
         raise FileNotFoundError(f"Replay input not found: {path}")
     if not path.is_file():

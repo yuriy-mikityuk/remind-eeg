@@ -30,6 +30,16 @@ class TestSdkPolicy(unittest.TestCase):
         self.assertTrue(policy.is_forbidden("data/synthetic/clean_night/hypnogram.csv"))
         self.assertFalse(policy.is_forbidden("tests/fixtures/synthetic/agreement_baseline.json"))
 
+    def test_exports_and_imports_are_not_publishable(self):
+        policy = _load_policy_script()
+
+        # export-bids writes under data/bids/, export-edf next to the night, import under
+        # data/recordings/imported/ (#230).
+        self.assertTrue(policy.is_forbidden("data/bids/sub-01/ses-20260114/eeg/sub-01_ses-20260114_task-sleep_events.tsv"))
+        self.assertTrue(policy.is_forbidden("data/bids/participants.tsv"))
+        self.assertTrue(policy.is_forbidden("data/recordings/imported/night/decoded_frames.jsonl"))
+        self.assertTrue(policy.is_forbidden("night.edf"))
+
     def test_sdk_stub_source_file_is_allowed(self):
         policy = _load_policy_script()
 

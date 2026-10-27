@@ -79,7 +79,11 @@ must remain outside committed files.
 
 `muse_tmr.data.replay.ReplaySession` reads a recording directory or `raw_amused.bin`,
 decodes raw packets through the same TAG decoder used by live streaming, and emits
-`MuseFrame` objects for downstream epoch building and feature extraction.
+`MuseFrame` objects for downstream epoch building and feature extraction. A directory
+whose `raw_amused.bin` is missing or holds no packet replays its `decoded_frames.jsonl`
+instead, one `MuseFrame.from_json` row at a time, and its metadata then says
+`raw_packets` false: what `muse-tmr import` writes, and the recordings of the BrainFlow
+and OpenMuse sources, whose frames carry no raw packet (#108).
 
 Replay speed is explicit:
 
@@ -87,8 +91,21 @@ Replay speed is explicit:
 - `speed>1.0` accelerates replay.
 - `speed=0.0` disables sleeps for tests and batch processing.
 
-`start_seconds` and `end_seconds` are relative to the raw recording start, allowing
-feature code to replay a specific sleep segment without loading unrelated packets.
+`start_seconds` and `end_seconds` are relative to the raw recording start, or for
+`decoded_frames.jsonl` to its first frame, allowing feature code to replay a specific
+sleep segment without loading unrelated packets.
+
+## Continuous Arrays and Exchange Formats
+
+`muse_tmr.data.continuous` turns frames into one float32 array per channel at the
+nominal rates, with the night's measured EEG rate, its segments and what it lost:
+`gap_markers` for dropouts (a frame more than 0.5 s late) and for the samples
+`EEGSample.gaps` and its twins name. `export-edf`, `export-bids` and
+`muse_tmr.data.mne_export.to_raw()` write it with the night's events as annotations, and
+`muse-tmr import` reads nights from other apps into a recording directory. Layouts, gap
+policies and the stage map: [`formats.md`](formats.md); formats, scales and what each
+import loses: [`import.md`](import.md). Nothing under `muse_tmr.data` imports the audio,
+protocol or model packages.
 
 ## Repeated And Lost Subpackets
 

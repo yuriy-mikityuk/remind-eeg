@@ -45,6 +45,7 @@ FORBIDDEN_PATTERNS = (
     "*muse_sdk*.zip",
     "audio/private/*",
     "cues/private/*",
+    "data/bids/*",
     "data/raw/*",
     "data/recordings/*",
     "data/reports/*",

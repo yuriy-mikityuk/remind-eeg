@@ -38,6 +38,7 @@ from muse_tmr.reports.report_style import (
     local_minute_of_day,
     readable_time,
 )
+from muse_tmr.data.import_recording import import_banner, require_declared_scale
 from muse_tmr.data.replay import ReplayConfig, ReplaySession
 from muse_tmr.features.epochs import EpochBuilder, EpochConfig
 from muse_tmr.models import HeuristicRemDetector
@@ -349,7 +350,22 @@ HOURLY.forEach(row => {{
 """
 
 
+def _imported_callout(banner: Optional[str]) -> str:
+    """The callout of a night `muse-tmr import` wrote; "" for any other."""
+    if not banner:
+        return ""
+    return (
+        f'<div class="callout"><strong>Imported night.</strong> {html.escape(banner)}. Another app recorded '
+        "it and its EEG was rescaled by the factor named here, so the curve says what the detector makes of "
+        "those values; no raw packets were kept, and no cue is ever played from an imported night.</div>"
+    )
+
+
 def build_report(recording_dir: Path, output_path: Path, epoch_seconds: float = 30.0) -> None:
+    try:
+        require_declared_scale(recording_dir, "REM report")
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     rows = asyncio.run(_build_rows(recording_dir, epoch_seconds))
     if not rows:
         raise SystemExit(f"no epochs produced from {recording_dir}")
@@ -403,6 +419,10 @@ def build_report(recording_dir: Path, output_path: Path, epoch_seconds: float = 
     if _is_synthetic(metadata):
         subtitle_bits.append(SYNTHETIC_NOTE)
         page_title += " (synthetic)"
+    banner = import_banner(recording_dir)
+    if banner:
+        subtitle_bits.append(banner)
+        page_title += " (imported)"
     subtitle = " · ".join(subtitle_bits)
 
     # The chart's clock times are local, like the heading.
@@ -415,7 +435,7 @@ def build_report(recording_dir: Path, output_path: Path, epoch_seconds: float = 
         brand=brand_line("REM report"),
         title=title,
         subtitle=subtitle,
-        synthetic_callout=_synthetic_callout(metadata),
+        synthetic_callout=_synthetic_callout(metadata) + _imported_callout(banner),
         mean_p=mean_p,
         duration_h=duration_h,
         n_epochs=len(rows),

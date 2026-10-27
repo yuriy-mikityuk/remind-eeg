@@ -265,6 +265,83 @@ def build_parser() -> argparse.ArgumentParser:
         default="unknown",
         help="Initial label for generated rows. Use unknown for manual labeling templates.",
     )
+    annotate_parser.add_argument(
+        "--from-hypnogram",
+        type=Path,
+        help="Label each row from a hypnogram (.edf, BIDS events .tsv, .csv or .json) by the stage at its "
+        "middle: W wake, N/N1/N2/N3 nrem, R probable_rem, else unknown. Onsets count from the recording's "
+        "first frame on the EEG sample clock, as in an export-edf file.",
+    )
+    annotate_parser.add_argument(
+        "--hypnogram-column",
+        help="The stage column of a .tsv or .csv hypnogram. Default: the first of stage, stage_hum, "
+        "sleep_stage, label, stage_ai, trial_type, value, description.",
+    )
+
+    export_edf_parser = subparsers.add_parser(
+        "export-edf",
+        help="Write a recording as EDF+C with its cue, gate, guard and stage annotations (needs the [edf] extra).",
+    )
+    export_edf_parser.add_argument("input", type=Path, help="Recording directory.")
+    export_edf_parser.add_argument(
+        "--output", type=Path, help="EDF path. Default: <recording>/<recording name>.edf."
+    )
+    _add_export_args(export_edf_parser)
+
+    export_bids_parser = subparsers.add_parser(
+        "export-bids",
+        help="Write a recording as one EEG-BIDS session with events and an acq-scoring stage file (needs [edf]).",
+    )
+    export_bids_parser.add_argument("input", type=Path, help="Recording directory.")
+    export_bids_parser.add_argument(
+        "--output", type=Path, help="BIDS root. Default: data/bids/, which is gitignored."
+    )
+    export_bids_parser.add_argument("--subject", default="01", help="Pseudonymous subject label (default 01).")
+    export_bids_parser.add_argument("--session", help="Session label. Default: the night's UTC date, YYYYMMDD.")
+    export_bids_parser.add_argument("--task", default="sleep")
+    export_bids_parser.add_argument(
+        "--power-line-frequency", type=float, help="Mains frequency of the room, 50 or 60. Default: n/a."
+    )
+    _add_export_args(export_bids_parser)
+
+    import_parser = subparsers.add_parser(
+        "import",
+        help="Import a night recorded by another app as a recording directory, for reports and simulation only.",
+    )
+    import_parser.add_argument("input", type=Path, help="File to import.")
+    import_parser.add_argument(
+        "--format",
+        dest="import_format",
+        required=True,
+        choices=("decoded-frames", "edf", "muselsl-csv", "openmuse-csv", "brainflow-csv", "mindmonitor-csv"),
+    )
+    import_parser.add_argument(
+        "--output",
+        type=Path,
+        help="Recording directory to write. Default: data/recordings/imported/<input name>, or for a "
+        "decoded_frames.jsonl the name of its recording directory.",
+    )
+    import_parser.add_argument(
+        "--eeg-scale",
+        type=float,
+        help="Factor to centred microvolts, replacing the format's row of the scale table. Required for "
+        "mindmonitor-csv, whose units are unverified.",
+    )
+    import_parser.add_argument(
+        "--eeg-offset", type=float, help="Microvolts added after the scale (default: the table's, or 0 with --eeg-scale)."
+    )
+    import_parser.add_argument(
+        "--source-version", help="The version of the app that wrote the file; brainflow-csv needs it."
+    )
+    import_parser.add_argument(
+        "--start-time",
+        help="When the first sample was taken (ISO 8601, or Unix seconds), for a clock that counts from the "
+        "stream start. Default: the file's modification time less its length.",
+    )
+    import_parser.add_argument(
+        "--channel-map",
+        help="For --format edf: boas-headband, or LABEL=TARGET,... with targets eeg:NAME, accel:x, gyro:z, ppg:NAME, skip.",
+    )
 
     train_parser = subparsers.add_parser(
         "train-rem-classifier",
@@ -1276,6 +1353,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _demo(args)
     if args.command == "annotate-template":
         return asyncio.run(_annotate_template(args))
+    if args.command == "export-edf":
+        return _export_edf(args)
+    if args.command == "export-bids":
+        return _export_bids(args)
+    if args.command == "import":
+        return _import_recording(args)
     if args.command == "train-rem-classifier":
         return _train_rem_classifier(args)
     if args.command == "play-test-cue":
@@ -1682,9 +1765,13 @@ async def _replay(args: argparse.Namespace) -> int:
     finally:
         await session.stop()
 
+    from muse_tmr.data.import_recording import import_banner
+
+    banner = import_banner(session.recording_dir)
+    note = f" ({banner})" if banner else ""
     print(
         f"replay complete source={metadata.source_name} "
-        f"input={session.raw_path} frames={frame_count} modalities={modality_counts}"
+        f"input={session.raw_path} frames={frame_count} modalities={modality_counts}{note}"
     )
     return 0
 
@@ -2251,11 +2338,23 @@ async def _analyze_optics_agreement(args: argparse.Namespace) -> int:
 
 async def _annotate_template(args: argparse.Namespace) -> int:
     from muse_tmr.annotations import build_rem_annotation_rows, export_rem_annotations
+    from muse_tmr.data.continuous import ContinuousBuilder, reconstruct_recording
+    from muse_tmr.data.import_recording import import_banner, require_declared_scale
+    from muse_tmr.data.night_events import REM_LABELS, read_hypnogram
     from muse_tmr.data.replay import ReplayConfig, ReplaySession
     from muse_tmr.features import new_rem_event_tracker
     from muse_tmr.features.epochs import EpochBuilder, EpochConfig
     from muse_tmr.models import HeuristicRemDetector
 
+    try:
+        require_declared_scale(args.input, "annotate-template")
+        hypnogram_path = _resolve_output_path(args.from_hypnogram) if args.from_hypnogram is not None else None
+        intervals = (
+            read_hypnogram(hypnogram_path, column=args.hypnogram_column) if hypnogram_path is not None else None
+        )
+    except (ImportError, OSError, ValueError) as exc:
+        print(f"annotate-template: {exc}", file=sys.stderr)
+        return 2
     session = ReplaySession(
         ReplayConfig(
             input_path=args.input,
@@ -2264,6 +2363,20 @@ async def _annotate_template(args: argparse.Namespace) -> int:
             end_seconds=args.end_seconds,
         )
     )
+    # A hypnogram whose onsets count from the recording's start needs the night's timing,
+    # which puts each epoch on the time base of an export-edf file. The replay keeps it as
+    # it goes; a replay of part of the night cannot, so then the whole night is replayed
+    # once more for its timing alone.
+    needs_timing = intervals is not None and any(not interval.absolute for interval in intervals)
+    partial = args.start_seconds is not None or args.end_seconds is not None
+    timing = ContinuousBuilder(keep_samples=False) if needs_timing and not partial else None
+
+    async def frames():
+        async for frame in session.stream():
+            if timing is not None:
+                timing.add(frame)
+            yield frame
+
     await session.connect()
     try:
         builder = EpochBuilder(
@@ -2272,7 +2385,7 @@ async def _annotate_template(args: argparse.Namespace) -> int:
                 stride_seconds=args.stride_seconds,
             )
         )
-        epochs = [epoch async for epoch in builder.build(session.stream())]
+        epochs = [epoch async for epoch in builder.build(frames())]
     finally:
         await session.stop()
 
@@ -2283,8 +2396,209 @@ async def _annotate_template(args: argparse.Namespace) -> int:
         label=args.label,
         rem_tracker=new_rem_event_tracker(),
     )
+    labelled = ""
+    if intervals is not None:
+        recording = None
+        try:
+            if needs_timing and partial:
+                recording = await reconstruct_recording(args.input, keep_samples=False)
+            elif timing is not None and timing.frame_count:
+                recording = timing.result()
+        except ValueError:  # no EEG to keep time with: those rows stay unknown
+            recording = None
+        rows = _hypnogram_labels(rows, intervals, recording, hypnogram_path.name)
+        counts = {label: sum(1 for row in rows if row.label == label) for label in REM_LABELS}
+        labelled = f" labelled_from={hypnogram_path.name} " + " ".join(f"{key}={value}" for key, value in counts.items())
     output_path = export_rem_annotations(rows, _resolve_output_path(args.output))
-    print(f"annotation template complete rows={len(rows)} output={output_path}")
+    banner = import_banner(args.input)
+    note = f" ({banner})" if banner else ""
+    print(f"annotation template complete rows={len(rows)}{labelled} output={output_path}{note}")
+    return 0
+
+
+def _hypnogram_labels(rows, intervals, recording, source_name: str):
+    """``rows`` labelled by the hypnogram stage at each epoch's middle (#230).
+
+    Intervals in host time (annotate-template rows) are compared with the epoch's own
+    times; intervals in recording seconds go through ``recording.seconds()``, the EEG
+    sample clock from the first frame that export-edf writes. A row no interval holds
+    stays ``unknown``.
+    """
+    from dataclasses import replace
+
+    from muse_tmr.data.night_events import label_at
+
+    absolute = [interval for interval in intervals if interval.absolute]
+    relative = [interval for interval in intervals if not interval.absolute]
+    labelled = []
+    for row in rows:
+        middle = (row.start_time + row.end_time) / 2.0
+        label = label_at(absolute, middle) if absolute else None
+        if label is None and relative and recording is not None:
+            label = label_at(relative, float(recording.seconds(middle)))
+        labelled.append(replace(row, label=label or "unknown", prediction_source=f"hypnogram:{source_name}"))
+    return tuple(labelled)
+
+
+def _export_night_schedule(args: argparse.Namespace, recording_dir: Path):
+    """The checked, unsealed schedule JSON a night from a sealed series exports with, or
+    None when the night needs none or its schedule is not found (#230)."""
+    from muse_tmr.data.night_events import load_metadata, sealed_night_arm
+
+    arm = sealed_night_arm(load_metadata(recording_dir))
+    if arm is None:
+        return None
+    if args.night_schedule is not None:
+        path = _resolve_output_path(args.night_schedule)
+        if not path.exists():
+            raise FileNotFoundError(f"night schedule not found: {path}")
+    elif arm.get("schedule_id"):
+        path = _default_path_base() / "data" / "protocol" / "night_schedules" / f"{arm['schedule_id']}.json"
+    else:
+        return None
+    if not path.exists():
+        return None
+    from muse_tmr.protocol import load_night_schedule, sealed_path_for, verify_seal
+
+    schedule = load_night_schedule(path)
+    verify_seal(schedule, sealed_path_for(path))
+    return schedule.to_dict()
+
+
+def _export_inputs(args: argparse.Namespace, command: str):
+    """The recording directory and the schedule of an export, or the exit code to return."""
+    from muse_tmr.data.edf_io import EDF_EXTRA_HINT, edf_available
+    from muse_tmr.data.night_events import blinding_refusal, load_metadata
+
+    recording_dir = _resolve_output_path(args.input)
+    if not recording_dir.is_dir():
+        print(f"{command}: recording directory not found: {recording_dir}", file=sys.stderr)
+        return None, None, 2
+    try:
+        schedule = _export_night_schedule(args, recording_dir)
+    except (OSError, KeyError, ValueError) as exc:
+        print(f"{command}: {exc}", file=sys.stderr)
+        return None, None, 2
+    refusal = blinding_refusal(load_metadata(recording_dir), schedule)
+    if refusal is not None:
+        print(f"{command}: {refusal}", file=sys.stderr)
+        return None, None, 2
+    if not edf_available():
+        print(f"{command}: {EDF_EXTRA_HINT}", file=sys.stderr)
+        return None, None, 2
+    return recording_dir, schedule, 0
+
+
+def _export_edf(args: argparse.Namespace) -> int:
+    from muse_tmr.data.edf_io import export_config, export_edf
+
+    recording_dir, schedule, code = _export_inputs(args, "export-edf")
+    if code:
+        return code
+    output = _resolve_output_path(args.output) if args.output else recording_dir / f"{recording_dir.name}.edf"
+    try:
+        result = export_edf(
+            recording_dir,
+            output,
+            config=export_config(gap_threshold_seconds=args.gap_threshold_seconds),
+            hypnograms=[_resolve_output_path(path) for path in args.hypnogram],
+            night_schedule=schedule,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"export-edf: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(_json_safe(result.to_dict()), indent=2, sort_keys=True))
+        return 0
+    eeg = result.recording_summary["streams"]["eeg"]  # type: ignore[index]
+    note = " (synthetic input, not sleep)" if result.synthetic else ""
+    print(
+        "export-edf complete "
+        f"output={result.path} bytes={result.bytes} records={result.records} signals={len(result.signals)} "
+        f"annotations={result.annotations} gaps={result.gap_annotations} "
+        f"measured_rate_hz={result.measured_rate_hz:.4f} lost_samples={eeg['lost_samples']}{note}"
+    )
+    return 0
+
+
+def _export_bids(args: argparse.Namespace) -> int:
+    from muse_tmr.data.bids_export import export_bids
+    from muse_tmr.data.edf_io import export_config
+
+    recording_dir, schedule, code = _export_inputs(args, "export-bids")
+    if code:
+        return code
+    root = _resolve_output_path(args.output) if args.output else _default_path_base() / "data" / "bids"
+    try:
+        result = export_bids(
+            recording_dir,
+            root,
+            subject=args.subject,
+            session=args.session,
+            task=args.task,
+            hypnograms=[_resolve_output_path(path) for path in args.hypnogram],
+            night_schedule=schedule,
+            power_line_frequency=args.power_line_frequency,
+            config=export_config(gap_threshold_seconds=args.gap_threshold_seconds),
+        )
+    except (OSError, ValueError) as exc:
+        print(f"export-bids: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(_json_safe(result.to_dict()), indent=2, sort_keys=True))
+        return 0
+    note = " (synthetic input, not sleep)" if result.synthetic else ""
+    print(
+        "export-bids complete "
+        f"root={result.root} subject=sub-{result.subject} session=ses-{result.session} files={len(result.files)} "
+        f"events={result.events} stages={result.stages}{note}"
+    )
+    return 0
+
+
+def _parse_start_time(text: Optional[str]) -> Optional[float]:
+    if text is None:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    moment = dt.datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+    if moment.tzinfo is None:
+        moment = moment.astimezone()
+    return moment.timestamp()
+
+
+def _import_recording(args: argparse.Namespace) -> int:
+    from muse_tmr.data.edf_io import resolve_channel_map
+    from muse_tmr.data.import_recording import default_import_name, import_recording
+
+    source = _resolve_output_path(args.input)
+    output = (
+        _resolve_output_path(args.output)
+        if args.output
+        else _default_path_base() / "data" / "recordings" / "imported" / default_import_name(source)
+    )
+    try:
+        result = import_recording(
+            source,
+            args.import_format,
+            output,
+            args.eeg_scale,
+            args.eeg_offset,
+            source_version=args.source_version,
+            start_time=_parse_start_time(args.start_time),
+            channel_map=resolve_channel_map(args.channel_map) if args.channel_map else None,
+        )
+    except (ImportError, OSError, ValueError) as exc:
+        print(f"import: {exc}", file=sys.stderr)
+        return 2
+    note = " (synthetic input, not sleep)" if result.synthetic else ""
+    print(
+        "import complete "
+        f"format={result.fmt} frames={result.frame_count} eeg_samples={result.eeg_samples} "
+        f"duration_seconds={result.duration_seconds:.1f} output={result.output_dir} ({result.banner}){note}"
+    )
     return 0
 
 
@@ -2459,23 +2773,44 @@ def _validate_pilot1_recording(args: argparse.Namespace) -> int:
         if args.required_modalities
         else DEFAULT_PILOT1_REQUIRED_MODALITIES
     )
+    from muse_tmr.data.import_recording import import_banner
+
     report = validate_pilot1_recording(
         _resolve_output_path(args.input),
         min_duration_seconds=args.min_duration_hours * 3600,
         required_modalities=required_modalities,
         max_downtime_fraction=args.max_downtime_fraction,
     )
+    # An imported night has no raw packets and fails raw_capture_present; its report says why.
+    banner = import_banner(Path(report.summary_path).parent)
     # A pass on a synthetic night must not read as a recorded night's.
     if _says_synthetic(Path(report.summary_path).parent / "metadata.json"):
-        payload = _synthetic_payload(report.to_dict())
+        payload = _synthetic_payload(_with_import_banner(report.to_dict(), banner))
         if args.output is not None:
-            _write_synthetic_json(_resolve_output_path(args.output), payload)
+            _write_synthetic_json(_resolve_output_path(args.output), _with_import_banner(report.to_dict(), banner))
+    elif banner:
+        payload = _with_import_banner(report.to_dict(), banner)
+        if args.output is not None:
+            _write_strict_json(_resolve_output_path(args.output), payload)
     else:
         payload = report.to_dict()
         if args.output is not None:
             report.save(_resolve_output_path(args.output))
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0 if report.passed else 1
+
+
+def _with_import_banner(payload: Mapping[str, object], banner: Optional[str]) -> Dict[str, object]:
+    """``payload`` with the banner of an imported night at its top level (#230)."""
+    if not banner:
+        return dict(payload)
+    return {"imported": banner, **payload}
+
+
+def _write_strict_json(path: Path, payload: Mapping[str, object]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_json_safe(payload), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    return path
 
 
 def _validate_pilot2_calibration(args: argparse.Namespace) -> int:
@@ -2524,20 +2859,36 @@ def _resolve_gate_thresholds(args: argparse.Namespace) -> Tuple[float, float]:
 
 
 async def _simulate_replay_cues(args: argparse.Namespace) -> int:
+    from muse_tmr.data.import_recording import import_banner, require_declared_scale
+
+    try:
+        require_declared_scale(_resolve_output_path(args.input), "simulate-replay-cues")
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     try:
         report = await _replay_cue_report(args)
     except _NightArmError as exc:
         print(f"simulate-replay-cues: {exc}", file=sys.stderr)
         return 2
-    # A cue plan from a synthetic night must not read as a recorded night's.
+    # A cue plan from a synthetic or imported night must not read as a recorded night's.
     note = ""
+    banner = import_banner(Path(report.recording_input))
     if _says_synthetic(Path(report.recording_input) / "metadata.json"):
         from muse_tmr.testing import SYNTHETIC_NOTE
 
         note = f" ({SYNTHETIC_NOTE})"
-        output_path = _write_synthetic_json(_resolve_output_path(args.output), report.to_dict())
+        output_path = _write_synthetic_json(
+            _resolve_output_path(args.output), _with_import_banner(report.to_dict(), banner)
+        )
+    elif banner:
+        output_path = _write_strict_json(
+            _resolve_output_path(args.output), _with_import_banner(report.to_dict(), banner)
+        )
     else:
         output_path = report.save(_resolve_output_path(args.output))
+    if banner:
+        note += f" ({banner})"
     scheduler_events_output = None
     if args.scheduler_events_output is not None:
         scheduler_events_output = report.save_scheduler_events(
@@ -4520,6 +4871,33 @@ def _add_night_protocol_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--scheduler-cooldown-seconds", type=float, default=None, help=PROTOCOL_PRESET_DEFAULT_HELP)
     parser.add_argument("--max-puzzle-cues-per-block", type=int, default=None, help=PROTOCOL_PRESET_DEFAULT_HELP)
     _add_protocol_preset_arg(parser)
+
+
+def _add_export_args(parser: argparse.ArgumentParser) -> None:
+    """The flags export-edf and export-bids share (#230)."""
+    parser.add_argument(
+        "--gap-threshold-seconds",
+        type=float,
+        default=0.5,
+        help="A frame later than this after the one before starts after a dropout, which is zero-filled "
+        "and annotated BAD_ACQ_SKIP (default 0.5). EDF+D is not written.",
+    )
+    parser.add_argument(
+        "--hypnogram",
+        type=Path,
+        action="append",
+        default=[],
+        help="Stages to add as EDF+ texts (lossy: W, N, R, ?): annotate-template rows, or a hypnogram whose "
+        "onsets count from the recording's first frame. Repeatable. A synthetic night's hypnogram.csv is added "
+        "anyway.",
+    )
+    parser.add_argument(
+        "--night-schedule",
+        type=Path,
+        help="For a night from a sealed series: its schedule, unsealed with unseal-night-schedule. Default: "
+        "data/protocol/night_schedules/<schedule-id>.json.",
+    )
+    parser.add_argument("--json", action="store_true", help="Print the result as JSON.")
 
 
 def _add_night_arm_args(parser: argparse.ArgumentParser) -> None:

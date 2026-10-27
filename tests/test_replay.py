@@ -129,6 +129,57 @@ class TestReplaySession(unittest.IsolatedAsyncioTestCase):
             self.assertLess(elapsed, 1.0)
 
 
+class TestDecodedFramesReplay(unittest.IsolatedAsyncioTestCase):
+    """A directory without usable raw packets replays its decoded_frames.jsonl (#230)."""
+
+    async def asyncSetUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        night = generate_night(output_dir=self.root / "night", scenario="short_allow_short", hours=MINUTES)
+        session = ReplaySession(ReplayConfig(input_path=night.recording_dir))
+        self.frames = [frame async for frame in session.stream()]
+        self.decoded = "".join(frame.to_json(include_raw=False) + "\n" for frame in self.frames)
+
+    async def asyncTearDown(self):
+        self._tmp.cleanup()
+
+    async def _replay(self, directory, **config):
+        session = ReplaySession(ReplayConfig(input_path=directory, **config))
+        metadata = await session.connect()
+        return session, metadata, [frame async for frame in session.stream()]
+
+    async def test_a_directory_of_decoded_frames_replays_them(self):
+        directory = self.root / "decoded"
+        directory.mkdir()
+        (directory / "decoded_frames.jsonl").write_text(self.decoded)
+
+        session, metadata, frames = await self._replay(directory)
+
+        self.assertEqual(session.raw_path, (directory / "decoded_frames.jsonl").resolve())
+        self.assertFalse(metadata.capabilities["raw_packets"])
+        self.assertEqual(len(frames), len(self.frames))
+        self.assertEqual([frame.to_dict(include_raw=False)["eeg"] for frame in frames],
+                         [frame.to_dict(include_raw=False)["eeg"] for frame in self.frames])
+        self.assertEqual({frame.source for frame in frames}, {"replay"})
+
+    async def test_a_raw_file_without_packets_falls_back_and_one_with_packets_does_not(self):
+        directory = self.root / "brainflow_night"
+        directory.mkdir()
+        empty = MuseRawStream(str(directory / "raw_amused.bin"))
+        empty.open_write()
+        empty.close()
+        (directory / "decoded_frames.jsonl").write_text(self.decoded)
+        (directory / "metadata.json").write_text('{"source": {"source_name": "brainflow", "capabilities": {"raw_packets": true}}}')
+
+        _, metadata, frames = await self._replay(directory, start_seconds=10, end_seconds=20)
+
+        self.assertFalse(metadata.capabilities["raw_packets"])
+        first = self.frames[0].timestamp
+        expected = [frame for frame in self.frames if 10 <= frame.timestamp - first <= 20]
+        self.assertEqual([frame.timestamp for frame in frames], [frame.timestamp for frame in expected])
+        self.assertEqual(resolve_raw_path(self.root / "night"), (self.root / "night" / "raw_amused.bin").resolve())
+
+
 class TestReplayHelpers(unittest.TestCase):
     def test_resolve_raw_path_accepts_directory_or_file(self):
         with tempfile.TemporaryDirectory() as tmp:

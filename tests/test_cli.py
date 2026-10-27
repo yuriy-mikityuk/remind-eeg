@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -1230,6 +1231,144 @@ class TestBanner(unittest.TestCase):
                 self.assertEqual(rc, 0)
                 # argparse wraps the help to the terminal's width, so compare without line breaks.
                 self.assertTrue(" ".join(stdout.getvalue().split()).endswith(self.BANNER))
+
+
+class TestDataExchangeCommands(unittest.TestCase):
+    """export-edf, export-bids, import and annotate-template --from-hypnogram (#230)."""
+
+    def test_export_commands_parse_their_options(self):
+        args = build_parser().parse_args([
+            "export-edf", "data/recordings/n1", "--output", "out/n1.edf", "--hypnogram", "a.tsv",
+            "--hypnogram", "b.edf", "--night-schedule", "series.json", "--gap-threshold-seconds", "1.5", "--json",
+        ])
+        self.assertEqual((args.command, args.input, args.output), ("export-edf", Path("data/recordings/n1"), Path("out/n1.edf")))
+        self.assertEqual(args.hypnogram, [Path("a.tsv"), Path("b.edf")])
+        self.assertEqual((args.night_schedule, args.gap_threshold_seconds, args.json), (Path("series.json"), 1.5, True))
+
+        args = build_parser().parse_args(["export-bids", "data/recordings/n1"])
+        self.assertEqual((args.subject, args.session, args.task, args.output), ("01", None, "sleep", None))
+        self.assertEqual((args.hypnogram, args.gap_threshold_seconds, args.power_line_frequency), ([], 0.5, None))
+        args = build_parser().parse_args([
+            "export-bids", "n1", "--output", "bids", "--subject", "p07", "--session", "night2", "--power-line-frequency", "50",
+        ])
+        self.assertEqual((args.subject, args.session, args.power_line_frequency), ("p07", "night2", 50.0))
+
+    def test_import_and_from_hypnogram_parse_their_options(self):
+        args = build_parser().parse_args([
+            "import", "night.csv", "--format", "mindmonitor-csv", "--eeg-scale", "0.5", "--eeg-offset", "-800",
+            "--start-time", "2026-01-14T23:00:00+00:00", "--output", "data/recordings/imported/n",
+        ])
+        self.assertEqual((args.import_format, args.eeg_scale, args.eeg_offset), ("mindmonitor-csv", 0.5, -800.0))
+        self.assertEqual((args.start_time, args.source_version, args.channel_map), ("2026-01-14T23:00:00+00:00", None, None))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            build_parser().parse_args(["import", "night.xdf", "--format", "xdf"])
+        args = build_parser().parse_args(["import", "a.edf", "--format", "edf", "--channel-map", "boas-headband"])
+        self.assertEqual(args.channel_map, "boas-headband")
+
+        args = build_parser().parse_args([
+            "annotate-template", "n1", "--output", "rows.csv", "--from-hypnogram", "scored.tsv", "--hypnogram-column", "stage_ai",
+        ])
+        self.assertEqual((args.from_hypnogram, args.hypnogram_column), (Path("scored.tsv"), "stage_ai"))
+        self.assertIsNone(build_parser().parse_args(["annotate-template", "n1", "--output", "r.csv"]).from_hypnogram)
+
+    def test_exports_refuse_a_night_from_a_sealed_schedule(self):
+        from muse_tmr.protocol import generate_night_schedule, night_arm_from_schedule, unseal_night_schedule, write_night_schedule
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            schedule_path = root / "series-a.json"
+            write_night_schedule(generate_night_schedule(7, 1, schedule_id="series-a"), schedule_path)
+            arm = night_arm_from_schedule(schedule_path, "night-001")
+            night = root / "night"
+            night.mkdir()
+            (night / "metadata.json").write_text(json.dumps({"started_at": "2026-01-14T23:00:00+00:00",
+                                                             "night_arm": arm.to_dict()}))
+            for command in ("export-edf", "export-bids"):
+                for extra in ([], ["--night-schedule", str(schedule_path)]):
+                    with self.subTest(command=command, extra=extra):
+                        stderr = io.StringIO()
+                        with contextlib.redirect_stderr(stderr):
+                            code = cli_main.main([command, str(night), "--output", str(root / "out"), *extra])
+                        self.assertEqual(code, 2)
+                        self.assertIn("unseal-night-schedule", stderr.getvalue())
+                        self.assertNotIn(arm.arm, stderr.getvalue().replace("unseal", ""))
+            self.assertFalse((root / "out").exists())
+
+            # Once unsealed the night passes the check; without the extra it stops at the hint.
+            unseal_night_schedule(schedule_path)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr), patch("muse_tmr.data.edf_io.edf_available", return_value=False):
+                code = cli_main.main(["export-edf", str(night), "--night-schedule", str(schedule_path)])
+            self.assertEqual(code, 2)
+            self.assertIn('pip install "remind-eeg[edf]"', stderr.getvalue())
+            self.assertNotIn("unseal", stderr.getvalue())
+
+    def test_import_refuses_what_it_cannot_scale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "mm.csv"
+            source.write_text("TimeStamp,RAW_TP9,RAW_AF7,RAW_AF8,RAW_TP10\n2026-01-14 23:00:00.000,1,2,3,4\n")
+            for extra, message in (([], "--eeg-scale"), (["--eeg-scale", "1", "--channel-map", "boas-headband"], "edf only")):
+                with self.subTest(extra=extra):
+                    stderr = io.StringIO()
+                    with contextlib.redirect_stderr(stderr):
+                        code = cli_main.main(["import", str(source), "--format", "mindmonitor-csv",
+                                              "--output", str(Path(tmp) / "out"), *extra])
+                    self.assertEqual(code, 2)
+                    self.assertIn(message, stderr.getvalue())
+
+
+class TestAnnotateFromHypnogram(unittest.TestCase):
+    """Labels from a hypnogram (#230), on a labelled synthetic night: synthetic input, not sleep."""
+
+    @classmethod
+    def setUpClass(cls):
+        from tests.exchange_synthetic import labelled_night
+
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls._tmp.name)
+        cls.night = labelled_night(cls.root / "night")
+        cls.expected = ["wake"] * 4 + ["nrem"] * 4 + ["probable_rem"] * 4 + ["nrem"] * 2
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def _rows(self, hypnogram, *extra):
+        from muse_tmr.annotations import load_rem_annotations
+
+        output = self.root / f"rows_{len(list(self.root.glob('rows_*')))}.csv"
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = cli_main.main(["annotate-template", str(self.night.recording_dir), "--output", str(output),
+                                  "--from-hypnogram", str(hypnogram), *extra])
+        self.assertEqual(code, 0)
+        return load_rem_annotations(output), output, stdout.getvalue()
+
+    def test_each_epoch_gets_the_stage_at_its_middle(self):
+        rows, output, printed = self._rows(self.night.recording_dir / "hypnogram.csv")
+
+        self.assertEqual([row.label for row in rows], self.expected)
+        self.assertEqual({row.prediction_source for row in rows}, {"hypnogram:hypnogram.csv"})
+        self.assertIn("labelled_from=hypnogram.csv wake=4 nrem=6 probable_rem=4 unknown=0", printed)
+
+        model = self.root / "model.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli_main.main(["train-rem-classifier", str(output), "--output", str(model)]), 0)
+        self.assertTrue(model.exists())
+
+    def test_a_part_of_the_night_keeps_the_whole_nights_clock(self):
+        rows, _, _ = self._rows(self.night.recording_dir / "hypnogram.csv", "--start-seconds", "150", "--end-seconds", "330")
+
+        self.assertEqual([row.label for row in rows], self.expected[5:5 + len(rows)])
+        self.assertGreaterEqual(len(rows), 5)
+
+    def test_a_bids_scoring_file_and_an_unscored_stretch(self):
+        scored = self.root / "scored_events.tsv"
+        scored.write_text("onset\tduration\tstage\tlabel\n0\t60\tSleep stage W\twake\n60\t60\tSleep stage R\tprobable_rem\n")
+
+        rows, _, _ = self._rows(scored)
+
+        self.assertEqual([row.label for row in rows], ["wake", "wake", "probable_rem", "probable_rem"] + ["unknown"] * 10)
 
 
 if __name__ == "__main__":
