@@ -52,7 +52,7 @@ from muse_tmr.validation.gate_log import (
     load_rem_gate_decisions,
     run_at,
 )
-from muse_tmr.validation.pilot4 import AwakeningEvent, load_awakening_events
+from muse_tmr.validation.pilot4 import AwakeningEvent, audio_for_plays, load_awakening_events
 
 CUE_AROUSAL_SCHEMA_VERSION = 1
 AROUSAL_FLAGS = ("alpha", "beta", "emg", "imu", "hr")
@@ -654,7 +654,7 @@ def _night_inputs(
             Path(gate_log_path).expanduser() if gate_log_path else report
         )
         audio_path = Path(audio_log_path).expanduser() if audio_log_path else None
-        audio, found, mismatch = _audio_for_plays(plays, audio_path)
+        audio, found, mismatch = audio_for_plays(plays, audio_path)
         awakenings = _awakenings(awakening_events_path, None)
         return _NightInputs(
             plays=plays,
@@ -673,7 +673,7 @@ def _night_inputs(
     plays = tuple(event for event in _read_jsonl(events_path) if event.get("event_type") == "play")
     sources["scheduler_events"] = events_path.name if events_path.exists() else None
     audio_path = Path(audio_log_path).expanduser() if audio_log_path else recording_dir / "audio_playback.jsonl"
-    audio, found, mismatch = _audio_for_plays(plays, audio_path)
+    audio, found, mismatch = audio_for_plays(plays, audio_path)
     sources["audio_log"] = audio_path.name if found else None
     gate_source = Path(gate_log_path).expanduser() if gate_log_path else recording_dir
     gate_records = load_rem_gate_decisions(gate_source)
@@ -735,43 +735,6 @@ def _awakenings(path: Optional[Path], recording_dir: Optional[Path]) -> Optional
     if not path.exists():
         return None
     return load_awakening_events(path)
-
-
-def _audio_for_plays(
-    plays: Sequence[Mapping[str, object]],
-    audio_path: Optional[Path],
-) -> Tuple[Tuple[Optional[Mapping[str, object]], ...], bool, bool]:
-    """Each scheduler play's line of ``audio_playback.jsonl``, in order.
-
-    The player logs one line per play, in the order of the plays, and one more for an
-    emergency stop. A play whose line names another cue ends the matching: it and the
-    plays after it get none, and the mismatch is reported.
-    """
-    if audio_path is None or not audio_path.exists():
-        return tuple(None for _ in plays), False, False
-    entries = [
-        entry
-        for entry in _read_jsonl(audio_path)
-        if not (entry.get("cue_id") == "emergency-stop" and entry.get("status") == "stopped")
-    ]
-    matched: List[Optional[Mapping[str, object]]] = []
-    position = 0
-    mismatch = False
-    for play in plays:
-        metadata = dict(play.get("metadata", {}) or {})
-        if metadata.get("synthetic_cue"):
-            matched.append(None)
-            continue
-        if mismatch or position >= len(entries) or entries[position].get("cue_id") != play.get("cue_id"):
-            mismatch = True
-            matched.append(None)
-            continue
-        matched.append(entries[position])
-        position += 1
-    real_plays = sum(1 for play in plays if not dict(play.get("metadata", {}) or {}).get("synthetic_cue"))
-    if position != len(entries) and real_plays:
-        mismatch = True
-    return tuple(matched), True, mismatch
 
 
 def _cue_targets(inputs: _NightInputs, first_epoch_start: float, config: CueArousalConfig) -> List[_Target]:

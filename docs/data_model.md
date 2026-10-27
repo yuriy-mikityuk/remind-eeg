@@ -937,11 +937,11 @@ directory or the Pilot 3 report's (#231):
 | `preset` | The preset compared with: `name`, `version`, `title`, `content_hash`, `runnable`, `source` (the night's, the one asked for, or the default) and its `citations`. |
 | `night_protocol`, `settings` | The night's `protocol` block and the runner settings it ran with. |
 | `inputs` | Which files were read. |
-| `summary` | `rem_periods`, `rem_periods_with_cues`, `plays` by stream, `plays_outside_rem_periods`, `uncued_puzzle_play_count`, `stride_seconds`. |
+| `summary` | `rem_periods`, `rem_periods_with_cues`, `plays` by stream (the plays the player played), `plays_blocked_or_skipped` by stream (left out of every check), `plays_outside_rem_periods`, `uncued_puzzle_play_count`, `stride_seconds`. |
 | `rem_periods` | Each gate-open run with its plays by stream, `first_cue_seconds_after_gate_open` and `stable_rem_seconds_at_first_cue`. |
 | `checks` | `inter_cue_intervals`, `cues_per_rem_period`, `stable_rem_before_first_cue`, `pause_rules`, `volume_ramp`, `cue_duration`, `tlr_block`: each a `status` with `observed` and `published` and its detail. |
 | `deviations` | The preset's platform deviations. |
-| `limitations` | Codes: `synthetic_input`, `no_protocol_block`, `preset_changed_since_night`, `night_overrode_preset_settings`, `compared_with_another_preset`, `unknown_preset_in_night`, `no_gate_log`, `no_scheduler_events`, `no_audio_log`, `pilot3_plan_not_played`, `awakening_markers_unplaced`. |
+| `limitations` | Codes: `synthetic_input`, `no_protocol_block`, `preset_changed_since_night`, `night_overrode_preset_settings`, `compared_with_another_preset`, `unknown_preset_in_night`, `no_gate_log`, `no_scheduler_events`, `no_audio_log`, `audio_log_mismatch`, `plays_blocked_or_skipped`, `pilot3_plan_not_played`, `awakening_markers_unplaced`. |
 
 Puzzle protocol files may contain private puzzle content, responses, and night/session
 metadata, so `data/protocol/` is gitignored.

@@ -8,7 +8,7 @@ import json
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import AsyncIterator, Dict, Iterable, Mapping, Optional, Tuple
+from typing import AsyncIterator, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from muse_tmr.ble.muse_raw_stream import MuseRawStream
 
@@ -581,6 +581,45 @@ def load_awakening_events(input_path: Path) -> Tuple[AwakeningEvent, ...]:
     )
 
 
+def audio_for_plays(
+    plays: Sequence[Mapping[str, object]],
+    audio_path: Optional[Path],
+) -> Tuple[Tuple[Optional[Mapping[str, object]], ...], bool, bool]:
+    """Each scheduler play's line of ``audio_playback.jsonl``, in order; whether the log
+    was found; whether the matching broke off.
+
+    The player logs one line per play, in the order of the plays, and one more for an
+    emergency stop. A play whose line names another cue ends the matching: it and the
+    plays after it get none, and the mismatch is reported. The cue arousal scorer and
+    the protocol fidelity report both read a night's plays this way.
+    """
+    if audio_path is None or not Path(audio_path).expanduser().exists():
+        return tuple(None for _ in plays), False, False
+    entries = [
+        entry
+        for entry in _read_jsonl(Path(audio_path))
+        if not (entry.get("cue_id") == "emergency-stop" and entry.get("status") == "stopped")
+    ]
+    matched: List[Optional[Mapping[str, object]]] = []
+    position = 0
+    mismatch = False
+    for play in plays:
+        metadata = dict(play.get("metadata", {}) or {})
+        if metadata.get("synthetic_cue"):
+            matched.append(None)
+            continue
+        if mismatch or position >= len(entries) or entries[position].get("cue_id") != play.get("cue_id"):
+            mismatch = True
+            matched.append(None)
+            continue
+        matched.append(entries[position])
+        position += 1
+    real_plays = sum(1 for play in plays if not dict(play.get("metadata", {}) or {}).get("synthetic_cue"))
+    if position != len(entries) and real_plays:
+        mismatch = True
+    return tuple(matched), True, mismatch
+
+
 async def _score_own_night(
     output_dir: Path,
     *,
@@ -930,6 +969,13 @@ def _append_jsonl(output_path: Path, payload: Mapping[str, object]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(dict(payload), sort_keys=True) + "\n")
+
+
+def _read_jsonl(path: Path) -> List[Dict[str, object]]:
+    path = Path(path).expanduser()
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def _event_type_counts(events: Iterable[TmrSchedulerEvent]) -> Dict[str, int]:

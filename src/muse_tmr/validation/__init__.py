@@ -40,6 +40,7 @@ from muse_tmr.validation.pilot4 import (
     Pilot4CueingConfig,
     Pilot4CueingSummary,
     append_awakening_event,
+    audio_for_plays,
     load_awakening_events,
     run_pilot4_cueing_night,
 )
@@ -65,6 +66,7 @@ __all__ = [
     "Pilot4CueingSummary",
     "REM_GATE_DECISIONS_FILENAME",
     "append_awakening_event",
+    "audio_for_plays",
     "emitting_record",
     "gate_decision_record",
     "gate_open_runs",

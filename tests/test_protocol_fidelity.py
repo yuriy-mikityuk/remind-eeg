@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from muse_tmr.audio import CueLibrary, CueMetadata
+from muse_tmr.audio import CueLibrary, CueMetadata, MockAudioBackend, VolumeCalibration
 from muse_tmr.cli.main import main as cli_main
 from muse_tmr.models import RemGateConfig, RemPrediction, StableRemGate
 from muse_tmr.protocol import (
@@ -18,6 +18,7 @@ from muse_tmr.protocol import (
     PuzzleCatalog,
     PuzzleCueAssignment,
     PuzzleTask,
+    TlrBlockConfig,
     TmrCueScheduler,
     default_tlr_cue,
     get_protocol_preset,
@@ -34,8 +35,11 @@ from muse_tmr.validation import (
     append_awakening_event,
     gate_decision_record,
     load_gate_open_runs,
+    run_pilot4_cueing_night,
     write_rem_gate_decisions,
 )
+from tests.test_pilot4_cueing import FakeMuseSource, pilot4_config, rem_frames
+from tests.test_pilot4_cueing import protocol_fixture as pilot4_protocol
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NEW_MODULES = (
@@ -250,11 +254,15 @@ class GateSequenceTest(unittest.TestCase):
     def test_the_gain_against_the_published_intensity(self):
         def ramp(name, preset, gains=None):
             night = write_night(self.root / name, [0.9] * 6, preset=preset, tlr=True)
-            events = [json.loads(line) for line in (night / "scheduler_events.jsonl").read_text().splitlines()]
+            events = [json.loads(line) for line in (night / "scheduler_events.jsonl").read_text(encoding="utf-8").splitlines()]
             plays = [event for event in events if event["event_type"] == "play"]
             gains = gains or [0.04] * len(plays)
+            # One line per play, as the player logs them.
             (night / "audio_playback.jsonl").write_text(
-                "".join(json.dumps({"effective_volume": gain}) + "\n" for gain in gains[: len(plays)]),
+                "".join(
+                    json.dumps({"cue_id": play["cue_id"], "status": "played", "effective_volume": gain}) + "\n"
+                    for play, gain in zip(plays, gains)
+                ),
                 encoding="utf-8",
             )
             return build_protocol_fidelity(night).checks["volume_ramp"]
@@ -295,6 +303,85 @@ class GateSequenceTest(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(cli_main(["protocol-fidelity", str(self.root / "missing")]), 2)
             self.assertEqual(cli_main(["protocol-fidelity", str(night), "--protocol-preset", "nope"]), 2)
+
+
+class StopTouchingBackend(MockAudioBackend):
+    """Plays the first cue, then sets the night's emergency stop."""
+
+    def __init__(self, stop_path):
+        super().__init__()
+        self.stop_path = stop_path
+
+    def play_test_cue(self, request):
+        reasons = super().play_test_cue(request)
+        self.stop_path.touch()
+        return reasons
+
+
+class PlayedCuesOnlyTest(unittest.IsolatedAsyncioTestCase):
+    """After an emergency stop the scheduler still logs plays and the player blocks them;
+    a Pilot 5 night's fidelity report counts only what played."""
+
+    async def _night(self, directory, backend, stop_path):
+        catalog, session, assignment, cue_library = pilot4_protocol(include_tlr=True)
+        plan = plan_tlr_block(
+            default_tlr_cue(),
+            config=TlrBlockConfig(repetitions=2, interval_seconds=0.0, post_block_pause_seconds=0.0),
+        )
+        summary = await run_pilot4_cueing_night(
+            FakeMuseSource(rem_frames(6)),
+            config=pilot4_config(
+                directory,
+                emergency_stop_path=stop_path,
+                enable_tlr_block=True,
+                require_tlr_block=True,
+                pilot_id="m8_pilot5_full_night_tlr_puzzle_cueing",
+                summary_filename="pilot5_summary.json",
+            ),
+            catalog=catalog,
+            session=session,
+            assignment=assignment,
+            cue_library=cue_library,
+            calibration=VolumeCalibration("Sleep Headphones", 0.01, 0.02, 0.04),
+            backend=backend,
+            tlr_block_plan=plan,
+        )
+        return summary, build_protocol_fidelity(directory)
+
+    async def test_a_stop_before_the_first_cue_leaves_no_cue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            night = Path(tmp)
+            stop = night / "STOP"
+            stop.touch()
+            summary, report = await self._night(night, MockAudioBackend(), stop)
+
+        self.assertEqual(summary.audio_status_counts, {"blocked": 4})
+        self.assertEqual(report.summary["plays"], {"tlr": 0, "puzzle": 0})
+        self.assertEqual(report.summary["plays_blocked_or_skipped"], {"tlr": 2, "puzzle": 2})
+        self.assertEqual([period["plays"] for period in report.rem_periods], [{"tlr": 0, "puzzle": 0}])
+        self.assertIn("plays_blocked_or_skipped", report.limitations)
+        self.assertNotIn("audio_log_mismatch", report.limitations)
+        statuses = report.statuses()
+        self.assertEqual(statuses["tlr_block"], "no_cues")
+        self.assertEqual(statuses["volume_ramp"], "not_available")
+        self.assertEqual(statuses["cues_per_rem_period"], "no_cues")
+        self.assertIn("blocked or skipped by the player", report.to_markdown())
+
+    async def test_a_stop_after_the_first_cue_cuts_the_tlr_block(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            night = Path(tmp)
+            stop = night / "STOP"
+            backend = StopTouchingBackend(stop)
+            summary, report = await self._night(night, backend, stop)
+
+        self.assertEqual(len(backend.requests), 1)
+        self.assertEqual(summary.audio_status_counts, {"played": 1, "blocked": 3})
+        self.assertEqual(report.summary["plays"], {"tlr": 1, "puzzle": 0})
+        self.assertEqual(report.summary["plays_blocked_or_skipped"], {"tlr": 1, "puzzle": 2})
+        tlr = report.checks["tlr_block"]
+        self.assertEqual(tlr["status"], "differs")
+        self.assertEqual([(row["cues"], row["complete"]) for row in tlr["periods"]], [(1, False)])
+        self.assertEqual(report.checks["volume_ramp"]["periods"][0]["first_gain"], 0.04)
 
 
 class MandatoryBlockTest(unittest.TestCase):

@@ -128,7 +128,7 @@ muse-tmr protocol-fidelity data/recordings/<night> --pilot3-report data/reports/
 
 It compares a night with its preset: with the one in `metadata.json`, or with `--protocol-preset` another one; a night without a block is compared with `remind_default_v1`. It reads `scheduler_events.jsonl`, `audio_playback.jsonl`, `rem_gate_decisions.jsonl`, `awakening_events.jsonl` and `metadata.json`, or a Pilot 3 report's plan and epochs, and writes `protocol_fidelity.json` and `protocol_fidelity.md` into the night's directory, the Pilot 3 report's, or `--output-dir`.
 
-A REM period is a gate-open run as `muse_tmr.validation.gate_log` defines it, the same as for the cue arousal scorer, and a cue is placed at the decision of the epoch that played it. The checks:
+A REM period is a gate-open run as `muse_tmr.validation.gate_log` defines it, the same as for the cue arousal scorer, and a cue is placed at the decision of the epoch that played it. Each scheduler play is paired with its line of `audio_playback.jsonl`, as the scorer pairs them. A play the player blocked (after an emergency stop) or skipped made no sound: it is left out of every check, counted in the summary's `plays_blocked_or_skipped` and named in the limitations; a log that does not match the plays adds `audio_log_mismatch`. The checks:
 
 - `inter_cue_intervals`: the time between cues of one stream within a REM period against the published range;
 - `cues_per_rem_period`: against a published limit;

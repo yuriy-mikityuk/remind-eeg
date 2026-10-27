@@ -5,7 +5,10 @@ It reads what the night logged, ``scheduler_events.jsonl``, ``audio_playback.jso
 Pilot 3 report's plan and epochs, and compares them with the preset the night ran:
 the intervals between cues, the cues per REM period, the stable REM before the first
 cue, whether the pause rules held, the volume of the cues in a period, the cue length
-and the TLR block against its plan.
+and the TLR block against its plan. A scheduler play the player blocked (after an
+emergency stop) or skipped made no sound, so it is left out of every check and only
+counted; each play is paired with its line of the audio log by ``audio_for_plays()``,
+as the cue arousal scorer pairs them.
 
 A REM period here is a gate-open run as ``muse_tmr.validation.gate_log`` defines it
 (``load_gate_open_runs()``), the same as for the cue arousal scorer; a cue is placed at
@@ -43,7 +46,7 @@ from muse_tmr.validation.gate_log import (
     load_rem_gate_decisions,
     run_at,
 )
-from muse_tmr.validation.pilot4 import load_awakening_events
+from muse_tmr.validation.pilot4 import audio_for_plays, load_awakening_events
 
 PROTOCOL_FIDELITY_SCHEMA_VERSION = 1
 REPORT_FILENAME = "protocol_fidelity.json"
@@ -193,6 +196,7 @@ class ProtocolFidelityReport:
             )
         summary = self.summary
         plays = summary.get("plays", {}) or {}
+        not_played = summary.get("plays_blocked_or_skipped", {}) or {}
         lines.extend([
             "",
             "## Night",
@@ -200,6 +204,8 @@ class ProtocolFidelityReport:
             f"- REM periods (gate-open runs): {summary.get('rem_periods')}, with cues: {summary.get('rem_periods_with_cues')}",
             f"- plays: TLR {plays.get('tlr', 0)}, puzzle {plays.get('puzzle', 0)}; outside REM periods: "
             f"{summary.get('plays_outside_rem_periods')}",
+            f"- blocked or skipped by the player, left out of the checks: TLR {not_played.get('tlr', 0)}, "
+            f"puzzle {not_played.get('puzzle', 0)}",
             "",
             "## Checks",
             "",
@@ -252,7 +258,11 @@ def build_protocol_fidelity(
     elif not night.audio_found:
         limitations.append("no_audio_log")
 
-    placed = _place_plays(night)
+    placed, not_played = _place_plays(night)
+    if sum(not_played.values()):
+        limitations.append("plays_blocked_or_skipped")
+    if night.audio_mismatch:
+        limitations.append("audio_log_mismatch")
     periods = _rem_periods(night, placed)
     stride = _stride(night.records)
     checks = {
@@ -269,6 +279,7 @@ def build_protocol_fidelity(
         "rem_periods": len(night.runs),
         "rem_periods_with_cues": sum(1 for period in periods if sum(period["plays"].values()) > 0),
         "plays": {stream: sum(1 for play in placed if play.stream == stream) for stream in STREAMS},
+        "plays_blocked_or_skipped": not_played,
         "plays_outside_rem_periods": plays_outside,
         "uncued_puzzle_play_count": night.uncued_puzzle_play_count,
         "stride_seconds": stride,
@@ -321,8 +332,10 @@ class _Night:
     events_found: bool
     records: Tuple[GateDecisionRecord, ...]
     runs: Tuple[GateOpenRun, ...]
-    audio: Tuple[Mapping[str, object], ...]
+    # The audio log line of each play event, in order (None: no log, or after a mismatch).
+    play_audio: Tuple[Optional[Mapping[str, object]], ...]
     audio_found: bool
+    audio_mismatch: bool
     awakening_offsets: Optional[Tuple[float, ...]]
     awakenings_unplaced: int
     protocol: Optional[Dict[str, object]]
@@ -361,8 +374,9 @@ def _load_night(recording_dir: Path, pilot3_report: Optional[Path]) -> _Night:
             events_found="scheduler_events" in report,
             records=records,
             runs=runs,
-            audio=(),
+            play_audio=tuple(None for event in events if event.get("event_type") == "play"),
             audio_found=False,
+            audio_mismatch=False,
             awakening_offsets=None,
             awakenings_unplaced=0,
             protocol=protocol_block_of(report),
@@ -380,12 +394,10 @@ def _load_night(recording_dir: Path, pilot3_report: Optional[Path]) -> _Night:
     runs = load_gate_open_runs(recording_dir)
     sources["gate_log"] = REM_GATE_DECISIONS_FILENAME if records else None
     audio_path = recording_dir / "audio_playback.jsonl"
-    audio = tuple(
-        entry
-        for entry in _read_jsonl(audio_path)
-        if not (entry.get("cue_id") == "emergency-stop" and entry.get("status") == "stopped")
+    play_audio, audio_found, audio_mismatch = audio_for_plays(
+        [event for event in events if event.get("event_type") == "play"], audio_path
     )
-    sources["audio_log"] = audio_path.name if audio_path.exists() else None
+    sources["audio_log"] = audio_path.name if audio_found else None
     summary = {}
     for name in SUMMARY_FILENAMES:
         summary = _read_json(recording_dir / name)
@@ -404,8 +416,9 @@ def _load_night(recording_dir: Path, pilot3_report: Optional[Path]) -> _Night:
         events_found=events_path.exists(),
         records=records,
         runs=runs,
-        audio=audio,
-        audio_found=audio_path.exists(),
+        play_audio=play_audio,
+        audio_found=audio_found,
+        audio_mismatch=audio_mismatch,
         awakening_offsets=offsets,
         awakenings_unplaced=unplaced,
         protocol=protocol_block_of(metadata) or protocol_block_of(summary),
@@ -465,18 +478,25 @@ def _awakening_offsets(events, first_epoch_start: Optional[float]) -> Tuple[Tupl
 # --------------------------------------------------------------------------- #
 # Placing the plays
 # --------------------------------------------------------------------------- #
-def _place_plays(night: _Night) -> List[_Play]:
+def _place_plays(night: _Night) -> Tuple[List[_Play], Dict[str, int]]:
+    """The plays the player played, each at the decision of the epoch that played it, and
+    by stream how many it blocked or skipped.
+
+    A play with no audio line (a Pilot 3 plan, a night without its audio log, or after a
+    mismatch) counts as played; its volume then comes from the scheduler event.
+    """
     records = sorted(night.records, key=lambda record: (record.timestamp_seconds, record.index))
     starts = [record.timestamp_seconds for record in records]
-    audio_volumes = _audio_volumes(night)
     plays = []
-    play_index = 0
-    for event in night.events:
-        if event.get("event_type") != "play":
-            continue
+    not_played = {stream: 0 for stream in STREAMS}
+    play_events = [event for event in night.events if event.get("event_type") == "play"]
+    for event, audio in zip(play_events, night.play_audio):
         metadata = dict(event.get("metadata", {}) or {})
         stream = str(event.get("protocol") or "")
         if metadata.get("synthetic_cue") or stream not in STREAMS:
+            continue
+        if audio is not None and audio.get("status") != "played":
+            not_played[stream] += 1
             continue
         scheduled = float(event["timestamp_seconds"])
         record = emitting_record(records, scheduled, starts=starts)
@@ -486,9 +506,9 @@ def _place_plays(night: _Night) -> List[_Play]:
             decision = record.decision_seconds
         else:
             decision = scheduled + _DEFAULT_EPOCH_SECONDS
-        volume = _optional_float(metadata.get("effective_volume"))
-        if volume is None and play_index < len(audio_volumes):
-            volume = audio_volumes[play_index]
+        volume = None if audio is None else _optional_float(audio.get("effective_volume"))
+        if volume is None:
+            volume = _optional_float(metadata.get("effective_volume"))
         plays.append(
             _Play(
                 stream=stream,
@@ -500,13 +520,7 @@ def _place_plays(night: _Night) -> List[_Play]:
                 duration_seconds=_optional_float(metadata.get("duration_seconds")),
             )
         )
-        play_index += 1
-    return sorted(plays, key=lambda play: play.decision_seconds)
-
-
-def _audio_volumes(night: _Night) -> List[Optional[float]]:
-    """The effective volume of each line of the audio log, in order (one line per play)."""
-    return [_optional_float(entry.get("effective_volume")) for entry in night.audio]
+    return sorted(plays, key=lambda play: play.decision_seconds), not_played
 
 
 def _rem_periods(night: _Night, plays: Sequence[_Play]) -> List[Dict[str, object]]:
@@ -982,12 +996,6 @@ def _read_json(path: Path) -> Dict[str, object]:
     except (OSError, ValueError):
         return {}
     return payload if isinstance(payload, dict) else {}
-
-
-def _read_jsonl(path: Path) -> List[Dict[str, object]]:
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def _utc_now() -> str:
