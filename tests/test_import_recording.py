@@ -342,6 +342,10 @@ class TestImportedNightInThePipeline(unittest.TestCase):
         with quiet() as (_, err):
             self.assertEqual(cli_main(["annotate-template", str(bare), "--output", str(self.root / "x.csv")]), 2)
         self.assertIn("--eeg-scale", err.getvalue())
+        # replay only lists the frames, and says the scale is missing.
+        with quiet() as (out, _):
+            self.assertEqual(cli_main(["replay", str(bare)]), 0)
+        self.assertIn("imported: decoded-frames, scale undeclared; report and simulation only", out.getvalue())
 
         from muse_tmr.reports.nightly_report import build_report
 
