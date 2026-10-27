@@ -898,18 +898,13 @@ def _awakening_offsets(
     placed = []
     notes = {"from_utc": 0, "unplaced": 0}
     for event in awakenings:
-        if event.timestamp_seconds is not None:
-            placed.append((event.timestamp_seconds, event.attributed_to_cue))
-            continue
-        try:
-            moment = dt.datetime.fromisoformat(event.timestamp_utc)
-        except ValueError:
+        offset = event.night_offset_seconds(first_epoch_start)
+        if offset is None:
             notes["unplaced"] += 1
             continue
-        if moment.tzinfo is None:
-            moment = moment.replace(tzinfo=dt.timezone.utc)
-        placed.append((moment.timestamp() - first_epoch_start, event.attributed_to_cue))
-        notes["from_utc"] += 1
+        if event.timestamp_seconds is None:
+            notes["from_utc"] += 1
+        placed.append((offset, event.attributed_to_cue))
     return sorted(placed, key=lambda item: item[0]), notes
 
 

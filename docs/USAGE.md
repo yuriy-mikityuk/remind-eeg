@@ -698,7 +698,7 @@ muse-tmr log-pilot4-awakening data/recordings/pilot4_low_volume_<timestamp>/awak
   --notes "woke briefly; no clear cue recall"
 ```
 
-`--attributed-to-cue` (`yes`, `no`, `unsure`) records whether you think a cue woke you, and `--timestamp-seconds` places the marker at that many seconds from the night's first epoch instead of its UTC time (`--timestamp-utc`, by default now). Older markers without them still load.
+`--attributed-to-cue` (`yes`, `no`, `unsure`) records whether you think a cue woke you, and `--timestamp-seconds` places the marker at that many seconds from the night's first epoch instead of its UTC time (`--timestamp-utc`, by default now; a time without an offset is read as UTC by `score-cue-arousal` and `protocol-fidelity` alike). Older markers without them still load.
 
 `--protocol-preset` sets the gate's stable window and the scheduler's interval, cooldown and limit as in Pilot 3, and `metadata.json` and `pilot4_summary.json` (schema 3) record the preset as `protocol`. A preset sets no volume: `--hard-max-volume`, `--default-volume` and the calibration hold whatever the preset. `muse-tmr protocol-fidelity <night>` then compares the night with it.
 

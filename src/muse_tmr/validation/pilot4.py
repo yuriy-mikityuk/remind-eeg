@@ -273,10 +273,10 @@ class AwakeningEvent:
     """A manual awakening marker.
 
     ``timestamp_seconds`` (optional) places it on the night's time base, seconds from the
-    first epoch's start like the scheduler events; without it the cue arousal scorer
-    places it by ``timestamp_utc``. ``attributed_to_cue`` (optional, ``yes``, ``no`` or
-    ``unsure``) is whether the sleeper thinks a cue woke them. Rows written before both
-    fields existed load as they are.
+    first epoch's start like the scheduler events; without it the cue arousal scorer and
+    the protocol fidelity report place it by ``timestamp_utc`` (``night_offset_seconds()``).
+    ``attributed_to_cue`` (optional, ``yes``, ``no`` or ``unsure``) is whether the sleeper
+    thinks a cue woke them. Rows written before both fields existed load as they are.
     """
 
     event_type: str = "awakening"
@@ -301,6 +301,22 @@ class AwakeningEvent:
                     f"attributed_to_cue must be one of: {', '.join(AWAKENING_ATTRIBUTIONS)}"
                 )
             object.__setattr__(self, "attributed_to_cue", attribution)
+
+    def night_offset_seconds(self, first_epoch_start: Optional[float]) -> Optional[float]:
+        """Where the marker falls on the night's time base: ``timestamp_seconds``, else
+        ``timestamp_utc`` minus ``first_epoch_start`` (Unix seconds), a time without an
+        offset read as UTC. None when neither places it."""
+        if self.timestamp_seconds is not None:
+            return self.timestamp_seconds
+        if first_epoch_start is None:
+            return None
+        try:
+            moment = dt.datetime.fromisoformat(self.timestamp_utc)
+        except (TypeError, ValueError):
+            return None
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=dt.timezone.utc)
+        return moment.timestamp() - first_epoch_start
 
     def to_dict(self) -> Dict[str, object]:
         payload: Dict[str, object] = {

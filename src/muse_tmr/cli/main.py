@@ -507,7 +507,11 @@ def build_parser() -> argparse.ArgumentParser:
     awakening_parser.add_argument("output", type=Path, help="awakening_events.jsonl path.")
     awakening_parser.add_argument("--event-type", default="awakening")
     awakening_parser.add_argument("--notes", default="")
-    awakening_parser.add_argument("--timestamp-utc", default="")
+    awakening_parser.add_argument(
+        "--timestamp-utc",
+        default="",
+        help="When it happened, as an ISO time; without an offset it is read as UTC. Default: now.",
+    )
     awakening_parser.add_argument(
         "--timestamp-seconds",
         type=_non_negative_float,

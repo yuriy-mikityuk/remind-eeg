@@ -456,22 +456,17 @@ def _preset_for(
 
 
 def _awakening_offsets(events, first_epoch_start: Optional[float]) -> Tuple[Tuple[float, ...], int]:
-    """Awakening markers in seconds from the first epoch's start; markers without
-    ``timestamp_seconds`` are placed by their UTC time when the summary gives the start."""
+    """Awakening markers in seconds from the first epoch's start, placed as the cue
+    arousal scorer places them (``AwakeningEvent.night_offset_seconds()``): markers
+    without ``timestamp_seconds`` by their UTC time when the summary gives the start."""
     offsets = []
     unplaced = 0
     for event in events:
-        if event.timestamp_seconds is not None:
-            offsets.append(float(event.timestamp_seconds))
-            continue
-        try:
-            moment = dt.datetime.fromisoformat(event.timestamp_utc).timestamp()
-        except (TypeError, ValueError):
-            moment = None
-        if moment is None or first_epoch_start is None:
+        offset = event.night_offset_seconds(first_epoch_start)
+        if offset is None:
             unplaced += 1
             continue
-        offsets.append(moment - first_epoch_start)
+        offsets.append(offset)
     return tuple(sorted(offsets)), unplaced
 
 

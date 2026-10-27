@@ -146,9 +146,9 @@ If you wake during or after the pilot and want to mark it:
 ```
 
 `--attributed-to-cue` (`yes`, `no` or `unsure`) records whether you think a cue woke
-you. The marker gets the current time in UTC, or `--timestamp-utc`; `--timestamp-seconds`
-places it on the night's time base instead, seconds from the first epoch as in
-`scheduler_events.jsonl`. Use short factual notes. Keep the file local unless you
+you. The marker gets the current time in UTC, or `--timestamp-utc` (a time without an
+offset is read as UTC); `--timestamp-seconds` places it on the night's time base instead,
+seconds from the first epoch as in `scheduler_events.jsonl`. Use short factual notes. Keep the file local unless you
 intentionally sanitize it.
 
 ## Cue Arousal Proxies

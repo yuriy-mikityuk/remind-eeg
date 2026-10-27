@@ -3,9 +3,12 @@
 import ast
 import asyncio
 import contextlib
+import datetime as dt
 import io
 import json
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -125,6 +128,26 @@ def write_night(
     return directory
 
 
+@contextlib.contextmanager
+def local_time_zone(posix_tz):
+    """Run with the process's local time zone set to ``posix_tz``; where ``time.tzset``
+    is missing (Windows) the zone stays as it is."""
+    if not hasattr(time, "tzset"):
+        yield
+        return
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = posix_tz
+    time.tzset()
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+
 def motion_pause(index):
     return ArousalGuardDecision(
         action="pause",
@@ -209,6 +232,22 @@ class GateSequenceTest(unittest.TestCase):
         )
         # The second marker has no time on the night's base and no summary to place it by.
         self.assertIn("awakening_markers_unplaced", report.limitations)
+
+    def test_a_marker_time_without_an_offset_is_utc(self):
+        """--timestamp-utc without an offset is read as UTC, as the cue arousal scorer
+        reads it, on a machine whose local time is not UTC."""
+        night = write_night(self.root / "night", [0.9] * 6, preset="konkoly2024_exp1")
+        first_epoch_start = dt.datetime(2026, 10, 27, 3, 0, tzinfo=dt.timezone.utc).timestamp()
+        (night / "pilot4_summary.json").write_text(json.dumps({"first_epoch_start": first_epoch_start}), encoding="utf-8")
+        # 70 s into the night.
+        append_awakening_event(night / "awakening_events.jsonl", AwakeningEvent(timestamp_utc="2026-10-27T03:01:10"))
+        with local_time_zone("XYZ-5"):
+            pauses = build_protocol_fidelity(night).checks["pause_rules"]
+        self.assertEqual(pauses["status"], "differs")
+        self.assertEqual(
+            pauses["awakenings"],
+            [{"at_seconds": 70.0, "published_pause_seconds": 2700.0, "seconds_to_next_cue": 20.0, "honoured": False}],
+        )
 
     def test_tlr_cues_planned_closer_than_the_stride_play_back_to_back(self):
         night = write_night(self.root / "default", [0.9] * 6, tlr=True)
