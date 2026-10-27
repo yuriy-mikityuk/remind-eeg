@@ -14,6 +14,8 @@ import numpy as np
 
 from muse_tmr.audio import (
     AudioBackendFallbackError,
+    AudioCuePlayer,
+    AudioPlaybackConfig,
     CueLibrary,
     CueMetadata,
     MockAudioBackend,
@@ -25,13 +27,16 @@ from muse_tmr.features import EpochConfig
 from muse_tmr.models import RemGateConfig
 from muse_tmr.protocol import (
     ArousalGuardConfig,
+    NightArmContext,
     NightPuzzleSession,
     PuzzleCatalog,
     PuzzleCueAssignment,
     PuzzleTask,
     TlrBlockConfig,
     TmrSchedulerConfig,
+    TmrSchedulerEvent,
     default_tlr_cue,
+    load_night_schedule,
     plan_tlr_block,
 )
 from muse_tmr.cli import main as cli_main
@@ -189,8 +194,10 @@ class TestPilot4Cueing(unittest.IsolatedAsyncioTestCase):
             ]
             written = sorted(path.name for path in Path(tmpdir).glob("cue_arousal*"))
 
-        self.assertEqual(payload["schema_version"], 3)
+        self.assertEqual(payload["schema_version"], 4)
         self.assertEqual(payload["first_epoch_start"], 1000.0)
+        # A night without an arm records none.
+        self.assertEqual((payload["arm"], payload["night_id"], payload["schedule_commitment_sha256"]), (None, None, None))
         self.assertEqual([row["index"] for row in gate_log], [0, 1, 2, 3])
         self.assertEqual([row["gate_open"] for row in gate_log], [False, True, True, True])
         self.assertEqual([row["decision_seconds"] for row in gate_log], [30.0, 60.0, 90.0, 120.0])
@@ -985,6 +992,321 @@ class TestOneProtocolHash(unittest.TestCase):
         self.assertEqual(tlr_block["plan"], {"repetitions": 10, "interval_seconds": 30.0})
         self.assertGreaterEqual(tlr_block["observed"]["cues"], 1)
         self.assertIn(tlr_block["status"], ("as_planned", "differs"))
+
+
+ARMS = ("cue", "sham", "no_cue")
+SHAM_CUE = CueMetadata(
+    "sham_soft_tone", "generated_tone", 1.0, protocol="sham", frequency_hz=330.0, volume_hint=0.05,
+    tags=("sham", "untrained"),
+)
+
+
+def _arm_context(arm):
+    return NightArmContext(arm=arm, night_id="night-007", sham_cue_id="sham_soft_tone")
+
+
+class TestPilot5Arms(unittest.IsolatedAsyncioTestCase):
+    """A Pilot 5 night under cue, sham and no_cue (#228), mock audio, no speakers."""
+
+    async def _night(self, tmpdir, arm):
+        catalog, session, assignment, cue_library = protocol_fixture(include_tlr=True)
+        cue_library = replace(cue_library, cues=cue_library.cues + (SHAM_CUE,))
+        tlr_plan = plan_tlr_block(
+            default_tlr_cue(),
+            config=TlrBlockConfig(repetitions=2, interval_seconds=0.0, post_block_pause_seconds=0.0),
+        )
+        backend = MockAudioBackend()
+        config = pilot4_config(
+            Path(tmpdir) / (arm or "none"),
+            duration_seconds=60.0,
+            enable_tlr_block=True,
+            pilot_id="m8_pilot5_full_night_tlr_puzzle_cueing",
+            summary_filename="pilot5_summary.json",
+            require_tlr_block=True,
+        )
+        if arm is not None:
+            config = replace(config, night_arm=_arm_context(arm))
+        summary = await run_pilot4_cueing_night(
+            FakeMuseSource(rem_frames(5)),
+            config=config,
+            catalog=catalog,
+            session=session,
+            assignment=assignment,
+            cue_library=cue_library,
+            calibration=VolumeCalibration("Sleep Headphones", 0.01, 0.02, 0.04),
+            backend=backend,
+            tlr_block_plan=tlr_plan,
+        )
+        logs = _night_logs(summary)
+        logs["requests"] = backend.requests
+        logs["metadata"] = json.loads((Path(summary.output_dir) / "metadata.json").read_text(encoding="utf-8"))
+        logs["payload"] = json.loads(Path(summary.summary_path).read_text(encoding="utf-8"))
+        return logs
+
+    async def test_the_arms_play_alike_but_for_the_sound(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            nights = {arm: await self._night(tmpdir, arm) for arm in (None,) + ARMS}
+
+        cue, sham, quiet = nights["cue"], nights["sham"], nights["no_cue"]
+        plays = _plays(cue["scheduler"])
+        self.assertEqual([play["protocol"] for play in plays][:2], ["tlr", "tlr"])
+        self.assertIn("puzzle", [play["protocol"] for play in plays])
+        # --arm cue is the night without an arm.
+        self.assertEqual(cue["scheduler"], nights[None]["scheduler"])
+        self.assertEqual(
+            [{k: v for k, v in row.items() if k not in ("started_at", "ended_at")} for row in cue["audio"]],
+            [{k: v for k, v in row.items() if k not in ("started_at", "ended_at")} for row in nights[None]["audio"]],
+        )
+        # sham: the same times and volumes; another cue_id, the arm, the sham_arm reason.
+        self.assertEqual(len(sham["scheduler"]), len(cue["scheduler"]))
+        for original, stand_in in zip(cue["scheduler"], sham["scheduler"]):
+            self.assertEqual(stand_in.pop("arm"), "sham")
+            if original["event_type"] == "play":
+                self.assertEqual(stand_in.pop("cue_id"), "sham_soft_tone")
+                self.assertEqual(stand_in["reason_codes"].pop(), "sham_arm")
+                original = {key: value for key, value in original.items() if key != "cue_id"}
+            self.assertEqual(stand_in, original)
+        self.assertEqual(len(sham["audio"]), len(cue["audio"]))
+        for original, stand_in in zip(cue["audio"], sham["audio"]):
+            self.assertEqual((stand_in["arm"], stand_in["cue_id"], stand_in["status"]), ("sham", "sham_soft_tone", "played"))
+            self.assertNotIn("arm", original)
+            self.assertEqual(_volumes(stand_in), _volumes(original))
+            self.assertEqual(stand_in["max_volume"], original["max_volume"])
+        self.assertEqual({request.frequency_hz for request in sham["requests"]}, {330.0})
+        # Each sham sound lasts as long as the cue it stands in for (1 s TLR, 0.01 s puzzle).
+        self.assertEqual(
+            [request.duration_seconds for request in sham["requests"]],
+            [request.duration_seconds for request in cue["requests"]],
+        )
+        self.assertEqual(
+            [request.effective_volume for request in sham["requests"]],
+            [request.effective_volume for request in cue["requests"]],
+        )
+        # no_cue: nothing reaches the player; a virtual_play skip wherever the cue arm plays.
+        self.assertEqual(_plays(quiet["scheduler"]), [])
+        self.assertEqual(quiet["audio"], [])
+        self.assertEqual(quiet["requests"], [])
+        virtual = [event for event in quiet["scheduler"] if event["metadata"].get("virtual_play")]
+        self.assertEqual(
+            [(event["timestamp_seconds"], event["protocol"], event.get("puzzle_id")) for event in virtual],
+            [(play["timestamp_seconds"], play["protocol"], play.get("puzzle_id")) for play in plays],
+        )
+        self.assertTrue(all(event["reason_codes"][-1] == "no_cue_arm" for event in virtual))
+
+        for arm, night in nights.items():
+            payload, criteria = night["payload"], {c["name"]: c for c in night["payload"]["criteria"]}
+            self.assertTrue(payload["passed"], arm)
+            self.assertEqual(payload["schema_version"], 4)
+            self.assertEqual(payload["uncued_puzzle_play_count"], 0)
+            self.assertTrue(criteria["no_uncued_puzzle_cues"]["passed"])
+            self.assertTrue(criteria["tlr_block_played"]["passed"], arm)
+            if arm is None:
+                self.assertEqual((payload["arm"], payload["night_id"]), (None, None))
+                self.assertNotIn("no_play_in_no_cue_arm", criteria)
+                self.assertNotIn("night_arm", night["metadata"])
+                continue
+            self.assertEqual((payload["arm"], payload["night_id"]), (arm, "night-007"))
+            self.assertIsNone(payload["schedule_commitment_sha256"])
+            self.assertTrue(criteria["no_play_in_no_cue_arm"]["passed"])
+            self.assertNotIn("arm_matches_sealed_schedule", criteria)
+            self.assertEqual(night["metadata"]["night_arm"]["arm"], arm)
+            self.assertEqual(night["metadata"]["night_arm"]["sham_cue_id"], "sham_soft_tone")
+            self.assertEqual(night["metadata"]["protocol"], nights["cue"]["metadata"]["protocol"])
+        self.assertEqual(quiet["payload"]["cue_play_count"], 0)
+        self.assertEqual(quiet["payload"]["virtual_play_count"], len(plays))
+        self.assertEqual(quiet["payload"]["max_effective_volume"], 0.0)
+        self.assertEqual(
+            {c["name"]: c["observed"] for c in quiet["payload"]["criteria"]}["no_play_in_no_cue_arm"],
+            {"scheduler_plays": 0, "played_audio_rows": 0},
+        )
+        self.assertEqual(sham["payload"]["cue_play_count"], cue["payload"]["cue_play_count"])
+        self.assertEqual(sham["payload"]["max_effective_volume"], cue["payload"]["max_effective_volume"])
+        self.assertIn("sham_arm", sham["payload"]["cue_arousal"]["limitations"])
+        self.assertIn("no_cue_arm", quiet["payload"]["cue_arousal"]["limitations"])
+        self.assertNotIn("no_cues", quiet["payload"]["cue_arousal"]["limitations"])
+
+    def test_only_the_cue_and_sham_arms_reach_the_player(self):
+        catalog, session, assignment, cue_library = protocol_fixture(include_tlr=True)
+        cue_library = replace(cue_library, cues=cue_library.cues + (SHAM_CUE,))
+        backend = MockAudioBackend()
+        player = AudioCuePlayer(AudioPlaybackConfig(max_volume=0.04), backend=backend)
+        play = TmrSchedulerEvent("play", 0.0, cue_id="cue-p1", protocol="puzzle", puzzle_id="p1")
+        for event, arm in (
+            (replace(play, arm="no_cue"), "no_cue"),
+            (play, "no_cue"),
+            (play, "sham"),
+            (replace(play, arm="sham", cue_id="sham_soft_tone"), "cue"),
+        ):
+            with self.assertRaises(ValueError):
+                pilot4_module._play_scheduler_event(event, cue_library, player, arm=arm)
+        self.assertEqual(backend.requests, [])
+        sham_play = replace(
+            play, arm="sham", cue_id="sham_soft_tone", metadata={"duration_seconds": 0.01, "volume_hint": 0.10}
+        )
+        result = pilot4_module._play_scheduler_event(sham_play, cue_library, player, arm="sham")
+        self.assertEqual((result.arm, result.status, result.requested_volume, result.effective_volume), ("sham", "played", 0.10, 0.04))
+        self.assertEqual((backend.requests[0].frequency_hz, backend.requests[0].duration_seconds), (330.0, 0.01))
+        self.assertEqual(result.to_dict()["arm"], "sham")
+        self.assertNotIn("arm", pilot4_module._play_scheduler_event(play, cue_library, player).to_dict())
+
+    async def test_a_trained_sham_cue_stops_the_night_before_it_starts(self):
+        catalog, session, assignment, cue_library = protocol_fixture(include_tlr=True)
+        for sham_cue_id in ("cue-p1", "tlr_soft_tone"):
+            for arm in ARMS:
+                with self.subTest(sham_cue_id=sham_cue_id, arm=arm), tempfile.TemporaryDirectory() as tmpdir:
+                    source = FakeMuseSource(rem_frames(2))
+                    with self.assertRaises(ValueError):
+                        await run_pilot4_cueing_night(
+                            source,
+                            config=replace(
+                                pilot4_config(Path(tmpdir) / "night"),
+                                night_arm=NightArmContext(arm=arm, sham_cue_id=sham_cue_id),
+                            ),
+                            catalog=catalog,
+                            session=session,
+                            assignment=assignment,
+                            cue_library=cue_library,
+                            calibration=VolumeCalibration("Sleep Headphones", 0.01, 0.02, 0.04),
+                            backend=MockAudioBackend(),
+                        )
+                    self.assertFalse((Path(tmpdir) / "night").exists())
+                    self.assertEqual(source.stop_calls, 0)
+
+    def test_a_config_names_one_arm(self):
+        config = pilot4_config(Path("unused"))
+        with self.assertRaises(ValueError):
+            replace(
+                config,
+                scheduler_config=replace(config.scheduler_config, arm="no_cue"),
+                night_arm=_arm_context("sham"),
+            ).validate()
+        replace(config, scheduler_config=replace(config.scheduler_config, arm="no_cue")).validate()
+
+
+class TestPilot5ArmsFromTheCommandLine(unittest.TestCase):
+    """run-pilot5-full-night with --night-schedule on a replayed EEG-only night, then the
+    fidelity report and the cue arousal scorer on each arm."""
+
+    @classmethod
+    def setUpClass(cls):
+        from muse_tmr.audio import load_cue_library
+        from tests.test_pilot3_replay_simulation import write_eeg_only_recording
+
+        cls._tmpdir = tempfile.TemporaryDirectory()
+        cls.root = root = Path(cls._tmpdir.name)
+        write_eeg_only_recording(root / "recording", ["nrem"] * 2 + ["rem"] * 6)
+        catalog, session, assignment, cue_library = protocol_fixture()
+        catalog.save(root / "catalog.json")
+        session.save(root / "session.json")
+        assignment.save(root / "assignment.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert cli_main.main(["create-tlr-cue", "--output", str(root / "tlr_cue.json")]) == 0
+            assert cli_main.main(["plan-tlr-block", str(root / "tlr_cue.json"), "--output", str(root / "tlr_plan.json")]) == 0
+            assert cli_main.main([
+                "calibrate-volume", "--device-name", "Speaker", "--output", str(root / "calibration.json"),
+                "--detectable-volume", "0.01", "--identifiable-volume", "0.02", "--comfortable-volume", "0.04",
+            ]) == 0
+            assert cli_main.main([
+                "plan-night-schedule", "--blocks", "1", "--seed", "21", "--output", str(root / "series.json"),
+            ]) == 0
+        tlr_cues = load_cue_library(root / "tlr_cue.json").cues
+        replace(cue_library, cues=cue_library.cues + tlr_cues + (SHAM_CUE,)).save(root / "cues.json")
+        cls.schedule = load_night_schedule(root / "series.json")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmpdir.cleanup()
+
+    def _run(self, name, *flags):
+        root = self.root
+        args = cli_main.build_parser().parse_args([
+            "run-pilot5-full-night", "--output-dir", str(root / name),
+            "--catalog", str(root / "catalog.json"), "--session", str(root / "session.json"),
+            "--assignment", str(root / "assignment.json"), "--cue-library", str(root / "cues.json"),
+            "--tlr-block", str(root / "tlr_plan.json"), "--calibration", str(root / "calibration.json"),
+            "--backend", "mock", "--preset", "p21", "--duration-seconds", "300", "--allow-short", *flags,
+        ])
+        replay = ReplaySession(ReplayConfig(input_path=root / "recording", speed=0.0))
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(cli_main, "_build_source", return_value=replay), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = asyncio.run(cli_main._run_pilot5_full_night(args))
+        return code, out.getvalue() + err.getvalue()
+
+    def test_each_night_runs_its_sealed_arm_and_never_prints_it(self):
+        from muse_tmr.reports.protocol_fidelity import build_protocol_fidelity
+
+        printed = {}
+        nights = {}
+        for night in self.schedule.nights:
+            code, text = self._run(night.night_id, "--night-schedule", str(self.root / "series.json"), "--night-id", night.night_id)
+            self.assertEqual(code, 0, text)
+            printed[night.arm] = text.replace(night.night_id, "NIGHT")
+            nights[night.arm] = self.root / night.night_id
+        self.assertEqual(set(printed), set(ARMS))
+        self.assertEqual(len(set(printed.values())), 1, printed)
+        tokens = set(printed["cue"].replace("=", " ").replace(",", " ").replace("(", " ").split())
+        self.assertFalse(tokens & set(ARMS), printed["cue"])
+        self.assertNotIn("sham", printed["cue"])
+        for arm, night_dir in nights.items():
+            summary = json.loads((night_dir / "pilot5_summary.json").read_text(encoding="utf-8"))
+            metadata = json.loads((night_dir / "metadata.json").read_text(encoding="utf-8"))
+            criteria = {c["name"]: c for c in summary["criteria"]}
+            self.assertEqual(summary["arm"], arm)
+            self.assertEqual(summary["schedule_commitment_sha256"], self.schedule.commitment_sha256())
+            self.assertTrue(criteria["arm_matches_sealed_schedule"]["passed"])
+            self.assertTrue(criteria["no_play_in_no_cue_arm"]["passed"])
+            self.assertEqual(metadata["night_arm"]["arm"], arm)
+            self.assertTrue(metadata["night_arm"]["sealed_schedule"])
+            self.assertIsNone(metadata["night_arm"]["schedule_unsealed_at_utc"])
+            # The fidelity report and the scorer run on every arm and say what the arm did.
+            fidelity = build_protocol_fidelity(night_dir)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(cli_main.main(["score-cue-arousal", str(night_dir)]), 0)
+            arousal = json.loads((night_dir / "cue_arousal_report.json").read_text(encoding="utf-8"))
+            codes = [item["code"] for item in arousal["limitations"]]
+            self.assertEqual(fidelity.summary["arm"], arm)
+            if arm == "no_cue":
+                self.assertEqual(sum(fidelity.summary["plays"].values()), 0)
+                self.assertGreater(sum(fidelity.summary["virtual_plays"].values()), 0)
+                self.assertIn("no_cue_arm", fidelity.limitations)
+                self.assertIn("no_cue_arm", codes)
+                self.assertIn("nothing played, by design", fidelity.to_markdown())
+            else:
+                self.assertGreater(sum(fidelity.summary["plays"].values()), 0)
+                self.assertEqual(sum(fidelity.summary["virtual_plays"].values()), 0)
+                self.assertEqual("sham_arm" in fidelity.limitations, arm == "sham")
+                self.assertEqual("sham_arm" in codes, arm == "sham")
+        self.assertEqual(
+            {name: check["status"] for name, check in build_protocol_fidelity(nights["sham"]).checks.items()},
+            {name: check["status"] for name, check in build_protocol_fidelity(nights["cue"]).checks.items()},
+        )
+
+    def test_without_an_arm_the_night_logs_what_the_cue_arm_logs(self):
+        code_plain, plain_text = self._run("plain")
+        code_cue, _ = self._run("open_cue", "--arm", "cue")
+        self.assertEqual((code_plain, code_cue), (0, 0))
+        self.assertIn("scheduler_play=", plain_text)
+        self.assertEqual(
+            (self.root / "plain" / "scheduler_events.jsonl").read_bytes(),
+            (self.root / "open_cue" / "scheduler_events.jsonl").read_bytes(),
+        )
+        summary = json.loads((self.root / "plain" / "pilot5_summary.json").read_text(encoding="utf-8"))
+        self.assertEqual((summary["arm"], summary["virtual_play_count"]), (None, 0))
+
+    def test_a_changed_schedule_stops_the_night_before_any_file(self):
+        changed = self.root / "changed.json"
+        payload = self.schedule.to_dict()
+        payload["seed"] = payload["seed"] + 1
+        changed.write_text(json.dumps(payload), encoding="utf-8")
+        (self.root / "changed.sealed.json").write_text(
+            json.dumps(self.schedule.sealed_companion()), encoding="utf-8"
+        )
+        code, text = self._run("never", "--night-schedule", str(changed), "--night-id", self.schedule.nights[0].night_id)
+        self.assertEqual(code, 2)
+        self.assertIn("does not match the commitment", text)
+        self.assertFalse((self.root / "never").exists())
 
 
 def _night_logs(summary):

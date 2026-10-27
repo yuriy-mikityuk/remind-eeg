@@ -26,6 +26,7 @@ from muse_tmr.protocol import (
     PuzzleTask,
     TmrSchedulerConfig,
     get_protocol_preset,
+    load_night_schedule,
 )
 from muse_tmr.testing import generate_night
 from muse_tmr.validation import pilot3 as pilot3_module
@@ -636,6 +637,178 @@ class TestPilot3EegOnlyPreset(unittest.TestCase):
         decisions = [result.arousal_guard_decision for result in report.epoch_results]
         self.assertEqual([decision.action for decision in decisions], ["allow"] * 4)
         self.assertTrue(all(decision.metadata["ppg_absent_by_design"] for decision in decisions))
+
+
+ARMS = ("cue", "sham", "no_cue")
+SHAM_CUE = CueMetadata(
+    "sham_soft_tone", "generated_tone", 1.0, protocol="sham", frequency_hz=330.0, tags=("sham", "untrained")
+)
+
+
+class TestPilot3Arms(unittest.TestCase):
+    """simulate-replay-cues with --arm and --night-schedule (#228); mock audio only."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmpdir = tempfile.TemporaryDirectory()
+        cls.root = Path(cls._tmpdir.name)
+        write_eeg_only_recording(cls.root / "recording", ["nrem"] * 3 + ["rem"] * 5)
+        catalog, session, assignment, cue_library = protocol_fixture()
+        catalog.save(cls.root / "catalog.json")
+        session.save(cls.root / "session.json")
+        assignment.save(cls.root / "assignment.json")
+        CueLibrary(library_id="arms", cues=cue_library.cues + (SHAM_CUE,)).save(cls.root / "cues.json")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmpdir.cleanup()
+
+    def _run(self, name, *extra_args):
+        output = self.root / name / "report.json"
+        events = self.root / name / "events.jsonl"
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli_main([
+                "simulate-replay-cues", str(self.root / "recording"),
+                "--catalog", str(self.root / "catalog.json"),
+                "--session", str(self.root / "session.json"),
+                "--assignment", str(self.root / "assignment.json"),
+                "--cue-library", str(self.root / "cues.json"),
+                "--output", str(output),
+                "--scheduler-events-output", str(events),
+                "--preset", "p21",
+                *extra_args,
+            ])
+        report = json.loads(output.read_text(encoding="utf-8")) if output.exists() else None
+        return code, report, events, out.getvalue() + err.getvalue()
+
+    def test_the_three_arms_plan_at_the_same_times(self):
+        _, plain, plain_events, _ = self._run("plain")
+        runs = {arm: self._run(arm, "--arm", arm) for arm in ARMS}
+
+        self.assertEqual(plain["schema_version"], 2)
+        self.assertEqual((plain["arm"], plain["night_id"], plain["schedule_commitment_sha256"]), (None, None, None))
+        self.assertNotIn("no_play_in_no_cue_arm", [c["name"] for c in plain["criteria"]])
+        # --arm cue logs what a run without an arm logs, byte for byte.
+        self.assertEqual(runs["cue"][2].read_bytes(), plain_events.read_bytes())
+        cue_plays = runs["cue"][1]["cue_plan"]
+        self.assertEqual([play["puzzle_id"] for play in cue_plays], ["p1", "p3"])
+        for arm, (code, report, _, _) in runs.items():
+            criteria = {c["name"]: c for c in report["criteria"]}
+            self.assertEqual(code, 0, arm)
+            self.assertEqual(report["arm"], arm)
+            self.assertTrue(report["passed"], arm)
+            self.assertTrue(criteria["no_play_in_no_cue_arm"]["passed"], arm)
+            self.assertTrue(criteria["no_uncued_puzzle_cues"]["passed"], arm)
+            self.assertNotIn("arm_matches_sealed_schedule", criteria)
+            self.assertEqual(report["metrics"]["uncued_puzzle_play_count"], 0)
+            self.assertEqual(report["protocol"], runs["cue"][1]["protocol"])
+            self.assertFalse(report["audio_playback_executed"])
+        sham = runs["sham"][1]
+        self.assertEqual(
+            [(p["timestamp_seconds"], p["puzzle_id"], p["metadata"]) for p in sham["cue_plan"]],
+            [(p["timestamp_seconds"], p["puzzle_id"], p["metadata"]) for p in cue_plays],
+        )
+        self.assertEqual({p["cue_id"] for p in sham["cue_plan"]}, {"sham_soft_tone"})
+        self.assertTrue(all(p["reason_codes"][-1] == "sham_arm" for p in sham["cue_plan"]))
+        quiet = runs["no_cue"][1]
+        self.assertEqual(quiet["cue_plan"], [])
+        self.assertEqual(quiet["metrics"]["cue_plan_count"], 0)
+        self.assertEqual(quiet["metrics"]["virtual_play_count"], 2)
+        virtual = [e for e in quiet["scheduler_events"] if e["metadata"].get("virtual_play")]
+        self.assertEqual(
+            [(e["timestamp_seconds"], e["puzzle_id"], e["cue_id"]) for e in virtual],
+            [(p["timestamp_seconds"], p["puzzle_id"], p["cue_id"]) for p in cue_plays],
+        )
+
+    def test_a_preset_runs_its_timing_in_every_arm(self):
+        reports = {arm: self._run(f"preset_{arm}", "--arm", arm, "--protocol-preset", "konkoly2021_nijmegen")[1] for arm in ARMS}
+        plans = {arm: [(e["timestamp_seconds"], e.get("puzzle_id")) for e in report["scheduler_events"]
+                       if e["event_type"] == "play" or e["metadata"].get("virtual_play")]
+                 for arm, report in reports.items()}
+        self.assertTrue(plans["cue"])
+        self.assertEqual(plans["sham"], plans["cue"])
+        self.assertEqual(plans["no_cue"], plans["cue"])
+        # The arm is no override of the preset: one protocol block for the three.
+        blocks = {json.dumps(report["protocol"], sort_keys=True) for report in reports.values()}
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(reports["sham"]["protocol"]["name"], "konkoly2021_nijmegen")
+        self.assertEqual(reports["sham"]["protocol"]["overrides"], {})
+
+    def test_a_sealed_night_never_prints_its_arm(self):
+        schedule_path = self.root / "schedules" / "series.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli_main([
+                "plan-night-schedule", "--blocks", "1", "--seed", "8", "--output", str(schedule_path),
+            ]), 0)
+        schedule = load_night_schedule(schedule_path)
+        printed = {}
+        for night in schedule.nights:
+            code, report, _, text = self._run(
+                f"sealed_{night.night_id}", "--night-schedule", str(schedule_path), "--night-id", night.night_id
+            )
+            criteria = {c["name"]: c for c in report["criteria"]}
+            self.assertEqual(code, 0)
+            self.assertEqual(report["arm"], night.arm)
+            self.assertEqual(report["night_id"], night.night_id)
+            self.assertEqual(report["schedule_commitment_sha256"], schedule.commitment_sha256())
+            self.assertTrue(criteria["arm_matches_sealed_schedule"]["passed"])
+            self.assertEqual(
+                criteria["arm_matches_sealed_schedule"]["observed"],
+                {"commitment_matches": True, "arm_matches": True},
+            )
+            printed[night.arm] = text.replace(night.night_id, "NIGHT").replace(f"sealed_{night.night_id}", "DIR")
+        self.assertEqual(set(printed), set(ARMS))
+        self.assertEqual(len(set(printed.values())), 1, printed)
+        tokens = set(printed["cue"].replace("=", " ").replace(",", " ").split())
+        self.assertFalse(tokens & set(ARMS), printed["cue"])
+        self.assertNotIn("sham", printed["cue"])
+        self.assertNotIn("cue_plan", printed["cue"])
+
+    def test_the_sham_cue_is_checked_in_every_arm(self):
+        schedule_path = self.root / "schedules" / "trained_sham.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli_main([
+                "plan-night-schedule", "--blocks", "1", "--seed", "8", "--sham-cue-id", "cue-p1",
+                "--output", str(schedule_path),
+            ]), 0)
+        errors = set()
+        for night in load_night_schedule(schedule_path).nights:
+            code, report, _, text = self._run(
+                f"trained_{night.night_id}", "--night-schedule", str(schedule_path), "--night-id", night.night_id
+            )
+            self.assertEqual((code, report), (2, None))
+            errors.add(text.replace(night.night_id, "NIGHT"))
+        self.assertEqual(len(errors), 1)
+        self.assertIn("the cue of puzzle p1", errors.pop())
+
+    def test_arm_flags_that_cannot_run_exit_before_anything_is_written(self):
+        schedule_path = self.root / "schedules" / "washout.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli_main([
+                "plan-night-schedule", "--blocks", "2", "--washout-nights", "1", "--seed", "3",
+                "--output", str(schedule_path),
+            ])
+        cases = {
+            "no_night_id": (("--night-schedule", str(schedule_path)), "needs --night-id"),
+            "unknown_night": (("--night-schedule", str(schedule_path), "--night-id", "night-099"), "not in night schedule"),
+            "washout": (("--night-schedule", str(schedule_path), "--night-id", "night-004"), "washout night"),
+            "label_alone": (("--night-id", "night-001"), "go with --arm or --night-schedule"),
+            "missing_sham_cue": (("--arm", "sham", "--sham-cue-id", "nowhere"), "sham cue"),
+        }
+        for name, (flags, message) in cases.items():
+            with self.subTest(name):
+                code, report, _, text = self._run(f"bad_{name}", *flags)
+                self.assertEqual((code, report), (2, None))
+                self.assertIn(message, text)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self._run("both", "--arm", "cue", "--night-schedule", str(schedule_path), "--night-id", "night-001")
+        payload = json.loads(schedule_path.read_text(encoding="utf-8"))
+        payload["nights"][0]["arm"], payload["nights"][1]["arm"] = payload["nights"][1]["arm"], payload["nights"][0]["arm"]
+        schedule_path.write_text(json.dumps(payload), encoding="utf-8")
+        code, report, _, text = self._run("tampered", "--night-schedule", str(schedule_path), "--night-id", "night-001")
+        self.assertEqual((code, report), (2, None))
+        self.assertIn("does not match the commitment", text)
 
 
 if __name__ == "__main__":
