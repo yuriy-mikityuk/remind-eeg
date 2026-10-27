@@ -1030,6 +1030,9 @@ SHAM_CUE = CueMetadata(
 )
 
 
+SHAM_SOUND = CueMetadata("sham_sound", "sound", 1.0, protocol="sham", path="cues/private/sham.wav", tags=("untrained",))
+
+
 def _arm_context(arm):
     return NightArmContext(arm=arm, night_id="night-007", sham_cue_id="sham_soft_tone")
 
@@ -1265,6 +1268,32 @@ class TestPilot5Arms(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse((Path(tmpdir) / "night").exists())
                     self.assertEqual(source.stop_calls, 0)
 
+    async def test_a_sham_sound_file_stops_the_night_before_it_starts(self):
+        # Pilot 4 and 5 play generated tones only: a sham cue from a sound file would fail
+        # at the first sham play, mid-night and on sham nights alone.
+        catalog, session, assignment, cue_library = protocol_fixture(include_tlr=True)
+        cue_library = replace(cue_library, cues=cue_library.cues + (SHAM_SOUND,))
+        for arm in ARMS:
+            with self.subTest(arm=arm), tempfile.TemporaryDirectory() as tmpdir:
+                source = FakeMuseSource(rem_frames(2))
+                with self.assertRaises(ValueError) as raised:
+                    await run_pilot4_cueing_night(
+                        source,
+                        config=replace(
+                            pilot4_config(Path(tmpdir) / "night"),
+                            night_arm=NightArmContext(arm=arm, sham_cue_id="sham_sound"),
+                        ),
+                        catalog=catalog,
+                        session=session,
+                        assignment=assignment,
+                        cue_library=cue_library,
+                        calibration=VolumeCalibration("Sleep Headphones", 0.01, 0.02, 0.04),
+                        backend=MockAudioBackend(),
+                    )
+                self.assertIn("generated_tone", str(raised.exception))
+                self.assertFalse((Path(tmpdir) / "night").exists())
+                self.assertEqual(source.stop_calls, 0)
+
     def test_a_config_names_one_arm(self):
         config = pilot4_config(Path("unused"))
         with self.assertRaises(ValueError):
@@ -1387,6 +1416,27 @@ class TestPilot5ArmsFromTheCommandLine(unittest.TestCase):
         )
         summary = json.loads((self.root / "plain" / "pilot5_summary.json").read_text(encoding="utf-8"))
         self.assertEqual((summary["arm"], summary["virtual_play_count"]), (None, 0))
+
+    def test_a_sham_sound_file_stops_every_sealed_night_alike(self):
+        from muse_tmr.audio import load_cue_library
+
+        library = load_cue_library(self.root / "cues.json")
+        replace(library, cues=library.cues + (SHAM_SOUND,)).save(self.root / "cues_sham_sound.json")
+        printed = set()
+        for night in self.schedule.nights:
+            name = f"sound_{night.night_id}"
+            code, text = self._run(
+                name,
+                "--cue-library", str(self.root / "cues_sham_sound.json"),
+                "--night-schedule", str(self.root / "series.json"),
+                "--night-id", night.night_id,
+                "--sham-cue-id", "sham_sound",
+            )
+            self.assertEqual(code, 2, text)
+            self.assertFalse((self.root / name).exists())
+            printed.add(text)
+        self.assertEqual(len(printed), 1, printed)
+        self.assertIn("sham cue sham_sound must be a generated_tone", printed.pop())
 
     def test_a_changed_schedule_stops_the_night_before_any_file(self):
         changed = self.root / "changed.json"

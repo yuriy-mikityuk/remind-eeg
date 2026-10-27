@@ -480,6 +480,20 @@ class TestSchedulerArms(unittest.TestCase):
         with self.assertRaises(ValueError) as raised:
             ensure_sham_untrained("echo", catalog=catalog, cue_library=lookalike)
         self.assertIn("sounds like cue-p1", str(raised.exception))
+        # A sham sound from the file of a puzzle's or a TLR sound is that sound.
+        sounds = CueLibrary(cues=library.cues + (
+            CueMetadata("bell", "sound", 1.0, protocol="puzzle", path="cues/private/bell.wav"),
+            CueMetadata("tlr_bell", "sound", 1.0, protocol="tlr", path="cues/private/tlr_bell.wav"),
+            CueMetadata("sham_bell", "sound", 1.0, protocol="sham", path="cues/private/bell.wav"),
+            CueMetadata("sham_tlr_bell", "sound", 1.0, protocol="sham", path="cues/private/tlr_bell.wav"),
+            CueMetadata("sham_gong", "sound", 1.0, protocol="sham", path="cues/private/gong.wav"),
+        ))
+        bell_catalog = replace(catalog, puzzles=catalog.puzzles + (PuzzleTask("p9", "nine", "nine", cue_id="bell"),))
+        for sham_cue_id, trained_cue_id in (("sham_bell", "bell"), ("sham_tlr_bell", "tlr_bell")):
+            with self.assertRaises(ValueError) as raised:
+                ensure_sham_untrained(sham_cue_id, catalog=bell_catalog, cue_library=sounds)
+            self.assertIn(f"sounds like {trained_cue_id}", str(raised.exception))
+        validate_sham_cue("sham_gong", catalog=bell_catalog, cue_library=sounds)
         generic = CueLibrary(cues=library.cues + (
             CueMetadata("plain", "generated_tone", 1.0, protocol="generic", frequency_hz=880.0),
         ))
