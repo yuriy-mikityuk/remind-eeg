@@ -131,8 +131,9 @@ class TestMorningNights(unittest.TestCase):
         self.assertEqual({r.puzzle_id: r.cue_condition for r in saved.results}, {"p1": "uncued", "p2": "cued", "p3": "cued", "p4": "uncued"})
 
     def test_the_sound_check_gives_the_split_away_nowhere(self):
-        """Its payload, the order, number and labels of its sounds and what playing one
-        answers are the same whichever puzzles were cued, and say nothing of the sounds."""
+        """Its payload, the order, number and labels of its sounds, which sound each number
+        plays and what playing one answers are the same whichever puzzles were cued, and say
+        nothing of the sounds."""
         seen = {}
         for split in (("p2", "p3"), ("p1", "p4"), ("p4",)):
             with tempfile.TemporaryDirectory() as tmp:
@@ -141,15 +142,25 @@ class TestMorningNights(unittest.TestCase):
                 write_night(protocol, cued=split)
                 write_sounds(protocol.parent)
                 recall = morning.night_payload(protocol, reports, "night-001")["cue_recall"]
+                backend = MockAudioBackend()
                 plays = [
-                    morning.play_cue_recall(protocol, reports, {"night": "night-001", "trial": trial}, backend=MockAudioBackend())
+                    morning.play_cue_recall(protocol, reports, {"night": "night-001", "trial": trial}, backend=backend)
                     for trial in (1, 2, 3, 4)
                 ]
-                order = cue_recall_order(morning.find_nights(protocol)[0].session)
+                night = morning.find_nights(protocol)[0]
+                order = cue_recall_order(night.session)
                 morning.save_cue_recall(protocol, reports, recall_body({1: order[0], 2: None, 3: "p1", 4: "p1"}))
                 after = morning.night_payload(protocol, reports, "night-001")
                 saved = load_cue_recall_test(reports / "night-001_cue_recall.json")
-            seen[split] = (recall, plays, after["cue_recall"]["trials"], after["cue_recall"]["saved"]["answers"])
+            sounds = [request.cue_id for request in backend.requests]
+            seen[split] = (recall, plays, sounds, after["cue_recall"]["trials"], after["cue_recall"]["saved"]["answers"])
+            # Sound N is the cue of the Nth puzzle in the session's own order.
+            self.assertEqual(sounds, [night.catalog.get_puzzle(puzzle).cue_id for puzzle in order])
+            # Each at its hint of 0.1, capped at the calibrated comfortable volume of 0.04.
+            self.assertEqual(
+                {(request.requested_volume, request.max_volume, request.effective_volume) for request in backend.requests},
+                {(0.1, 0.04, 0.04)},
+            )
             self.assertEqual(recall["trials"], [{"trial": 1}, {"trial": 2}, {"trial": 3}, {"trial": 4}])
             self.assertTrue(recall["available"])
             self.assertEqual(plays[0], {"trial": 1, "status": "played", "backend": "mock"})
@@ -318,6 +329,19 @@ class TestMorningEndpoints(unittest.TestCase):
         status, payload = self.request("/api/morning/nights")
         night = payload["nights"][0]
         self.assertTrue(night["dream_report_saved"] and night["retest_saved"])
+
+
+class TestSoundCheckFlags(unittest.TestCase):
+    def test_the_app_command_hands_its_backend_flags_to_the_server(self):
+        from muse_tmr.cli.main import main as cli_main
+
+        with patch("muse_tmr.app.run_local_app", return_value=0) as run:
+            self.assertEqual(cli_main(["app", "--source", "mock", "--cue-backend", "mock", "--allow-dry-run"]), 0)
+            config = run.call_args.args[0]
+            self.assertEqual((config.cue_backend, config.allow_dry_run), ("mock", True))
+            self.assertEqual(cli_main(["app", "--source", "mock"]), 0)
+            config = run.call_args.args[0]
+            self.assertEqual((config.cue_backend, config.allow_dry_run), ("system", False))
 
 
 if __name__ == "__main__":

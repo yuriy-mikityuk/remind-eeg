@@ -170,14 +170,12 @@ class CliTest(unittest.TestCase):
         ]
 
     def test_the_check_plays_each_sound_and_saves_the_answers(self):
-        backend = MockAudioBackend()
         position = {puzzle: str(index) for index, puzzle in enumerate(PUZZLES, start=1)}
         # Sound 1 again first, then its right puzzle; sound 2 unknown; 3 and 4 right.
         replies = ["r", position[self.order[0]], "", "7", position[self.order[2]], position[self.order[3]]]
         stdout = io.StringIO()
-        with patch("builtins.input", side_effect=replies), \
-                patch("muse_tmr.audio.audio_player.create_audio_backend", return_value=backend), \
-                contextlib.redirect_stdout(stdout):
+        # --backend mock reaches the player as it is, with nothing patched in between.
+        with patch("builtins.input", side_effect=replies), contextlib.redirect_stdout(stdout):
             self.assertEqual(cli_main.main(self.argv("--backend", "mock")), 0)
         saved = json.loads(self.output.read_text(encoding="utf-8"))
         self.assertEqual([trial["response_puzzle_id"] for trial in saved["trials"]],
@@ -185,10 +183,13 @@ class CliTest(unittest.TestCase):
         self.assertEqual([trial["play_count"] for trial in saved["trials"]], [2, 1, 1, 1])
         self.assertEqual(saved["correct_count"], 3)
         self.assertTrue(all(trial["cue_condition"] in ("cued", "uncued") for trial in saved["trials"]))
-        self.assertEqual(len(backend.requests), 5)
-        self.assertTrue(all(request.effective_volume <= 0.04 for request in backend.requests))
+        self.assertEqual((saved["metadata"]["requested_backend"], saved["metadata"]["resolved_backend"]), ("mock", "mock"))
         audio_log = self.root / "night-001_cue_recall_audio.jsonl"
-        self.assertEqual(len(audio_log.read_text(encoding="utf-8").splitlines()), 5)
+        lines = [json.loads(line) for line in audio_log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(len(lines), 5)
+        self.assertEqual({line["backend_name"] for line in lines}, {"mock"})
+        self.assertEqual({line["status"] for line in lines}, {"played"})
+        self.assertTrue(all(line["max_volume"] == 0.04 and line["effective_volume"] <= 0.04 for line in lines))
         printed = stdout.getvalue()
         # Nothing printed before the retest says which were cued or right.
         for leak in ("cued", "correct", "recall_rate"):
