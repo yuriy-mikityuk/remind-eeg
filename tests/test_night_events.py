@@ -1,15 +1,18 @@
 """A night's logs as timed annotations (#230): muse_tmr.data.night_events.
 
 The logs are written with the classes the Pilot 4/5 runners use, into a temporary
-directory; every value is made up.
+directory, and one night by the Pilot 4 runner itself on made-up frames with mock audio;
+every value is made up.
 """
 
 import datetime as dt
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
+from muse_tmr.audio import MockAudioBackend, VolumeCalibration
 from muse_tmr.audio.audio_player import CuePlaybackResult
 from muse_tmr.data.night_events import (
     EDF_STAGE_TEXTS,
@@ -23,10 +26,20 @@ from muse_tmr.data.night_events import (
     read_hypnogram,
     stage_label,
 )
+from muse_tmr.protocol import TlrBlockConfig, default_tlr_cue, plan_tlr_block
 from muse_tmr.protocol.arousal_guard import ArousalGuardDecision
 from muse_tmr.protocol.tmr_scheduler import TmrSchedulerEvent
-from muse_tmr.validation.gate_log import GateDecisionRecord, gate_open_runs, write_rem_gate_decisions
+from muse_tmr.validation import run_pilot4_cueing_night
+from muse_tmr.validation.gate_log import (
+    GateDecisionRecord,
+    emitting_record,
+    gate_open_runs,
+    load_rem_gate_decisions,
+    write_rem_gate_decisions,
+)
 from muse_tmr.validation.pilot4 import AwakeningEvent
+from tests.test_pilot4_cueing import FakeMuseSource, pilot4_config, rem_frames
+from tests.test_pilot4_cueing import protocol_fixture as pilot4_protocol
 
 STARTED = dt.datetime(2026, 1, 14, 23, 0, tzinfo=dt.timezone.utc)
 FIRST_EPOCH = STARTED.timestamp() + 2.5
@@ -42,7 +55,12 @@ def _jsonl(path, rows):
 
 
 def write_cueing_night(directory, *, night_arm=None, gate_log=True):
-    """What a Pilot 4 night leaves, cut down to the logs the collector reads."""
+    """What a Pilot 4 night leaves, cut down to the logs the collector reads.
+
+    As the runner does, each epoch's gate, guard and scheduler rows carry the epoch's
+    start, and the cue plays at its end, when the epoch is decided: the play logged at
+    60 s sounds at 90 s, a little after the gate log's decision of that epoch.
+    """
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     metadata = {"started_at": _iso(0), "pilot_id": "m8_pilot4_low_volume_cueing", "source": {"source_name": "amused"}}
@@ -55,7 +73,7 @@ def write_cueing_night(directory, *, night_arm=None, gate_log=True):
         [
             {"event": "pilot_started", "timestamp_utc": _iso(0), "pilot_id": "m8_pilot4_low_volume_cueing",
              "source": "amused", "emergency_stop_path": "/Users/me/EMERGENCY_STOP"},
-            {"event": "audio_playback_result", "timestamp_seconds": 90.0, "scheduler_event": {}, "playback_result": {}},
+            {"event": "audio_playback_result", "timestamp_seconds": 60.0, "scheduler_event": {}, "playback_result": {}},
             {"event": "emergency_stop_triggered", "timestamp_utc": _iso(200),
              "emergency_stop_path": "/Users/me/EMERGENCY_STOP", "playback_result": {"device_name": "AirPods"}},
             {"event": "pilot_stopped", "timestamp_utc": _iso(240), "pilot_id": "m8_pilot4_low_volume_cueing",
@@ -65,16 +83,16 @@ def write_cueing_night(directory, *, night_arm=None, gate_log=True):
     scheduler = [
         TmrSchedulerEvent("skip", 0.0, reason_codes=("rem_gate_closed", "low_rem_probability")),
         TmrSchedulerEvent("skip", 30.0, reason_codes=("rem_gate_closed", "low_rem_probability")),
-        TmrSchedulerEvent("skip", 60.0, reason_codes=("rem_gate_closed", "low_rem_probability")),
-        TmrSchedulerEvent("play", 90.0, cue_id="cue-a", protocol="puzzle", puzzle_id="p1",
+        TmrSchedulerEvent("play", 60.0, cue_id="cue-a", protocol="puzzle", puzzle_id="p1",
                           reason_codes=("rem_gate_open", "cued_puzzle")),
+        TmrSchedulerEvent("pause", 90.0, reason_codes=("arousal_guard_pause", "motion_arousal_proxy")),
         TmrSchedulerEvent("pause", 120.0, reason_codes=("arousal_guard_pause", "motion_arousal_proxy")),
         TmrSchedulerEvent("skip", 150.0, reason_codes=("rem_gate_closed",)),
         TmrSchedulerEvent("stop", 180.0, reason_codes=("emergency_stop",)),
     ]
     _jsonl(directory / "scheduler_events.jsonl", [event.to_dict() for event in scheduler])
     if gate_log:
-        opens = (False, False, True, True, False, True)
+        opens = (False, False, True, True, True, False, True)
         records = [
             GateDecisionRecord(index=i, timestamp_seconds=30.0 * i, duration_seconds=30.0, gate_open=state)
             for i, state in enumerate(opens)
@@ -82,16 +100,18 @@ def write_cueing_night(directory, *, night_arm=None, gate_log=True):
         write_rem_gate_decisions(records, directory / "rem_gate_decisions.jsonl")
     guard = [
         ArousalGuardDecision("allow", 0.0),
-        ArousalGuardDecision("pause", 30.0, reason_codes=("motion_arousal_proxy",), pause_seconds=60.0),
-        ArousalGuardDecision("pause", 60.0, reason_codes=("motion_arousal_proxy",), pause_seconds=60.0),
-        ArousalGuardDecision("lower_volume", 90.0, reason_codes=("alpha_arousal_proxy",), volume_multiplier=0.5),
-        ArousalGuardDecision("allow", 120.0),
+        ArousalGuardDecision("allow", 30.0),
+        ArousalGuardDecision("lower_volume", 60.0, reason_codes=("alpha_arousal_proxy",), volume_multiplier=0.5),
+        ArousalGuardDecision("pause", 90.0, reason_codes=("motion_arousal_proxy",), pause_seconds=60.0),
+        ArousalGuardDecision("pause", 120.0, reason_codes=("motion_arousal_proxy",), pause_seconds=60.0),
+        ArousalGuardDecision("allow", 150.0),
+        ArousalGuardDecision("allow", 180.0),
     ]
     _jsonl(directory / "arousal_guard_events.jsonl", [decision.to_dict() for decision in guard])
     playback = CuePlaybackResult(
         cue_id="cue-a", status="played", backend_name="dry-run", requested_volume=0.1, effective_volume=0.05,
         max_volume=0.2, volume_capped=False, fade_in_seconds=0.25, fade_out_seconds=0.25,
-        device_name="Someone's AirPods", started_at=_iso(92.5), ended_at=_iso(93.5),
+        device_name="Someone's AirPods", started_at=_iso(92.6), ended_at=_iso(93.6),
     )
     _jsonl(directory / "audio_playback.jsonl", [playback.to_dict()])
     awakening = AwakeningEvent(timestamp_utc=_iso(150), notes="dreamt of the sea", timestamp_seconds=147.5,
@@ -202,25 +222,31 @@ class TestCollectNightAnnotations(unittest.TestCase):
         annotations = collect_night_annotations(self.night)
         kinds = self._by_kind(annotations)
 
-        # Onsets count from the first epoch's start without an export's t0.
-        skip, = [a for a in kinds["scheduler_skip"] if a.time_unix == FIRST_EPOCH]
-        self.assertEqual(skip.text, "scheduler skip reasons=rem_gate_closed,low_rem_probability n=3")
-        self.assertEqual((skip.onset_s, skip.duration_s), (0.0, 90.0))
+        # Onsets count from the first epoch's start without an export's t0, and a
+        # scheduler or guard row goes in where its epoch was decided, 30 s after its start.
+        skip, = [a for a in kinds["scheduler_skip"] if a.time_unix == FIRST_EPOCH + 30.0]
+        self.assertEqual(skip.text, "scheduler skip reasons=rem_gate_closed,low_rem_probability n=2")
+        self.assertEqual((skip.onset_s, skip.duration_s), (30.0, 60.0))
         play, = kinds["scheduler_play"]
         self.assertEqual(play.text, "scheduler play cue=cue-a protocol=puzzle puzzle=p1 reasons=rem_gate_open,cued_puzzle")
         self.assertEqual((play.onset_s, play.duration_s), (90.0, 0.0))
-        self.assertEqual([a.text for a in kinds["scheduler_stop"]], ["scheduler stop reasons=emergency_stop"])
-        self.assertEqual(kinds["scheduler_pause"][0].onset_s, 120.0)
+        self.assertEqual([(a.onset_s, a.text) for a in kinds["scheduler_stop"]], [(210.0, "scheduler stop reasons=emergency_stop")])
+        self.assertEqual([a.onset_s for a in kinds["scheduler_pause"]], [120.0, 150.0])
 
         guard = kinds["arousal_guard"]
         self.assertEqual([(a.onset_s, a.duration_s, a.text) for a in guard], [
-            (30.0, 60.0, "arousal_guard pause reasons=motion_arousal_proxy pause_seconds=60 n=2"),
             (90.0, 30.0, "arousal_guard lower_volume reasons=alpha_arousal_proxy volume_multiplier=0.5"),
+            (120.0, 60.0, "arousal_guard pause reasons=motion_arousal_proxy pause_seconds=60 n=2"),
         ])
         audio, = kinds["audio"]
         self.assertEqual(audio.text, "audio played cue=cue-a volume=0.050 backend=dry-run")
-        self.assertAlmostEqual(audio.time_unix, STARTED.timestamp() + 92.5)
+        self.assertAlmostEqual(audio.time_unix, STARTED.timestamp() + 92.6)
         self.assertAlmostEqual(audio.duration_s, 1.0)
+        # The play is where the sound began, inside the gate-open run that let it through.
+        self.assertLess(audio.time_unix - play.time_unix, 1.0)
+        self.assertGreaterEqual(audio.time_unix, play.time_unix)
+        run = kinds["rem_gate_open"][0]
+        self.assertTrue(run.onset_s <= play.onset_s < run.onset_s + run.duration_s)
         awakening, = kinds["awakening"]
         self.assertEqual((awakening.onset_s, awakening.text), (147.5, "awakening attributed_to_cue=unsure"))
 
@@ -245,15 +271,18 @@ class TestCollectNightAnnotations(unittest.TestCase):
             [(a.onset_s, a.duration_s) for a in runs],
             [(run.start_seconds, run.duration_seconds) for run in expected],
         )
-        self.assertEqual([(a.onset_s, a.duration_s) for a in runs], [(90.0, 60.0), (180.0, 0.0)])
+        self.assertEqual([(a.onset_s, a.duration_s) for a in runs], [(90.0, 90.0), (210.0, 0.0)])
 
     def test_without_a_gate_log_the_scheduler_codes_give_the_runs(self):
         night = write_cueing_night(Path(self._tmp.name) / "old", gate_log=False)
 
-        runs = [a for a in collect_night_annotations(night) if a.kind == "rem_gate_open"]
+        annotations = collect_night_annotations(night)
+        runs = [a for a in annotations if a.kind == "rem_gate_open"]
 
-        # rem_gate_open is only on the play at 90 s; the skip at 150 s closes it.
-        self.assertEqual([(a.onset_s, a.duration_s, a.source) for a in runs], [(90.0, 60.0, "scheduler_events.jsonl")])
+        # rem_gate_open is only on the play logged at 60 s; the skip logged at 150 s closes
+        # it. Each was decided an epoch of 30 s later, and so is the play.
+        self.assertEqual([(a.onset_s, a.duration_s, a.source) for a in runs], [(90.0, 90.0, "scheduler_events.jsonl")])
+        self.assertEqual([a.onset_s for a in annotations if a.kind == "scheduler_play"], [90.0])
 
     def test_nothing_private_reaches_a_text(self):
         texts = " ".join(item.text for item in collect_night_annotations(self.night))
@@ -294,6 +323,53 @@ class TestCollectNightAnnotations(unittest.TestCase):
         banner = "imported: muselsl-csv, scale 1; report and simulation only"
         self.assertEqual(notes_for({"import": {"banner": banner}}), (banner,))
         self.assertEqual(notes_for({}), ())
+
+
+class TestARunnersNight(unittest.IsolatedAsyncioTestCase):
+    """A night the Pilot 4 runner writes, with mock audio and a TLR block: each scheduler
+    play goes in where the gate log says its epoch was decided, which is where the runner
+    played it, inside the gate-open run that let it through."""
+
+    async def test_plays_land_where_their_epoch_was_decided(self):
+        catalog, session, assignment, cue_library = pilot4_protocol(include_tlr=True)
+        # Two TLR cues 8 s apart: the second is logged at its planned time, between two
+        # epoch starts, and plays when the next epoch is decided.
+        plan = plan_tlr_block(
+            default_tlr_cue(),
+            config=TlrBlockConfig(repetitions=2, interval_seconds=8.0, post_block_pause_seconds=0.0),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            night = Path(tmp)
+            summary = await run_pilot4_cueing_night(
+                FakeMuseSource(rem_frames(6)),
+                config=replace(
+                    pilot4_config(night, duration_seconds=60.0, enable_tlr_block=True), score_cue_arousal=False
+                ),
+                catalog=catalog,
+                session=session,
+                assignment=assignment,
+                cue_library=cue_library,
+                calibration=VolumeCalibration("Sleep Headphones", 0.01, 0.02, 0.04),
+                backend=MockAudioBackend(),
+                tlr_block_plan=plan,
+            )
+            annotations = collect_night_annotations(night)
+            records = load_rem_gate_decisions(night / "rem_gate_decisions.jsonl")
+            logged = [json.loads(line) for line in (night / "scheduler_events.jsonl").read_text().splitlines()]
+
+        logged_plays = [row for row in logged if row["event_type"] == "play"]
+        plays = [a for a in annotations if a.kind == "scheduler_play"]
+        self.assertEqual([row["timestamp_seconds"] for row in logged_plays], [30.0, 38.0, 90.0, 120.0])
+        self.assertEqual(
+            [a.onset_s for a in plays],
+            [emitting_record(records, row["timestamp_seconds"]).decision_seconds for row in logged_plays],
+        )
+        self.assertEqual([a.onset_s for a in plays], [60.0, 90.0, 120.0, 150.0])
+        self.assertEqual(plays[0].onset_s, summary.first_play_seconds)
+        run, = [a for a in annotations if a.kind == "rem_gate_open"]
+        self.assertEqual(run.onset_s, summary.first_gate_open_seconds)
+        for play in plays:
+            self.assertTrue(run.onset_s <= play.onset_s <= run.onset_s + run.duration_s, play)
 
 
 class TestBlinding(unittest.TestCase):

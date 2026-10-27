@@ -26,7 +26,12 @@ lossy map that is recorded in ``docs/formats.md``: ``wake`` is ``Sleep stage W``
 ``Sleep stage ?``. No export writes N1, N2 or N3, even for a hypnogram that has them.
 
 The scheduler, gate, guard and awakening logs count ``timestamp_seconds`` from the
-night's first epoch start, ``first_epoch_start`` in the Pilot 4/5 summary.
+night's first epoch start, ``first_epoch_start`` in the Pilot 4/5 summary. A runner logs a
+scheduler or guard row at the start of its epoch (a TLR cue at its planned time) and acts
+on it when the epoch is complete, so the row goes in at that epoch's decision, where the
+cue played and where the gate-open runs count from: the decision of the first epoch of
+the gate log starting at or after it, as ``gate_log.emitting_record()`` finds it, or
+without a gate log ``DEFAULT_EPOCH_SECONDS`` after it.
 
 A night whose arm came from a night schedule that is still sealed cannot be exported:
 its logs name the arm (``blinding_refusal()``).
@@ -59,6 +64,12 @@ EDF_STAGE_TEXTS = tuple(LABEL_TO_EDF_STAGE.values())
 STAGE_EPOCH_SECONDS = 30.0
 PILOT_SUMMARY_FILENAMES = ("pilot5_summary.json", "pilot4_summary.json")
 GATE_LOG_FILENAME = "rem_gate_decisions.jsonl"
+# EpochConfig's epoch length, which the protocol fidelity report also falls back on: a
+# night without a gate log has its scheduler and guard rows decided this long after
+# the epoch start they carry.
+DEFAULT_EPOCH_SECONDS = 30.0
+# Epoch starts are sums of floats; this much apart they are the same moment (gate_log).
+_TIME_TOLERANCE_SECONDS = 1e-6
 # Merged runs of these kinds: one annotation per run of equal texts.
 _MERGED_KINDS = ("scheduler_skip", "arousal_guard")
 # Recorder and pilot event details that may go into a text; nothing free-form.
@@ -383,13 +394,14 @@ def collect_night_annotations(
     annotations: List[NightAnnotation] = []
     annotations += _recording_events(recording_dir / "events.jsonl", started_at, night_start)
     scheduler_rows = _read_jsonl(recording_dir / "scheduler_events.jsonl")
-    annotations += _scheduler_events(scheduler_rows, night_start)
     gate_rows = _read_jsonl(recording_dir / GATE_LOG_FILENAME)
+    decided = _decision_time(gate_rows)
+    annotations += _scheduler_events(scheduler_rows, night_start, decided)
     if gate_rows:
         annotations += _gate_runs(gate_rows, night_start)
     else:
-        annotations += _gate_runs_from_scheduler(scheduler_rows, night_start)
-    annotations += _guard_events(_read_jsonl(recording_dir / "arousal_guard_events.jsonl"), night_start)
+        annotations += _gate_runs_from_scheduler(scheduler_rows, night_start, decided)
+    annotations += _guard_events(_read_jsonl(recording_dir / "arousal_guard_events.jsonl"), night_start, decided)
     annotations += _audio_events(_read_jsonl(recording_dir / "audio_playback.jsonl"))
     annotations += _awakenings(_read_jsonl(recording_dir / "awakening_events.jsonl"), night_start)
     synthetic_hypnogram = recording_dir / "hypnogram.csv"
@@ -510,10 +522,36 @@ def _span_ends(times: Sequence[float]) -> List[float]:
     return ends
 
 
-def _timed_rows(rows: Sequence[Mapping[str, object]], night_start: float) -> List[Tuple[float, Mapping[str, object]]]:
-    """(host time, row) of the rows with a ``timestamp_seconds``, in time order."""
+def _decision_time(gate_rows: Sequence[Mapping[str, object]]) -> Callable[[float], float]:
+    """When the epoch that logged a scheduler or guard row at ``seconds`` was decided:
+    the decision of the first epoch of the gate log starting at or after ``seconds``, and
+    without a gate log, or past its end, ``DEFAULT_EPOCH_SECONDS`` after ``seconds``."""
+    epochs = sorted(
+        (float(row["timestamp_seconds"]), float(row.get("duration_seconds", 0.0)))  # type: ignore[arg-type]
+        for row in gate_rows
+        if _seconds(row.get("timestamp_seconds")) is not None
+    )
+    starts = [start for start, _ in epochs]
+
+    def decided(seconds: float) -> float:
+        position = bisect.bisect_left(starts, seconds - _TIME_TOLERANCE_SECONDS)
+        if position < len(epochs):
+            start, duration = epochs[position]
+            return start + duration
+        return seconds + DEFAULT_EPOCH_SECONDS
+
+    return decided
+
+
+def _timed_rows(
+    rows: Sequence[Mapping[str, object]],
+    night_start: float,
+    decided: Callable[[float], float],
+) -> List[Tuple[float, Mapping[str, object]]]:
+    """(host time of its epoch's decision, row) of the rows with a ``timestamp_seconds``,
+    in time order."""
     timed = [
-        (night_start + float(row["timestamp_seconds"]), row)  # type: ignore[arg-type]
+        (night_start + decided(float(row["timestamp_seconds"])), row)  # type: ignore[arg-type]
         for row in rows
         if _seconds(row.get("timestamp_seconds")) is not None
     ]
@@ -547,8 +585,12 @@ def _merge_runs(items: Sequence[Tuple[float, float, str, str]], source: str) -> 
     return annotations
 
 
-def _scheduler_events(rows: Sequence[Mapping[str, object]], night_start: float) -> List[NightAnnotation]:
-    timed = _timed_rows(rows, night_start)
+def _scheduler_events(
+    rows: Sequence[Mapping[str, object]],
+    night_start: float,
+    decided: Callable[[float], float],
+) -> List[NightAnnotation]:
+    timed = _timed_rows(rows, night_start, decided)
     ends = _span_ends([start for start, _ in timed])
     items = []
     for (start, row), end in zip(timed, ends):
@@ -596,7 +638,11 @@ def _gate_runs(rows: Sequence[Mapping[str, object]], night_start: float) -> List
     return annotations
 
 
-def _gate_runs_from_scheduler(rows: Sequence[Mapping[str, object]], night_start: float) -> List[NightAnnotation]:
+def _gate_runs_from_scheduler(
+    rows: Sequence[Mapping[str, object]],
+    night_start: float,
+    decided: Callable[[float], float],
+) -> List[NightAnnotation]:
     annotations = []
     run_start: Optional[float] = None
     last_open: Optional[float] = None
@@ -604,6 +650,7 @@ def _gate_runs_from_scheduler(rows: Sequence[Mapping[str, object]], night_start:
         seconds = _seconds(row.get("timestamp_seconds"))
         if seconds is None:
             continue
+        seconds = decided(seconds)
         codes = _codes(row)
         if "rem_gate_open" in codes:
             if run_start is None:
@@ -621,8 +668,12 @@ def _gate_annotation(night_start: float, start: float, end: float, source: str) 
     return NightAnnotation(night_start + start, max(0.0, end - start), "rem_gate_open", "rem_gate_open", source)
 
 
-def _guard_events(rows: Sequence[Mapping[str, object]], night_start: float) -> List[NightAnnotation]:
-    timed = _timed_rows(rows, night_start)
+def _guard_events(
+    rows: Sequence[Mapping[str, object]],
+    night_start: float,
+    decided: Callable[[float], float],
+) -> List[NightAnnotation]:
+    timed = _timed_rows(rows, night_start, decided)
     ends = _span_ends([start for start, _ in timed])
     items = []
     for (start, row), end in zip(timed, ends):
