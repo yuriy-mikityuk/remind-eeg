@@ -551,7 +551,12 @@ async def run_pilot4_cueing_night(
                     # played on the loop would stamp every packet of its length late and
                     # the cue arousal scorer would read them as lost.
                     result = await asyncio.to_thread(
-                        _play_scheduler_event, event, cue_library, player, arm=scheduler_config.arm
+                        _play_scheduler_event,
+                        event,
+                        cue_library,
+                        player,
+                        arm=scheduler_config.arm,
+                        stands_in_for=_cue_stood_in_for(event, catalog, tlr_block_plan),
                     )
                     state.playback_results.append(result)
                     _append_jsonl(
@@ -742,12 +747,15 @@ def _play_scheduler_event(
     player: AudioCuePlayer,
     *,
     arm: str = "cue",
+    stands_in_for: Optional[str] = None,
 ) -> CuePlaybackResult:
     """Play one scheduler play event of a night run in ``arm``.
 
     Only the cue and sham arms play, and only events their own scheduler logged; a
-    no-cue night never gets here. A sham play is the sham cue's tone for as long and as
-    loud as the cue it stands in for: the length and the hint come from the event.
+    no-cue night never gets here. The cue arm plays the library cue for its own length
+    and with its own hint. A sham play is the sham cue's tone with the length and hint
+    of ``stands_in_for``, the library cue the cue arm plays in its place
+    (``_cue_stood_in_for()``), so the two arms differ in the tone alone.
     """
     if arm not in PLAYING_ARMS or event.arm != arm:
         raise ValueError("cues play in the cue and sham arms only, and only that night's own events")
@@ -756,12 +764,11 @@ def _play_scheduler_event(
     cue = cue_library.by_id(event.cue_id)
     if cue.frequency_hz is None:
         raise ValueError(f"pilot4 cue must include frequency_hz: {cue.cue_id}")
-    duration_seconds = cue.duration_seconds
-    volume = cue.volume_hint
+    played_as = cue
     if arm == "sham":
-        duration_seconds = float(event.metadata.get("duration_seconds", duration_seconds))
-        hint = event.metadata.get("volume_hint")
-        volume = None if hint is None else float(hint)
+        if stands_in_for is None:
+            raise ValueError("a sham play needs the cue it stands in for")
+        played_as = cue_library.by_id(stands_in_for)
     # The cue's hint, or the player's default without one. The player caps it and only
     # then applies a lower_volume multiplier, so every cap still holds and the cue plays
     # at that fraction of its normal volume.
@@ -769,12 +776,29 @@ def _play_scheduler_event(
         TestCue(
             cue_id=cue.cue_id,
             frequency_hz=cue.frequency_hz,
-            duration_seconds=duration_seconds,
+            duration_seconds=played_as.duration_seconds,
         ),
-        volume=volume,
+        volume=played_as.volume_hint,
         volume_multiplier=float(event.metadata.get("volume_multiplier", 1.0)),
         arm=arm,
     )
+
+
+def _cue_stood_in_for(
+    event: TmrSchedulerEvent,
+    catalog: PuzzleCatalog,
+    tlr_block_plan: Optional[TlrBlockPlan],
+) -> Optional[str]:
+    """The cue the cue arm plays where a sham night plays ``event``: its puzzle's cue, or
+    the TLR plan's cue at its place in the block. The plan's length can differ from that
+    library cue's, and the cue arm plays the library cue's."""
+    if event.protocol == "puzzle" and event.puzzle_id is not None:
+        return catalog.get_puzzle(event.puzzle_id).cue_id
+    if event.protocol == "tlr" and tlr_block_plan is not None:
+        index = int(event.metadata.get("tlr_event_index", 0)) - 1
+        if 0 <= index < len(tlr_block_plan.events):
+            return tlr_block_plan.events[index].cue_id
+    return None
 
 
 def _maybe_trigger_emergency_stop(

@@ -1008,11 +1008,11 @@ def _arm_context(arm):
 class TestPilot5Arms(unittest.IsolatedAsyncioTestCase):
     """A Pilot 5 night under cue, sham and no_cue (#228), mock audio, no speakers."""
 
-    async def _night(self, tmpdir, arm):
+    async def _night(self, tmpdir, arm, *, tlr_cue=None):
         catalog, session, assignment, cue_library = protocol_fixture(include_tlr=True)
         cue_library = replace(cue_library, cues=cue_library.cues + (SHAM_CUE,))
         tlr_plan = plan_tlr_block(
-            default_tlr_cue(),
+            tlr_cue or default_tlr_cue(),
             config=TlrBlockConfig(repetitions=2, interval_seconds=0.0, post_block_pause_seconds=0.0),
         )
         backend = MockAudioBackend()
@@ -1125,6 +1125,25 @@ class TestPilot5Arms(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no_cue_arm", quiet["payload"]["cue_arousal"]["limitations"])
         self.assertNotIn("no_cues", quiet["payload"]["cue_arousal"]["limitations"])
 
+    async def test_a_sham_sound_lasts_as_long_as_the_cue_the_cue_arm_plays(self):
+        # A TLR plan made from another file's tlr_soft_tone says 0.65 s, while the cue arm
+        # plays the night's library cue of that ID for its own 1 s.
+        short = replace(default_tlr_cue(), duration_seconds=0.65)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            nights = {arm: await self._night(tmpdir, arm, tlr_cue=short) for arm in ("cue", "sham")}
+
+        cue, sham = nights["cue"]["requests"], nights["sham"]["requests"]
+        self.assertEqual([request.duration_seconds for request in cue][:2], [1.0, 1.0])
+        self.assertEqual(
+            [request.duration_seconds for request in sham],
+            [request.duration_seconds for request in cue],
+        )
+        self.assertEqual(
+            [request.effective_volume for request in sham],
+            [request.effective_volume for request in cue],
+        )
+        self.assertEqual({request.frequency_hz for request in sham}, {330.0})
+
     def test_only_the_cue_and_sham_arms_reach_the_player(self):
         catalog, session, assignment, cue_library = protocol_fixture(include_tlr=True)
         cue_library = replace(cue_library, cues=cue_library.cues + (SHAM_CUE,))
@@ -1139,11 +1158,17 @@ class TestPilot5Arms(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(ValueError):
                 pilot4_module._play_scheduler_event(event, cue_library, player, arm=arm)
-        self.assertEqual(backend.requests, [])
         sham_play = replace(
-            play, arm="sham", cue_id="sham_soft_tone", metadata={"duration_seconds": 0.01, "volume_hint": 0.10}
+            play, arm="sham", cue_id="sham_soft_tone", metadata={"duration_seconds": 5.0, "volume_hint": 0.5}
         )
-        result = pilot4_module._play_scheduler_event(sham_play, cue_library, player, arm="sham")
+        with self.assertRaises(ValueError):
+            pilot4_module._play_scheduler_event(sham_play, cue_library, player, arm="sham")
+        self.assertEqual(backend.requests, [])
+        # The length and hint of the cue it stands in for (cue-p1: 0.01 s, 0.10), as the
+        # cue arm plays it, not the event's.
+        result = pilot4_module._play_scheduler_event(
+            sham_play, cue_library, player, arm="sham", stands_in_for="cue-p1"
+        )
         self.assertEqual((result.arm, result.status, result.requested_volume, result.effective_volume), ("sham", "played", 0.10, 0.04))
         self.assertEqual((backend.requests[0].frequency_hz, backend.requests[0].duration_seconds), (330.0, 0.01))
         self.assertEqual(result.to_dict()["arm"], "sham")
