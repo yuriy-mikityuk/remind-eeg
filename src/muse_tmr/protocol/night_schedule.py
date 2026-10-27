@@ -580,8 +580,9 @@ def prereg_template(
         "morning after, a week later and ten days later.",
         "- Coded blind: each puzzle's dream incorporation (`sound_cue`, `direct_conceptual`, "
         "`indirect_conceptual`) from the packets of `export-blind-coding`, which hold no arm and no cue condition.",
-        "- Logged by each night: plays and virtual plays, awakening markers, and the arousal proxies per cue of "
-        "`score-cue-arousal`, run after unsealing.",
+        "- Logged by each night: plays and virtual plays, awakening markers, and the arousal proxies per cue "
+        "the night scores at its end; all of them stay closed until unsealing, and `score-cue-arousal` runs "
+        "again on a night only after it.",
         "",
         "## Analysis plan",
         "",
