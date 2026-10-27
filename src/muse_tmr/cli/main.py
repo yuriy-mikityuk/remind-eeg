@@ -2447,6 +2447,8 @@ def _export_night_schedule(args: argparse.Namespace, recording_dir: Path):
         return None
     if args.night_schedule is not None:
         path = _resolve_output_path(args.night_schedule)
+        if not path.exists():
+            raise FileNotFoundError(f"night schedule not found: {path}")
     elif arm.get("schedule_id"):
         path = _default_path_base() / "data" / "protocol" / "night_schedules" / f"{arm['schedule_id']}.json"
     else:
