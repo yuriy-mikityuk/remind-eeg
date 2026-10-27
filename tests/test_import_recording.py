@@ -20,7 +20,7 @@ import pandas as pd
 from muse_tmr.ble import muse_athena_protocol as proto
 from muse_tmr.cli.main import _write_demo_protocol
 from muse_tmr.cli.main import main as cli_main
-from muse_tmr.data.edf_io import edf_available, export_edf
+from muse_tmr.data.edf_io import edf_available, export_edf, resolve_channel_map
 from muse_tmr.data.import_recording import (
     IMPORT_FORMATS,
     IMPORT_SCALE_TABLE,
@@ -34,6 +34,7 @@ from muse_tmr.data.import_recording import (
 from muse_tmr.validation import validate_pilot1_recording
 from tests.exchange_synthetic import frames as replay_frames
 from tests.exchange_synthetic import labelled_night
+from tests.test_edf_io import write_boas_like_edf
 
 CHANNELS = ("TP9", "AF7", "AF8", "TP10")
 STEP = proto.EEG_SCALE_UV_PER_COUNT
@@ -203,6 +204,45 @@ class TestImportFormats(unittest.TestCase):
         self.assertTrue(metadata["synthetic"])
         self.assertEqual(metadata["import"]["resampled"], {})
         self.assertNotIn("recording_field", metadata["import"]["edf"])
+
+    @unittest.skipUnless(edf_available(), 'needs the [edf] extra: pip install "remind-eeg[edf]"')
+    def test_a_boas_headband_edf_is_resampled_to_the_pipeline_rates(self):
+        path = self.root / "sub-3_task-Sleep_acq-headband_eeg.edf"
+        write_boas_like_edf(path)  # every channel at 256 Hz, made-up values
+
+        import_recording(path, "edf", self.root / "imp_boas", channel_map=resolve_channel_map("boas-headband"))
+
+        metadata = self._check_directory(self.root / "imp_boas", "edf")
+        self.assertEqual(metadata["import"]["resampled"], {
+            "accel": {"from_hz": 256.0, "to_hz": 52.0},
+            "gyro": {"from_hz": 256.0, "to_hz": 52.0},
+            "ppg": {"from_hz": 256.0, "to_hz": 64.0},
+        })
+        frame = replay_frames(self.root / "imp_boas")[1]
+        self.assertEqual(len(frame.eeg.channels_uv["AF7"]), 64)
+        self.assertEqual((len(frame.imu.accelerometer_g), len(frame.imu.gyroscope_dps)), (13, 13))
+        self.assertEqual(len(frame.ppg.channels["HB_PULSE"]), 16)
+
+    @unittest.skipUnless(edf_available(), 'needs the [edf] extra: pip install "remind-eeg[edf]"')
+    def test_eeg_scale_stands_in_for_an_edfs_unit(self):
+        import edfio
+
+        path = self.root / "counts.edf"
+        edfio.Edf([edfio.EdfSignal(np.full(2560, 0.5), 256, label="HB_1", physical_dimension="counts",
+                                   physical_range=(-1, 1))]).write(path)
+        boas = resolve_channel_map("boas-headband")
+
+        with self.assertRaises(ValueError):
+            import_recording(path, "edf", self.root / "imp_counts_none", channel_map=boas)
+        self.assertFalse((self.root / "imp_counts_none").exists())
+        result = import_recording(path, "edf", self.root / "imp_counts", eeg_scale=10.0, channel_map=boas)
+
+        values = np.concatenate([frame.eeg.channels_uv["AF7"] for frame in replay_frames(self.root / "imp_counts")])
+        self.assertEqual(values.size, 2560)
+        self.assertLess(float(np.max(np.abs(values - 5.0))), 0.001)
+        self.assertEqual(result.banner, "imported: edf, scale 10; report and simulation only")
+        metadata = self._check_directory(self.root / "imp_counts", "edf")
+        self.assertEqual(metadata["import"]["eeg_unit"], "--eeg-scale in place of the header's unit")
 
     def test_the_output_must_be_new_or_an_earlier_import(self):
         decoded = self.root / "again.jsonl"
