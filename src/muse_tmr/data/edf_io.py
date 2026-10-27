@@ -1,16 +1,17 @@
 """EDF+ export and import (#230), through edfio, the one library of the ``[edf]`` extra.
 
 ``edfio`` is pure Python on top of NumPy, so ``pip install "remind-eeg[edf]"`` needs no
-compiler on any platform, and it is the writer MNE's own EDF export uses. It reads EDF,
-EDF+C, BDF and BDF+C and writes EDF+C and BDF+C, not EDF+D: a dropout is written
+compiler on any platform, and it is the writer MNE's own EDF export uses; pyedflib wraps
+a C library and needs a wheel for each platform and Python. Neither writes EDF+D. edfio
+reads EDF, EDF+C, BDF and BDF+C and writes EDF+C and BDF+C: a dropout is written
 zero-filled and annotated ``BAD_ACQ_SKIP``, and ``read_edf()`` refuses an EDF+D file
 rather than join its records as if they were contiguous.
 
 ``write_edf_plus()`` writes one EDF+C file of a ``ContinuousRecording``:
 
 - 1 s data records at the nominal rates: EEG 256 Hz, accelerometer and gyroscope 52 Hz,
-  optics 64 Hz, all starting at the recording's first frame; the header's recording
-  field holds the EEG rate measured on the night and the gap policy.
+  optics 64 Hz, all starting at the recording's first frame, in UTC; the header's
+  recording field holds the EEG rate measured on the night and the gap policy.
 - EEG in uV with digital -8192 to 8191 over physical -725.044 to 724.9557 uV, the 14-bit
   counts of the headband exactly (1450/16383 uV per count; the 1450 uV full scale is
   vendor-stated and unverified). The accelerometer (g) and gyroscope (deg/s) keep their
@@ -19,7 +20,8 @@ rather than join its records as if they were contiguous.
   own range; ``EdfExportResult.signals`` gives each signal's resolution.
 - A TAL track with the night's annotations (``muse_tmr.data.night_events``), its zero
   fills as ``BAD_ACQ_SKIP`` and, at 0 s, the notes of a synthetic or imported night.
-  Onsets are on the EEG sample clock, as the EEG samples are.
+  Onsets are on the EEG sample clock, as the EEG samples are. A synthetic night also
+  says so in the header's patient field.
 
 ``read_edf()`` turns an EDF back into MuseFrames through a channel map, so a third-party
 file such as a BOAS headband recording (OpenNeuro ds005555) can be replayed; units are
@@ -70,8 +72,10 @@ EEG_TRANSDUCER = "Muse S Athena dry electrode; 1450 uV full scale is vendor-stat
 EXPORT_STREAMS = ("eeg", "accel", "gyro", "optics")
 EEG_CHANNEL_NAMES = tuple(proto.EEG_CHANNELS_8)
 OPTICS_CHANNEL_NAMES = tuple(proto.OPTICS_CHANNELS_8)
-# A synthetic night's EDF says so in its patient field, where EDF+ allows more subfields.
-SYNTHETIC_SUBFIELD = SYNTHETIC_NOTE.replace(" ", "_")
+# A synthetic night's EDF says so in its patient field. EDF+ separates subfields with
+# spaces and allows more after the four it defines, so the note goes in word by word and
+# the header reads "X X X X synthetic input, not sleep".
+SYNTHETIC_SUBFIELDS = tuple(SYNTHETIC_NOTE.split())
 _STREAM_UNITS = {"eeg": "uV", "accel": "g", "gyro": "deg/s", "optics": ""}
 _STREAM_STEPS = {"eeg": EEG_COUNT_UV, "accel": proto.ACC_SCALE, "gyro": abs(proto.GYRO_SCALE)}
 _EEG_UNITS = {"uv": 1.0, "µv": 1.0, "μv": 1.0, "microvolt": 1.0, "microvolts": 1.0, "mv": 1e3, "v": 1e6, "nv": 1e-3}
@@ -81,9 +85,11 @@ _TAL_UNSAFE = re.compile(r"[\x00-\x1f\x7f]")
 # The decoder names optics channels opt0, opt1, ... outside the 8-channel mode.
 _DECODER_OPTICS_NAME = re.compile(r"^opt\d+$")
 
-# The headband of the BOAS dataset (OpenNeuro ds005555): HB_1 and HB_2 are forehead EEG
-# near AF7 and AF8 against the left mastoid, HB_IMU_1 to 3 the accelerometer (g), 4 to 6
-# the gyroscope (deg/s) and HB_PULSE a PPG channel (nA), all at 256 Hz.
+# The headband files of the BOAS dataset (OpenNeuro ds005555,
+# sub-*_task-Sleep_acq-headband_eeg.edf) as its README and sidecars describe them: HB_1
+# and HB_2 are forehead EEG near AF7 and AF8 (uV, EEGReference "M1 (left mastoid)"),
+# HB_IMU_1 to 3 the accelerometer (g), 4 to 6 the gyroscope (deg/s) and HB_PULSE a pulse
+# channel (nA), all at 256 Hz. Some nights have no IMU or pulse channels.
 BOAS_HEADBAND_CHANNEL_MAP = {
     "HB_1": "eeg:AF7",
     "HB_2": "eeg:AF8",
@@ -279,7 +285,16 @@ def write_edf_plus(
     if not float(samples_per_record).is_integer():
         raise ValueError(f"{rate} Hz does not fill {RECORD_SECONDS} s records with whole samples")
     eeg_offset = recording.offset_samples("eeg")
-    records = max(1, int(math.ceil((eeg_offset + eeg.n_samples) / samples_per_record)))
+    # Enough records for every stream: the IMU or optics can run a little past the EEG.
+    records = max(
+        (
+            int(math.ceil((recording.offset_samples(name) + stream.n_samples) / (stream.nominal_rate_hz * RECORD_SECONDS)))
+            for name, stream in recording.streams.items()
+            if name in streams and stream.channels
+        ),
+        default=1,
+    )
+    records = max(1, records)
     duration = records * RECORD_SECONDS
 
     signals = []
@@ -331,7 +346,7 @@ def write_edf_plus(
     edf_annotations, timed = _edf_annotations(recording, annotations, notes, duration, eeg_offset)
     gap_count = sum(1 for _, _, text in timed if text == GAP_TEXT)
     start_date, start_time, start_moment = _start_parts(recording.t0)
-    patient = edfio.Patient(additional=(SYNTHETIC_SUBFIELD,)) if synthetic else edfio.Patient()
+    patient = edfio.Patient(additional=SYNTHETIC_SUBFIELDS) if synthetic else edfio.Patient()
     recording_field = _recording_field(edfio, start_date, eeg.measured_rate_hz, recording.config.gap_policy)
     edf = edfio.Edf(
         signals,
@@ -527,7 +542,7 @@ def _read(path: Path):
     reserved = edf.reserved.strip().upper()
     if reserved.startswith(("EDF+D", "BDF+D")):
         raise ValueError(
-            f"{path.name} is EDF+D (discontinuous); edfio would read its records as if contiguous, so it is not imported"
+            f"{path.name} is EDF+D (discontinuous); edfio would read its records as if contiguous, so it is not read"
         )
     return edf
 
@@ -604,8 +619,13 @@ def edf_channels(
     eeg_unit_scale: Optional[float] = None,
 ) -> Tuple[EdfChannel, ...]:
     """The signals ``read_edf()`` takes from ``path`` and where they go."""
-    edf = _read(path)
+    return _channels_of(_read(path), channel_map, eeg_unit_scale)
+
+
+def _channels_of(edf, channel_map: Optional[Mapping[str, str]], eeg_unit_scale: Optional[float]) -> Tuple[EdfChannel, ...]:
     labels = [signal.label for signal in edf.signals]
+    # A label the file lacks is passed over: BOAS headband files without IMU or pulse
+    # read through the same map as the ones with them.
     mapping = dict(channel_map) if channel_map is not None else default_channel_map(labels)
     channels = []
     for signal in edf.signals:
@@ -621,8 +641,14 @@ def edf_channels(
 
 
 def edf_start_unix(edf) -> float:
-    """The start of an EDF as Unix seconds, its header read as UTC."""
-    return edf.startdatetime.replace(tzinfo=dt.timezone.utc).timestamp()
+    """The start of an EDF as Unix seconds, its header read as UTC. An anonymised EDF+
+    start date (``Startdate X``) counts as 1 January 1985, the date the EDF+ spec asks
+    such a file to carry in its old header field."""
+    try:
+        start = edf.startdatetime
+    except Exception:  # edfio.AnonymizedDateError, or an unreadable date
+        start = dt.datetime.combine(dt.date(1985, 1, 1), edf.starttime)
+    return start.replace(tzinfo=dt.timezone.utc).timestamp()
 
 
 def read_edf(
@@ -632,6 +658,7 @@ def read_edf(
     frame_seconds: float = 0.25,
     skip_gaps: bool = True,
     eeg_unit_scale: Optional[float] = None,
+    rates: Optional[Mapping[str, float]] = None,
     source: str = "edf",
 ) -> Iterator[MuseFrame]:
     """MuseFrames of ``frame_seconds`` from an EDF or BDF file.
@@ -639,49 +666,93 @@ def read_edf(
     ``channel_map`` maps a signal label to ``eeg:NAME``, ``accel:x|y|z``,
     ``gyro:x|y|z``, ``ppg:NAME`` or ``skip``; without it the labels ``write_edf_plus()``
     writes are taken (``default_channel_map()``). A frame's timestamp is the time of its
-    first sample, as ``continuous`` reads frames. With ``skip_gaps`` a frame wholly inside
-    a ``BAD_ACQ_SKIP`` annotation is left out, so a dropout an export filled is a gap
-    again. ValueError for EDF+D, for EEG channels of different rates and for an EEG unit
-    that is not a voltage (give ``eeg_unit_scale``, the factor to uV).
+    first sample, as ``continuous`` reads frames. With ``skip_gaps`` the stretches a
+    ``BAD_ACQ_SKIP`` annotation covers are left out, frames end and start at their edges,
+    and the frame after one says how many samples it skipped in its ``gaps``, as the
+    decoder says it of lost subpackets: so a dropout an export filled is a dropout again,
+    in the same place and of the same size. ``rates`` resamples a kind (``eeg``,
+    ``accel``, ``gyro``, ``ppg``) whose rate differs to the one given, with
+    ``scipy.signal.resample_poly``; ``resampled_rates()`` says which would be. ValueError
+    for EDF+D, for a file with no channel mapped to EEG, for channels of one kind at
+    different rates and for an EEG unit that is not a voltage (give ``eeg_unit_scale``,
+    the factor to uV).
     """
     if frame_seconds <= 0:
         raise ValueError("frame_seconds must be positive")
     edf = _read(path)
-    channels = edf_channels(path, channel_map, eeg_unit_scale=eeg_unit_scale)
+    channels = _channels_of(edf, channel_map, eeg_unit_scale)
     if not any(channel.target == "eeg" for channel in channels):
         raise ValueError(f"{Path(path).name} has no channel mapped to EEG")
     by_label = {signal.label: signal for signal in edf.signals}
-    groups: Dict[str, List[EdfChannel]] = {}
-    for channel in channels:
-        groups.setdefault(channel.target, []).append(channel)
-    rates = {}
+    kind_rates = _kind_rates(channels)
     data: Dict[str, Dict[str, np.ndarray]] = {}
-    for kind, members in groups.items():
-        kind_rates = {channel.rate_hz for channel in members}
+    for kind, rate in kind_rates.items():
+        values = {
+            channel.name: np.asarray(by_label[channel.label].data, dtype=np.float64) * channel.scale
+            for channel in channels
+            if channel.target == kind
+        }
+        target = float(rates[kind]) if rates and kind in rates else rate
+        if target != rate:
+            values = {name: _resample(array, rate, target) for name, array in values.items()}
+            kind_rates[kind] = target
+        data[kind] = values
+    start = edf_start_unix(edf)
+    previous_end: Optional[float] = None
+    for span_start, span_end in _data_spans(float(edf.duration), _gap_spans(edf) if skip_gaps else []):
+        skipped = None
+        if previous_end is not None:
+            # On each kind's own sample grid, so the counts add up to the file's.
+            skipped = {
+                kind: int(round(span_start * rate)) - int(round(previous_end * rate))
+                for kind, rate in kind_rates.items()
+            }
+        begin = span_start
+        while begin < span_end - 1e-9:
+            end = min(span_end, begin + frame_seconds)
+            frame = _frame(start + begin, begin, end, kind_rates, data, source, skipped)
+            if frame is not None:
+                yield frame
+                skipped = None
+            begin = end
+        previous_end = span_end
+
+
+def _kind_rates(channels: Sequence[EdfChannel]) -> Dict[str, float]:
+    rates: Dict[str, float] = {}
+    for kind in dict.fromkeys(channel.target for channel in channels):
+        kind_rates = {channel.rate_hz for channel in channels if channel.target == kind}
         if len(kind_rates) != 1:
             raise ValueError(f"the {kind} channels have different rates: {sorted(kind_rates)}")
         rates[kind] = kind_rates.pop()
-        data[kind] = {
-            channel.name: np.asarray(by_label[channel.label].data, dtype=np.float64) * channel.scale
-            for channel in members
-        }
-    start = edf_start_unix(edf)
-    duration = float(edf.duration)
-    gaps = _gap_spans(edf) if skip_gaps else []
-    # The zeros an export pads its last record with end the data.
-    for gap_start, gap_end in gaps:
-        if gap_end >= duration - 1e-6:
-            duration = min(duration, gap_start)
-    frames = int(math.ceil(duration / frame_seconds - 1e-9))
-    for index in range(frames):
-        begin = index * frame_seconds
-        end = min(duration, begin + frame_seconds)
-        if any(gap_start <= begin and end <= gap_end + 1e-9 for gap_start, gap_end in gaps):
-            continue
-        timestamp = start + begin
-        frame = _frame(timestamp, begin, end, rates, data, source)
-        if frame is not None:
-            yield frame
+    return rates
+
+
+def resampled_rates(
+    path: Path,
+    rates: Mapping[str, float],
+    *,
+    channel_map: Optional[Mapping[str, str]] = None,
+    eeg_unit_scale: Optional[float] = None,
+) -> Dict[str, Tuple[float, float]]:
+    """``{kind: (file rate, rate)}`` of each kind ``read_edf(rates=rates)`` resamples."""
+    kind_rates = _kind_rates(_channels_of(_read(path), channel_map, eeg_unit_scale))
+    return {
+        kind: (rate, float(rates[kind]))
+        for kind, rate in kind_rates.items()
+        if kind in rates and float(rates[kind]) != rate
+    }
+
+
+def _resample(values: np.ndarray, rate: float, target: float) -> np.ndarray:
+    from fractions import Fraction
+
+    from scipy.signal import resample_poly
+
+    ratio = Fraction(target / rate).limit_denominator(1000)
+    if ratio.numerator <= 0:
+        raise ValueError(f"cannot resample {rate} Hz to {target} Hz")
+    return np.asarray(resample_poly(values, ratio.numerator, ratio.denominator), dtype=np.float64)
 
 
 def _gap_spans(edf) -> List[Tuple[float, float]]:
@@ -692,18 +763,36 @@ def _gap_spans(edf) -> List[Tuple[float, float]]:
     return spans
 
 
+def _data_spans(duration: float, gaps: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    """``[0, duration)`` less the ``gaps``, as (start, end) in order."""
+    spans = []
+    position = 0.0
+    for gap_start, gap_end in sorted(gaps):
+        gap_start, gap_end = max(0.0, gap_start), min(duration, gap_end)
+        if gap_start > position + 1e-9:
+            spans.append((position, gap_start))
+        position = max(position, gap_end)
+    if duration > position + 1e-9:
+        spans.append((position, duration))
+    return spans
+
+
 def _slice(values: Mapping[str, np.ndarray], rate: float, begin: float, end: float) -> Dict[str, Tuple[float, ...]]:
     first = int(round(begin * rate))
     stop = int(round(end * rate))
     return {name: tuple(array[first:stop].tolist()) for name, array in values.items()}
 
 
-def _frame(timestamp, begin, end, rates, data, source) -> Optional[MuseFrame]:
+def _frame(timestamp, begin, end, rates, data, source, skipped=None) -> Optional[MuseFrame]:
+    def gaps(kind):
+        missing = (skipped or {}).get(kind, 0)
+        return ((0, missing),) if missing > 0 else ()
+
     eeg = imu = ppg = None
     if "eeg" in data:
         channels = _slice(data["eeg"], rates["eeg"], begin, end)
         if any(channels.values()):
-            eeg = EEGSample(timestamp, channels, source=source)
+            eeg = EEGSample(timestamp, channels, source=source, gaps=gaps("eeg"))
     accel_rows = gyro_rows = None
     if "accel" in data:
         accel = _slice(data["accel"], rates["accel"], begin, end)
@@ -712,11 +801,17 @@ def _frame(timestamp, begin, end, rates, data, source) -> Optional[MuseFrame]:
         gyro = _slice(data["gyro"], rates["gyro"], begin, end)
         gyro_rows = _rows(gyro)
     if accel_rows or gyro_rows:
-        imu = IMUSample(timestamp, accelerometer_g=accel_rows or None, gyroscope_dps=gyro_rows or None, source=source)
+        imu = IMUSample(
+            timestamp,
+            accelerometer_g=accel_rows or None,
+            gyroscope_dps=gyro_rows or None,
+            source=source,
+            gaps=gaps("accel" if "accel" in data else "gyro"),
+        )
     if "ppg" in data:
         channels = _slice(data["ppg"], rates["ppg"], begin, end)
         if any(channels.values()):
-            ppg = PPGSample(timestamp, channels, source=source)
+            ppg = PPGSample(timestamp, channels, source=source, gaps=gaps("ppg"))
     if eeg is None and imu is None and ppg is None:
         return None
     return MuseFrame(timestamp=timestamp, eeg=eeg, imu=imu, ppg=ppg, source=source)
@@ -758,10 +853,11 @@ def read_edf_hypnogram(path: Path) -> Tuple[StageInterval, ...]:
 
 
 def edf_header(path: Path) -> Dict[str, object]:
-    """What an import records about an EDF: start, duration, signals and header notes."""
+    """What an import records about an EDF: start, duration, signals and header notes.
+    The patient and recording fields are not copied: a third-party file may name a
+    person or a device there."""
     edf = _read(path)
-    annotations = [str(item.text) for item in edf.annotations if float(item.onset) == 0.0]
-    patient = edf.local_patient_identification
+    notes = [str(item.text) for item in edf.annotations if float(item.onset) == 0.0]
     return {
         "start_utc": dt.datetime.fromtimestamp(edf_start_unix(edf), tz=dt.timezone.utc).isoformat(),
         "duration_seconds": float(edf.duration),
@@ -770,6 +866,5 @@ def edf_header(path: Path) -> Dict[str, object]:
             {"label": s.label, "rate_hz": float(s.sampling_frequency), "unit": s.physical_dimension}
             for s in edf.signals
         ],
-        "synthetic": SYNTHETIC_SUBFIELD in patient.split() or SYNTHETIC_NOTE in annotations,
-        "recording_field": edf.local_recording_identification,
+        "synthetic": SYNTHETIC_NOTE in edf.local_patient_identification or SYNTHETIC_NOTE in notes,
     }

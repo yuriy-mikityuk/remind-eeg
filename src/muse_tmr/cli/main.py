@@ -2335,9 +2335,9 @@ async def _analyze_optics_agreement(args: argparse.Namespace) -> int:
 
 async def _annotate_template(args: argparse.Namespace) -> int:
     from muse_tmr.annotations import build_rem_annotation_rows, export_rem_annotations
-    from muse_tmr.data.continuous import ContinuousBuilder
+    from muse_tmr.data.continuous import ContinuousBuilder, reconstruct_recording
     from muse_tmr.data.import_recording import import_banner, require_declared_scale
-    from muse_tmr.data.night_events import read_hypnogram
+    from muse_tmr.data.night_events import REM_LABELS, read_hypnogram
     from muse_tmr.data.replay import ReplayConfig, ReplaySession
     from muse_tmr.features import new_rem_event_tracker
     from muse_tmr.features.epochs import EpochBuilder, EpochConfig
@@ -2360,9 +2360,13 @@ async def _annotate_template(args: argparse.Namespace) -> int:
             end_seconds=args.end_seconds,
         )
     )
-    # With a hypnogram the replay also keeps the night's timing, to put each epoch on the
-    # recording time an export-edf file counts in.
-    timing = ContinuousBuilder(keep_samples=False) if intervals is not None else None
+    # A hypnogram whose onsets count from the recording's start needs the night's timing,
+    # which puts each epoch on the time base of an export-edf file. The replay keeps it as
+    # it goes; a replay of part of the night cannot, so then the whole night is replayed
+    # once more for its timing alone.
+    needs_timing = intervals is not None and any(not interval.absolute for interval in intervals)
+    partial = args.start_seconds is not None or args.end_seconds is not None
+    timing = ContinuousBuilder(keep_samples=False) if needs_timing and not partial else None
 
     async def frames():
         async for frame in session.stream():
@@ -2391,8 +2395,16 @@ async def _annotate_template(args: argparse.Namespace) -> int:
     )
     labelled = ""
     if intervals is not None:
-        rows = _hypnogram_labels(rows, intervals, timing, hypnogram_path.name)
-        counts = {label: sum(1 for row in rows if row.label == label) for label in ("wake", "nrem", "probable_rem", "unknown")}
+        recording = None
+        try:
+            if needs_timing and partial:
+                recording = await reconstruct_recording(args.input, keep_samples=False)
+            elif timing is not None and timing.frame_count:
+                recording = timing.result()
+        except ValueError:  # no EEG to keep time with: those rows stay unknown
+            recording = None
+        rows = _hypnogram_labels(rows, intervals, recording, hypnogram_path.name)
+        counts = {label: sum(1 for row in rows if row.label == label) for label in REM_LABELS}
         labelled = f" labelled_from={hypnogram_path.name} " + " ".join(f"{key}={value}" for key, value in counts.items())
     output_path = export_rem_annotations(rows, _resolve_output_path(args.output))
     banner = import_banner(args.input)
@@ -2401,20 +2413,20 @@ async def _annotate_template(args: argparse.Namespace) -> int:
     return 0
 
 
-def _hypnogram_labels(rows, intervals, timing, source_name: str):
-    """``rows`` labelled by the hypnogram stage at each epoch's middle (#230)."""
+def _hypnogram_labels(rows, intervals, recording, source_name: str):
+    """``rows`` labelled by the hypnogram stage at each epoch's middle (#230).
+
+    Intervals in host time (annotate-template rows) are compared with the epoch's own
+    times; intervals in recording seconds go through ``recording.seconds()``, the EEG
+    sample clock from the first frame that export-edf writes. A row no interval holds
+    stays ``unknown``.
+    """
     from dataclasses import replace
 
     from muse_tmr.data.night_events import label_at
 
     absolute = [interval for interval in intervals if interval.absolute]
     relative = [interval for interval in intervals if not interval.absolute]
-    recording = None
-    if relative and timing is not None and timing.frame_count:
-        try:
-            recording = timing.result()
-        except ValueError:  # no EEG to keep time with: every row stays unknown
-            recording = None
     labelled = []
     for row in rows:
         middle = (row.start_time + row.end_time) / 2.0

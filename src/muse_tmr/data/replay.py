@@ -1,14 +1,17 @@
 """Offline replay for recorded Muse sessions.
 
 A recording directory replays its ``raw_amused.bin`` through the decoder. A directory
-without one replays its ``decoded_frames.jsonl`` instead, one ``MuseFrame.from_json``
-row at a time: what ``muse-tmr import`` writes, or a recording whose raw file is gone.
+whose raw file is missing or holds no packet replays its ``decoded_frames.jsonl``
+instead, one ``MuseFrame.from_json`` row at a time: what ``muse-tmr import`` writes, a
+BrainFlow or OpenMuse recording (their frames carry no raw packets, #108), or a recording
+whose raw file is gone.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import struct
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import AsyncIterator, Mapping, Optional, Sequence
@@ -21,6 +24,8 @@ from muse_tmr.sources.base_source import BaseMuseSource, MuseDeviceInfo, MuseSou
 
 RAW_FILENAME = "raw_amused.bin"
 DECODED_FRAMES_FILENAME = "decoded_frames.jsonl"
+# The header MuseRawStream.open_write() writes; a raw file no longer than it holds no packet.
+RAW_HEADER_BYTES = struct.calcsize("<4sBQ16s")
 
 
 @dataclass(frozen=True)
@@ -74,11 +79,15 @@ class ReplaySession(BaseMuseSource):
     async def connect(self, device: Optional[MuseDeviceInfo] = None) -> MuseSourceMetadata:
         self._stop_requested = False
         source_metadata = self._load_source_metadata()
+        capabilities = dict(_capabilities_from_metadata(source_metadata))
+        if self.decoded_frames:
+            # Decoded frames carry no raw packets, whatever the recording's source had.
+            capabilities["raw_packets"] = False
         self.metadata = MuseSourceMetadata(
             source_name=self.config.source_name,
             device_name=source_metadata.get("device_name", "recorded Muse"),
             device_id=source_metadata.get("device_id", self.raw_path.stem),
-            capabilities=_capabilities_from_metadata(source_metadata),
+            capabilities=capabilities,
             metadata={
                 "raw_path": str(self.raw_path),
                 "recording_dir": str(self.recording_dir),
@@ -159,7 +168,7 @@ class ReplaySession(BaseMuseSource):
     def _load_source_metadata(self) -> Mapping[str, object]:
         metadata_path = self.recording_dir / "metadata.json"
         if not metadata_path.exists():
-            return {"capabilities": _default_capabilities(raw_packets=not self.decoded_frames)}
+            return {}
 
         payload = json.loads(metadata_path.read_text(encoding="utf-8"))
         source = payload.get("source", {})
@@ -168,12 +177,15 @@ class ReplaySession(BaseMuseSource):
 
 def resolve_raw_path(input_path: Path) -> Path:
     """The file a replay reads: a raw file or `decoded_frames.jsonl` as given, or a
-    directory's `raw_amused.bin`, else its `decoded_frames.jsonl`."""
+    directory's `raw_amused.bin`, else, when that is missing or holds no packet, its
+    `decoded_frames.jsonl` if that holds any."""
     path = input_path.expanduser()
     if path.is_dir():
         raw_path = path / RAW_FILENAME
         decoded_path = path / DECODED_FRAMES_FILENAME
-        path = decoded_path if not raw_path.exists() and decoded_path.exists() else raw_path
+        raw_has_packets = raw_path.is_file() and raw_path.stat().st_size > RAW_HEADER_BYTES
+        decoded_has_frames = decoded_path.is_file() and decoded_path.stat().st_size > 0
+        path = decoded_path if not raw_has_packets and decoded_has_frames else raw_path
     if not path.exists():
         raise FileNotFoundError(f"Replay input not found: {path}")
     if not path.is_file():
@@ -185,15 +197,11 @@ def _capabilities_from_metadata(source_metadata: Mapping[str, object]) -> Mappin
     capabilities = source_metadata.get("capabilities")
     if isinstance(capabilities, Mapping):
         return {str(key): bool(value) for key, value in capabilities.items()}
-    return _default_capabilities()
-
-
-def _default_capabilities(raw_packets: bool = True) -> Mapping[str, bool]:
     return {
         "eeg": True,
         "imu": True,
         "ppg": True,
         "heart_rate": True,
         "battery": True,
-        "raw_packets": raw_packets,
+        "raw_packets": True,
     }

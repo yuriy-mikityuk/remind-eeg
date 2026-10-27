@@ -257,18 +257,25 @@ def _write_sidecar(
         "HardwareFilters": "n/a",
         "Manufacturer": "InteraXon",
         "ManufacturersModelName": "Muse S Athena",
+        "CapManufacturer": "InteraXon",
+        "CapManufacturersModelName": "Muse S Athena headband",
         "SoftwareVersions": f"REMind {__version__}",
         "EEGChannelCount": types.count("EEG"),
-        "MiscChannelCount": types.count("MISC"),
+        "ECGChannelCount": 0,
+        "EMGChannelCount": 0,
+        "EOGChannelCount": 0,
+        "MISCChannelCount": types.count("MISC"),
+        "TriggerChannelCount": 0,
         "RecordingDuration": edf_result.duration_seconds,
         "RecordingType": "continuous",
-        "EEGPlacementScheme": "TP9, AF7, AF8 and TP10 of the 10-20 system (vendor-stated)",
+        "EEGPlacementScheme": "10-20 positions TP9, AF7, AF8 and TP10 (vendor-stated)",
         "EEGGround": "n/a",
+        # REMind's own keys; BIDS allows keys it does not define in a sidecar.
         "EEGFullScale": FULL_SCALE_NOTE,
         "MeasuredSamplingFrequency": eeg.measured_rate_hz if math.isfinite(eeg.measured_rate_hz) else None,
         "GapPolicy": (
-            f"{recording.config.gap_policy}: samples that never arrived are zeros in the EDF, "
-            f"annotated {GAP_TEXT} when a frame came more than {recording.config.gap_threshold_seconds:g} s late"
+            f"{recording.config.gap_policy}: samples that never arrived are zeros in the EDF; a frame more than "
+            f"{recording.config.gap_threshold_seconds:g} s late starts a dropout, annotated {GAP_TEXT}"
         ),
     }
     if notes:
@@ -282,18 +289,20 @@ def _write_events(path: Path, events) -> List[Path]:
     _tsv(path, ("onset", "duration", "trial_type", "description"), rows)
     sidecar = path.with_suffix(".json")
     kinds = sorted({item.kind for item in events})
-    _write_json(
-        sidecar,
-        {
-            "onset": {"Description": "Seconds from the start of the EDF, on the EEG sample clock.", "Units": "s"},
-            "duration": {"Description": "Seconds; 0 for an event without a length.", "Units": "s"},
-            "trial_type": {
-                "Description": "What the event is.",
-                "Levels": {kind: _EVENT_TYPES.get(kind, kind) for kind in kinds},
-            },
-            "description": {"Description": "The event as the EDF+ annotation of the EDF writes it."},
+    payload: Dict[str, object] = {
+        "onset": {"Description": "Seconds from the start of the EDF, on the EEG sample clock.", "Units": "s"},
+        "duration": {"Description": "Seconds; 0 for an event without a length.", "Units": "s"},
+        "trial_type": {
+            "Description": "What the event is.",
+            "Levels": {kind: _EVENT_TYPES.get(kind, kind) for kind in kinds},
         },
-    )
+        "description": {"Description": "The event as the EDF+ annotation of the EDF writes it."},
+    }
+    if "audio" in kinds:
+        # REMind's player handled the cues; each audio event names its backend, so a
+        # dry-run night's events say that nothing was heard.
+        payload["StimulusPresentation"] = {"SoftwareName": "REMind", "SoftwareVersion": __version__, "Code": CODE_URL}
+    _write_json(sidecar, payload)
     return [path, sidecar]
 
 

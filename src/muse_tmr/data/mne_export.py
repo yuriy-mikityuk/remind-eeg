@@ -7,8 +7,9 @@ annotations are the ones an EDF export writes (``edf_io.place_annotations()``): 
 night's events, its zero fills as ``BAD_ACQ_SKIP``, which MNE leaves out of epochs and
 filters by default, and the notes of a synthetic or imported night. Under the
 ``discontinuous`` gap policy nothing is filled; each join gets ``BAD boundary`` and
-``EDGE boundary`` as ``mne.concatenate_raws`` writes them. ``meas_date`` is the
-recording's first frame, in UTC.
+``EDGE boundary`` as ``mne.concatenate_raws`` writes them, and the ``misc`` channels
+follow the EEG through host time, since each stream lost its own samples at a join.
+``meas_date`` is the recording's first frame, in UTC.
 """
 
 from __future__ import annotations
@@ -81,15 +82,24 @@ def to_raw(
         types.append("eeg")
         rows.append(row)
     grid = np.arange(total) / rate
+    discontinuous = recording.config.gap_policy == "discontinuous"
     for stream_name in streams:
         if stream_name == "eeg" or stream_name not in recording.streams:
             continue
         stream = recording.streams[stream_name]
-        times = (recording.offset_samples(stream_name) + np.arange(stream.n_samples)) / stream.nominal_rate_hz
+        if not stream.channels:
+            continue
+        if discontinuous:
+            # Where each EEG sample's host time falls on this stream's own samples.
+            positions = stream.time_map.index(recording.unix_time(grid))
+        else:
+            # As the EDF places it: at its nominal rate from its own first sample.
+            positions = grid * stream.nominal_rate_hz - recording.offset_samples(stream_name)
+        indices = np.arange(stream.n_samples, dtype=float)
         for name, values in stream.channels.items():
             names.append(name)
             types.append("misc")
-            rows.append(np.interp(grid, times, np.asarray(values, dtype=float), left=0.0, right=0.0))
+            rows.append(np.interp(positions, indices, np.asarray(values, dtype=float), left=0.0, right=0.0))
     info = mne.create_info(names, sfreq=rate, ch_types=types)
     raw = mne.io.RawArray(np.vstack(rows), info, verbose="error")
     raw.set_meas_date(dt.datetime.fromtimestamp(recording.t0, tz=dt.timezone.utc))

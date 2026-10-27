@@ -349,9 +349,17 @@ def collect_night_annotations(
     it: the Pilot 4/5 summary's ``first_epoch_start``, else ``metadata.json``'s
     ``started_at``. ``night_start`` is what the night logs' ``timestamp_seconds`` count
     from; default ``first_epoch_start``, else ``t0``. ``to_unix`` turns the onset of a
-    hypnogram given in recording seconds into host time; default ``t0 + onset``.
-    ``hypnograms`` are extra stage files (``read_hypnogram()``). SealedNightError for a
-    night from a sealed schedule (``blinding_refusal()``).
+    hypnogram given in recording seconds into host time; an export passes
+    ``ContinuousRecording.unix_time``, which counts on the EEG sample clock from the
+    first frame, and without it the onset is taken as host seconds from ``t0``.
+    ``hypnograms`` are extra stage files (``read_hypnogram()``).
+
+    A synthetic night's ``hypnogram.csv`` counts on the generator's sample clock from
+    its start, and the night's first frame holds the generator's first EEG sample, so
+    it goes through ``to_unix`` too; without ``to_unix`` it counts from ``started_at``.
+    Another recording's ``hypnogram.csv`` is not read: its time base is unknown, so it
+    goes in through ``hypnograms``. SealedNightError for a night from a sealed schedule
+    (``blinding_refusal()``).
     """
     recording_dir = Path(recording_dir).expanduser()
     metadata = load_metadata(recording_dir)
@@ -366,6 +374,9 @@ def collect_night_annotations(
         raise ValueError(f"{recording_dir} gives no start time: pass t0")
     if night_start is None:
         night_start = first_epoch_start if first_epoch_start is not None else t0
+    synthetic_to_unix = to_unix
+    if synthetic_to_unix is None and started_at is not None:
+        synthetic_to_unix = lambda seconds: started_at + seconds  # noqa: E731
     if to_unix is None:
         to_unix = lambda seconds: t0 + seconds  # noqa: E731
 
@@ -382,10 +393,13 @@ def collect_night_annotations(
     annotations += _audio_events(_read_jsonl(recording_dir / "audio_playback.jsonl"))
     annotations += _awakenings(_read_jsonl(recording_dir / "awakening_events.jsonl"), night_start)
     synthetic_hypnogram = recording_dir / "hypnogram.csv"
-    if include_hypnogram and synthetic_hypnogram.exists() and started_at is not None:
-        annotations += _stage_annotations(
-            read_hypnogram(synthetic_hypnogram), lambda seconds: started_at + seconds, "hypnogram.csv"
-        )
+    if (
+        include_hypnogram
+        and metadata.get("synthetic") is True
+        and synthetic_hypnogram.exists()
+        and synthetic_to_unix is not None
+    ):
+        annotations += _stage_annotations(read_hypnogram(synthetic_hypnogram), synthetic_to_unix, "hypnogram.csv")
     for path in hypnograms:
         path = Path(path).expanduser()
         annotations += _stage_annotations(read_hypnogram(path), to_unix, path.name)
@@ -644,6 +658,9 @@ def _audio_events(rows: Sequence[Mapping[str, object]]) -> List[NightAnnotation]
             parts = [f"audio {status}", f"cue={cue_id}"]
             if _seconds(row.get("effective_volume")) is not None and status == "played":
                 parts.append(f"volume={float(row['effective_volume']):.3f}")  # type: ignore[arg-type]
+            if row.get("backend_name"):
+                # A dry-run or mock "played" made no sound; the backend says which it was.
+                parts.append(f"backend={row['backend_name']}")
             if row.get("arm") and row.get("arm") != "cue":
                 parts.append(f"arm={row['arm']}")
             text = " ".join(parts)

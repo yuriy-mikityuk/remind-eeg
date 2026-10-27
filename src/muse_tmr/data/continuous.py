@@ -12,8 +12,10 @@ to end in one float32 array per channel at the stream's nominal rate (EEG 256 Hz
 - ``EEGSample.gaps`` and its IMU and optics twins name samples the device sent that
   never arrived (#182). With ``fill_lost_samples`` (the default) they become zeros at
   their place, so the index follows the device's sample counter; without it the rows
-  stay joined, as ``scripts/validate_rem_detection.py`` has always read them. Counters
-  that skip inside a dropout are left to the dropout's fill.
+  stay joined, as ``scripts/validate_rem_detection.py`` has always read them. With it a
+  dropout also takes its size from the counter when the frame after it reports a skip
+  at its start that agrees with host time to within a quarter second: host time is a
+  sample or two off after each dropout of a synthetic night, the counter exact.
 
 Each stream's sample 0 is its first frame's timestamp, the convention of the REM check's
 ``_collect()``: the samples of a frame are taken to start at its timestamp, about one
@@ -391,6 +393,8 @@ class _StreamBuilder:
         elif ts - self.prev_ts > config.gap_threshold_seconds:
             # Insert the missing samples for the dropout span so the timeline stays real.
             missing = int(round((ts - self.prev_ts) * self.rate_hz)) - int(self.prev_width)
+            if config.fill_lost_samples:
+                missing = _counted_dropout(missing, gaps, self.rate_hz)
             seconds = (ts - self.prev_ts) - self.prev_width / self.rate_hz
             if config.gap_policy == "zero_fill":
                 if missing > 0:
@@ -472,6 +476,18 @@ class _StreamBuilder:
             sample_count=self.n,
             unfilled_dropout_samples=self.unfilled_dropout,
         )
+
+
+def _counted_dropout(host_missing: int, gaps: Sequence[Tuple[int, int]], rate_hz: float) -> int:
+    """The samples a dropout lost: the device counter's count when the frame after it
+    reports one at its start and it agrees with host time to within a quarter second,
+    else host time's. Host time misses by a sample or two; a counter that wrapped while
+    the stream was away (the decoder reports a step of up to half its range) misses by
+    whole wraps, hundreds of samples, which the check catches."""
+    counted = sum(int(missing) for index, missing in gaps or () if int(index) == 0 and int(missing) > 0)
+    if counted and abs(counted - host_missing) <= 0.25 * rate_hz:
+        return counted
+    return host_missing
 
 
 def _with_zeros(values: List[float], inserts: Sequence[Tuple[int, int]]) -> List[float]:

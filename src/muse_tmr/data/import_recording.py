@@ -9,8 +9,11 @@ it: report and simulation only, as the banner every report of it carries says.
 
 EEG values become centred microvolts as ``value * eeg_scale + eeg_offset``. The scale
 comes from ``IMPORT_SCALE_TABLE``, which names where each row comes from, or from
-``--eeg-scale``; Mind Monitor's units are unverified, so its imports need one. What
-each format keeps and loses: ``docs/import.md``.
+``--eeg-scale``; Mind Monitor's units are unverified, so its imports need one. An EDF's
+values are converted from the unit its header names, or with ``--eeg-scale`` in its
+place, and every stream is resampled to the rate the pipeline reads (EEG 256 Hz, IMU
+52 Hz, optics 64 Hz) when it has another. What each format keeps and loses:
+``docs/import.md``.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ import numpy as np
 
 from muse_tmr import __version__
 from muse_tmr.ble import muse_athena_protocol as proto
+from muse_tmr.data.continuous import ContinuousConfig
 from muse_tmr.data.night_events import SYNTHETIC_NOTE
 from muse_tmr.data.replay import DECODED_FRAMES_FILENAME
 from muse_tmr.data.sample_types import EEGSample, MuseFrame
@@ -36,6 +40,15 @@ IMPORT_SCHEMA_VERSION = 1
 IMPORT_FORMATS = ("decoded-frames", "edf", "muselsl-csv", "openmuse-csv", "brainflow-csv", "mindmonitor-csv")
 IMPORT_NOTE = "report and simulation only"
 EEG_CHANNELS = tuple(proto.EEG_CHANNELS_4)
+# The rates the epoch builder and the feature extractors read; an EDF stream at another
+# rate is resampled to them.
+_RATES = ContinuousConfig()
+PIPELINE_RATES = {
+    "eeg": _RATES.nominal_rate_hz,
+    "accel": _RATES.imu_rate_hz,
+    "gyro": _RATES.imu_rate_hz,
+    "ppg": _RATES.optics_rate_hz,
+}
 # Centring the 14-bit counts: count 8192 is 8192 * 1450/16383 uV.
 MIDSCALE_UV = proto.EEG_MID_COUNT * proto.EEG_SCALE_UV_PER_COUNT
 # BrainFlow before 5.23.0 scaled Athena counts by 1650/4095, the 12-bit factor.
@@ -71,7 +84,7 @@ class ImportScale:
 IMPORT_SCALE_TABLE: Tuple[ImportScale, ...] = (
     ImportScale(
         "decoded-frames",
-        "decoded_frames.jsonl from muse-tmr record",
+        "decoded_frames.jsonl of muse-tmr record",
         1.0,
         0.0,
         "written by this repository's decoder in centred uV (muse_tmr.ble.muse_athena_protocol)",
@@ -87,35 +100,36 @@ IMPORT_SCALE_TABLE: Tuple[ImportScale, ...] = (
     ),
     ImportScale(
         "muselsl-csv",
-        "muse-lsl record CSV of a Muse S Athena (Athena support since its PR #228)",
+        "muse-lsl record CSV of a Muse S Athena (Athena support since muse-lsl PR #228, merged 2026-06-30)",
         1.0,
         0.0,
         "muselsl/athena.py decodes (raw - 8192) * 1450/16383, the centred uV of this repository",
-        "source code read 2026-10",
+        "source code read 2026-10-27",
     ),
     ImportScale(
         "openmuse-csv",
-        "CSV of OpenMuse decode_rawdata() EEG",
+        "the EEG DataFrame of OpenMuse.decode_rawdata(), saved as CSV",
         1.0,
         -MIDSCALE_UV,
-        "OpenMuse/decode.py scales raw * 1450/16383 without the midscale, a pedestal of 725.04 uV",
-        "source code read 2026-10",
+        "OpenMuse/decode.py scales raw * 1450/16383 without subtracting 8192, a pedestal of 725.04 uV",
+        "source code read 2026-10-27",
     ),
     ImportScale(
         "brainflow-csv",
-        "BrainFlow 5.23.0 or later, MUSE_S_ATHENA_BOARD default preset",
+        "BrainFlow 5.23.0 or later, MUSE_S_ATHENA_BOARD default preset, DataFilter.write_file",
         1.0,
         0.0,
-        "BrainFlow PR #855 (scale 1450/16383) and PR #856 (centred on 8192), released in 5.23.0",
-        "source code read 2026-10",
+        "BrainFlow PR #855 (scale 1450/16383) and PR #856 (centred on 8192), merged 2026-08-18, first in 5.23.0",
+        "source code read 2026-10-27",
     ),
     ImportScale(
         "brainflow-csv",
-        "BrainFlow before 5.23.0, MUSE_S_ATHENA_BOARD default preset",
+        "BrainFlow before 5.23.0, MUSE_S_ATHENA_BOARD default preset, DataFilter.write_file",
         proto.EEG_SCALE_UV_PER_COUNT / BRAINFLOW_OLD_SCALE,
         -MIDSCALE_UV,
-        "BrainFlow PR #855: 1650/4095 per count, 4.55 times too large, and uncentred until PR #856",
-        "source code read 2026-10",
+        "before PR #855 BrainFlow scaled Athena counts by 1650/4095 uV, 4.55 times 1450/16383, and before "
+        "PR #856 it did not centre them on 8192",
+        "source code read 2026-10-27",
     ),
     ImportScale(
         "mindmonitor-csv",
@@ -367,6 +381,7 @@ def _source_frames(
     fmt: str,
     scale: ImportScale,
     *,
+    declared_by: str,
     start_time: Optional[float],
     channel_map: Optional[Mapping[str, str]],
     source: str,
@@ -381,16 +396,28 @@ def _source_frames(
             "synthetic": _says_synthetic(path.parent / "metadata.json"),
         }
     if fmt == "edf":
-        from muse_tmr.data.edf_io import edf_header, read_edf
+        from muse_tmr.data.edf_io import edf_header, read_edf, resampled_rates
 
+        # A declared scale stands in for the header's unit; the table's row (1.0) keeps it.
+        unit_scale = factor if declared_by == "user" else None
         header = edf_header(path)
+        resampled = resampled_rates(path, PIPELINE_RATES, channel_map=channel_map, eeg_unit_scale=unit_scale)
         details = {
             "clock": {"kind": "unix", "description": "EDF start, read as UTC, plus the sample index"},
             "edf": {key: header[key] for key in ("start_utc", "duration_seconds", "signals")},
             "channel_map": dict(channel_map) if channel_map else None,
+            "eeg_unit": "--eeg-scale in place of the header's unit" if unit_scale is not None else "header",
+            "resampled": {
+                kind: {"from_hz": rates[0], "to_hz": rates[1]} for kind, rates in sorted(resampled.items())
+            },
             "synthetic": bool(header.get("synthetic")),
         }
-        frames = (_scaled(frame, factor, offset) for frame in read_edf(path, channel_map=channel_map, source=source))
+        frames = (
+            _scaled(frame, 1.0, offset)
+            for frame in read_edf(
+                path, channel_map=channel_map, eeg_unit_scale=unit_scale, rates=PIPELINE_RATES, source=source
+            )
+        )
         return frames, details
     times, columns, clock = _CSV_READERS[fmt](path, start_time)
     if times.size == 0:
@@ -484,9 +511,19 @@ def import_recording(
     if not path.is_file():
         raise ValueError(f"import input not found: {path}")
     scale, declared_by = resolve_scale(fmt, eeg_scale=eeg_scale, eeg_offset=eeg_offset, source_version=source_version)
+    if channel_map is not None and fmt != "edf":
+        raise ValueError("a channel map is for --format edf only")
     _check_output_dir(out_dir)
     source = f"import:{fmt}"
-    frames, details = _source_frames(path, fmt, scale, start_time=start_time, channel_map=channel_map, source=source)
+    frames, details = _source_frames(
+        path,
+        fmt,
+        scale,
+        declared_by=declared_by,
+        start_time=start_time,
+        channel_map=channel_map,
+        source=source,
+    )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     frames_path = out_dir / DECODED_FRAMES_FILENAME
@@ -495,19 +532,22 @@ def import_recording(
     eeg_samples = 0
     modality_counts: Dict[str, int] = {}
     first = last = None
-    with tmp_path.open("w", encoding="utf-8") as handle:
-        for frame in frames:
-            handle.write(frame.to_json(include_raw=False) + "\n")
-            frame_count += 1
-            for modality in frame.modalities():
-                modality_counts[modality] = modality_counts.get(modality, 0) + 1
-            if frame.eeg is not None and frame.eeg.channels_uv:
-                eeg_samples += len(next(iter(frame.eeg.channels_uv.values())))
-            first = frame.timestamp if first is None else first
-            last = frame.timestamp
-    if frame_count == 0 or first is None or last is None:
+    try:
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            for frame in frames:
+                handle.write(frame.to_json(include_raw=False) + "\n")
+                frame_count += 1
+                for modality in frame.modalities():
+                    modality_counts[modality] = modality_counts.get(modality, 0) + 1
+                if frame.eeg is not None and frame.eeg.channels_uv:
+                    eeg_samples += len(next(iter(frame.eeg.channels_uv.values())))
+                first = frame.timestamp if first is None else first
+                last = frame.timestamp
+        if frame_count == 0 or first is None or last is None:
+            raise ValueError(f"{path.name} gave no frames")
+    except BaseException:
         tmp_path.unlink(missing_ok=True)
-        raise ValueError(f"{path.name} gave no frames")
+        raise
     os.replace(tmp_path, frames_path)
 
     synthetic = bool(details.pop("synthetic", False))
