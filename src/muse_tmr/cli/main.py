@@ -34,6 +34,7 @@ PROTOCOL_PRESET_COMMANDS = (
     "create-cue-library",
     "generate-puzzle-session",
     "assign-puzzle-cues",
+    "prereg-template",
 )
 PROTOCOL_PRESET_DEFAULT_HELP = "Default: the protocol preset's."
 # The arms a cueing night runs: muse_tmr.protocol.night_schedule.CUEING_ARMS (#228).
@@ -846,7 +847,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     analysis_parser.add_argument("session", type=Path, help="Input night puzzle session .json path.")
     analysis_parser.add_argument("--assignment", type=Path, required=True, help="Cued/uncued assignment .json path.")
-    analysis_parser.add_argument("--retest", type=Path, required=True, help="Morning puzzle retest .json path.")
+    analysis_parser.add_argument(
+        "--retest",
+        type=Path,
+        action="append",
+        required=True,
+        help="Puzzle retest .json path. Repeat for the delayed waves (day7, day10), one file per wave.",
+    )
+    analysis_parser.add_argument(
+        "--coding",
+        type=Path,
+        action="append",
+        default=[],
+        help="A rater's incorporation coding sheet of this night (record-incorporation-coding). Repeat per "
+        "rater; rater codes decide incorporation in place of the dream report's own links.",
+    )
     analysis_parser.add_argument("--output", type=Path, required=True, help="Output analysis report .json path.")
     analysis_parser.add_argument("--dream-report", type=Path, help="Optional morning dream report .json path.")
     analysis_parser.add_argument("--scheduler-events", type=Path, help="Optional TMR scheduler events .jsonl path.")
@@ -922,6 +937,112 @@ def build_parser() -> argparse.ArgumentParser:
     unseal_schedule_parser.add_argument("schedule", type=Path, help="Night schedule .json path.")
     unseal_schedule_parser.add_argument("--sealed", type=Path, help="Sealed companion. Default: <name>.sealed.json next to it.")
     unseal_schedule_parser.add_argument("--json", action="store_true", help="Print it as JSON.")
+
+    prereg_parser = subparsers.add_parser(
+        "prereg-template",
+        help="Write an OSF-style preregistration of a sealed series: its design and commitment, no arm, seed or salt.",
+    )
+    prereg_parser.add_argument("schedule", type=Path, help="Night schedule .json path.")
+    prereg_parser.add_argument("--sealed", type=Path, help="Sealed companion. Default: <name>.sealed.json next to it.")
+    prereg_parser.add_argument(
+        "--protocol-metadata",
+        type=Path,
+        help="A .json with the series' protocol block, such as a night's puzzle session or assignment. "
+        "Without it the block of --protocol-preset.",
+    )
+    _add_protocol_preset_arg(prereg_parser)
+    prereg_parser.add_argument("--output", type=Path, help="Markdown path. Default: print it.")
+
+    blind_coding_parser = subparsers.add_parser(
+        "export-blind-coding",
+        help="Write a night's dream text and puzzles for a rater, with nothing about cues, the arm or the assignment.",
+    )
+    blind_coding_parser.add_argument("session", type=Path, help="Input night puzzle session .json path.")
+    blind_coding_parser.add_argument("--dream-report", type=Path, required=True, help="The night's dream report .json.")
+    blind_coding_parser.add_argument("--catalog", type=Path, required=True, help="Puzzle catalog .json path.")
+    blind_coding_parser.add_argument("--output", type=Path, required=True, help="Packet .json path.")
+    blind_coding_parser.add_argument("--markdown-output", type=Path, help="The packet as Markdown, for a person to read.")
+
+    record_coding_parser = subparsers.add_parser(
+        "record-incorporation-coding",
+        help="Record a rater's incorporation codes for a blind coding packet.",
+    )
+    record_coding_parser.add_argument("packet", type=Path, help="Packet .json from export-blind-coding.")
+    record_coding_parser.add_argument("--rater-id", required=True, help="Who coded it, such as rater-a.")
+    record_coding_parser.add_argument(
+        "--code",
+        action="append",
+        default=[],
+        metavar="PUZZLE_ID=CATEGORIES",
+        help="A puzzle's categories, comma-separated: sound_cue, direct_conceptual, indirect_conceptual, or none. "
+        "Repeat once per packet puzzle.",
+    )
+    record_coding_parser.add_argument(
+        "--note", action="append", default=[], metavar="PUZZLE_ID=TEXT", help="Optional note on a puzzle's code."
+    )
+    record_coding_parser.add_argument("--notes", default="")
+    record_coding_parser.add_argument("--output", type=Path, required=True, help="Coding sheet .json path.")
+
+    compare_codings_parser = subparsers.add_parser(
+        "compare-incorporation-codings",
+        help="Percent agreement and Cohen's kappa per category between two raters' coding sheets.",
+    )
+    compare_codings_parser.add_argument(
+        "codings", type=Path, nargs="+", help="Coding sheets of two raters, one or more nights each."
+    )
+    compare_codings_parser.add_argument("--output", type=Path, help="Agreement .json path.")
+
+    nof1_parser = subparsers.add_parser(
+        "analyze-nof1",
+        help="Describe an unsealed N-of-1 series by arm, with permutation intervals and a SCRIBE/CENT checklist.",
+    )
+    nof1_parser.add_argument("schedule", type=Path, help="Night schedule .json path, unsealed.")
+    nof1_parser.add_argument("--sealed", type=Path, help="Sealed companion. Default: <name>.sealed.json next to it.")
+    nof1_parser.add_argument(
+        "--protocol-dir",
+        type=Path,
+        default=Path("data/protocol"),
+        help="Where the nights' puzzle sessions and assignments are (default data/protocol).",
+    )
+    nof1_parser.add_argument(
+        "--reports-dir",
+        type=Path,
+        default=Path("data/reports"),
+        help="Where the dream reports, retests, sound checks and coding sheets are (default data/reports).",
+    )
+    nof1_parser.add_argument(
+        "--recordings-dir",
+        type=Path,
+        default=Path("data/recordings"),
+        help="Searched for the series' pilot4_summary.json and pilot5_summary.json (default data/recordings).",
+    )
+    nof1_parser.add_argument(
+        "--summary",
+        type=Path,
+        action="append",
+        default=[],
+        help="A night's Pilot 4/5 summary or Pilot 3 report; wins over one found for the same night. Repeat.",
+    )
+    nof1_parser.add_argument(
+        "--coding", type=Path, action="append", default=[], help="A coding sheet outside --reports-dir. Repeat."
+    )
+    nof1_parser.add_argument("--seed", type=int, default=0, help="Seed of the drawn arm orders when not all are used (default 0).")
+    nof1_parser.add_argument(
+        "--permutations",
+        type=int,
+        default=10000,
+        help="Use every arm order the schedule could have drawn up to this many, else draw this many (default 10000).",
+    )
+    nof1_parser.add_argument("--min-nights-per-arm", type=int, default=5)
+    nof1_parser.add_argument("--primary-outcome", default=None, help="The preregistered outcome, marked primary.")
+    nof1_parser.add_argument(
+        "--primary-contrast",
+        choices=("cue-no_cue", "cue-sham", "sham-no_cue"),
+        default=None,
+        help="The preregistered contrast (default cue-no_cue with --primary-outcome).",
+    )
+    nof1_parser.add_argument("--output", type=Path, required=True, help="Output .json path.")
+    nof1_parser.add_argument("--markdown-output", type=Path, help="Output .md path.")
 
     meditation_plan_parser = subparsers.add_parser(
         "meditation-plan",
@@ -1215,6 +1336,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _show_night_schedule(args)
     if args.command == "unseal-night-schedule":
         return _unseal_night_schedule(args)
+    if args.command == "prereg-template":
+        return _prereg_template(args)
+    if args.command == "export-blind-coding":
+        return _export_blind_coding(args)
+    if args.command == "record-incorporation-coding":
+        return _record_incorporation_coding(args)
+    if args.command == "compare-incorporation-codings":
+        return _compare_incorporation_codings(args)
+    if args.command == "analyze-nof1":
+        return _analyze_nof1(args)
     if args.command == "meditation-plan":
         return _meditation_plan(args)
     if args.command == "analyze-meditation":
@@ -3926,6 +4057,241 @@ def _print_night_schedule(args: argparse.Namespace, *, unseal: bool) -> int:
     return 0
 
 
+def _checked_schedule(command: str, schedule_arg: Path, sealed_arg: Optional[Path]):
+    """The schedule and its sealed companion's path, after the schedule was checked
+    against it; or None and an exit code with the reason on stderr: 1 when it changed
+    after it was sealed, 2 otherwise."""
+    from muse_tmr.protocol import SealMismatch, load_night_schedule, sealed_path_for, verify_seal
+
+    schedule_path = _resolve_output_path(schedule_arg)
+    sealed_path = _resolve_output_path(sealed_arg) if sealed_arg is not None else sealed_path_for(schedule_path)
+    try:
+        schedule = load_night_schedule(schedule_path)
+        verify_seal(schedule, sealed_path)
+    except SealMismatch as exc:
+        print(f"{command}: {exc}", file=sys.stderr)
+        return None, sealed_path, 1
+    except (OSError, KeyError, ValueError) as exc:
+        print(f"{command}: {exc}", file=sys.stderr)
+        return None, sealed_path, 2
+    return schedule, sealed_path, 0
+
+
+def _prereg_template(args: argparse.Namespace) -> int:
+    """Print or write the preregistration; it holds no arm, no seed and no salt."""
+    from muse_tmr.protocol import prereg_template, protocol_block_of
+    from muse_tmr.reports.nof1_analysis import (
+        DEFAULT_PERMUTATIONS,
+        DEFAULT_SEED,
+        INTERVAL_LEVEL,
+        OUTCOMES,
+        outside_possible,
+        schedule_design_orders,
+    )
+
+    schedule, sealed_path, code = _checked_schedule("prereg-template", args.schedule, args.sealed)
+    if schedule is None:
+        return code
+    if args.protocol_metadata is not None:
+        metadata_path = _resolve_output_path(args.protocol_metadata)
+        try:
+            protocol = protocol_block_of(json.loads(metadata_path.read_text(encoding="utf-8")))
+        except (OSError, ValueError) as exc:
+            print(f"prereg-template: {exc}", file=sys.stderr)
+            return 2
+        if protocol is None:
+            print(f"prereg-template: no protocol block in {metadata_path}", file=sys.stderr)
+            return 2
+        source = f"`{metadata_path.name}`"
+    else:
+        preset, overrides = _protocol_from_args(args, {})
+        protocol = preset.manifest(overrides)
+        source = (
+            f"`--protocol-preset {preset.name}`"
+            if args.protocol_preset is not None
+            else f"`{preset.name}`, the default preset of every runner"
+        )
+    orders = schedule_design_orders(schedule.blocks, schedule.arms)
+    text = prereg_template(
+        schedule,
+        protocol=protocol,
+        protocol_source=source,
+        sealed_name=sealed_path.name,
+        analysis={
+            "seed": DEFAULT_SEED,
+            "permutations": DEFAULT_PERMUTATIONS,
+            "interval": INTERVAL_LEVEL,
+            "outcomes": list(OUTCOMES),
+            "possible_orders": orders,
+            "outside_possible": outside_possible(min(orders, DEFAULT_PERMUTATIONS)),
+        },
+        software_version=__version__,
+    )
+    if not schedule.sealed:
+        print(
+            f"prereg-template: {schedule.schedule_id} was unsealed at {schedule.unsealed_at_utc}; a template written "
+            "now is not a preregistration",
+            file=sys.stderr,
+        )
+    if args.output is None:
+        sys.stdout.write(text)
+        return 0
+    output_path = _resolve_output_path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(text, encoding="utf-8")
+    print(
+        "preregistration template written "
+        f"schedule_id={schedule.schedule_id} "
+        f"commitment_sha256={schedule.commitment_sha256()} "
+        f"protocol={protocol.get('name')} "
+        f"output={output_path}"
+    )
+    return 0
+
+
+def _export_blind_coding(args: argparse.Namespace) -> int:
+    from muse_tmr.protocol import load_night_puzzle_session, load_puzzle_catalog
+    from muse_tmr.reports import export_blind_coding_packet, load_dream_report
+
+    try:
+        packet = export_blind_coding_packet(
+            load_night_puzzle_session(_resolve_output_path(args.session)),
+            load_dream_report(_resolve_output_path(args.dream_report)),
+            load_puzzle_catalog(_resolve_output_path(args.catalog)),
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"export-blind-coding: {exc.args[0] if exc.args else exc}", file=sys.stderr)
+        return 2
+    output_path = packet.save(_resolve_output_path(args.output))
+    markdown_path = (
+        packet.save_markdown(_resolve_output_path(args.markdown_output)) if args.markdown_output is not None else None
+    )
+    print(
+        "blind coding packet written "
+        f"session={packet.session_id} "
+        f"puzzles={len(packet.puzzles)} "
+        f"output={output_path}"
+        + (f" markdown={markdown_path}" if markdown_path is not None else "")
+    )
+    return 0
+
+
+def _record_incorporation_coding(args: argparse.Namespace) -> int:
+    from muse_tmr.reports import build_incorporation_coding, load_blind_coding_packet
+    from muse_tmr.reports.incorporation_coding import parse_coding_categories
+
+    try:
+        packet = load_blind_coding_packet(_resolve_output_path(args.packet))
+        codes = {
+            puzzle_id: parse_coding_categories(text)
+            for puzzle_id, text in _parse_key_values(args.code, "--code", allow_empty_value=False).items()
+        }
+        sheet = build_incorporation_coding(
+            packet,
+            args.rater_id,
+            codes,
+            notes=_parse_key_values(args.note, "--note", allow_empty_value=True),
+            sheet_notes=args.notes,
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"record-incorporation-coding: {exc.args[0] if exc.args else exc}", file=sys.stderr)
+        return 2
+    output_path = sheet.save(_resolve_output_path(args.output))
+    print(
+        "incorporation coding recorded "
+        f"session={sheet.session_id} "
+        f"rater={sheet.rater_id} "
+        f"puzzles={len(sheet.codings)} "
+        f"incorporated={sum(1 for coding in sheet.codings if coding.incorporated)} "
+        f"output={output_path}"
+    )
+    return 0
+
+
+def _compare_incorporation_codings(args: argparse.Namespace) -> int:
+    from muse_tmr.reports import coding_agreement, load_incorporation_coding
+
+    try:
+        agreement = coding_agreement(load_incorporation_coding(_resolve_output_path(path)) for path in args.codings)
+    except (KeyError, ValueError) as exc:
+        print(f"compare-incorporation-codings: {exc.args[0] if exc.args else exc}", file=sys.stderr)
+        return 2
+    first, second = agreement.rater_ids
+    print(f"incorporation coding agreement raters={first},{second} puzzles={agreement.item_count}")
+    for category, stats in agreement.categories.items():
+        print(
+            f"  {category}: agreement={_format_float(stats.get('percent_agreement'), 3)} "
+            f"kappa={_format_float(stats.get('kappa'), 3)}"
+            + (f" ({stats['kappa_note']})" if stats.get("kappa_note") else "")
+        )
+    if agreement.unmatched:
+        print(f"  coded by one rater only, left out: {len(agreement.unmatched)}")
+    if args.output is not None:
+        print(f"output={agreement.save(_resolve_output_path(args.output))}")
+    return 0
+
+
+def _analyze_nof1(args: argparse.Namespace) -> int:
+    from muse_tmr.reports import ScheduleStillSealed, build_nof1_analysis, load_series_inputs
+    from muse_tmr.reports.nof1_analysis import OUTCOMES, SYNTHETIC_NOTE
+
+    if args.primary_outcome is not None and args.primary_outcome not in OUTCOMES:
+        print(f"analyze-nof1: --primary-outcome must be one of: {', '.join(OUTCOMES)}", file=sys.stderr)
+        return 2
+    schedule, _sealed_path, code = _checked_schedule("analyze-nof1", args.schedule, args.sealed)
+    if schedule is None:
+        return code
+    if schedule.sealed:
+        print(
+            f"analyze-nof1: night schedule {schedule.schedule_id} is still sealed; run "
+            f"`muse-tmr unseal-night-schedule {args.schedule}` after the last delayed retest of the series, "
+            "then analyze-nof1",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        nights = load_series_inputs(
+            schedule,
+            protocol_dir=_resolve_output_dir(args.protocol_dir),
+            reports_dir=_resolve_output_dir(args.reports_dir),
+            recordings_dir=_resolve_output_dir(args.recordings_dir),
+            summary_paths=tuple(_resolve_output_path(path) for path in args.summary),
+            coding_paths=tuple(_resolve_output_path(path) for path in args.coding),
+        )
+        report = build_nof1_analysis(
+            schedule,
+            nights,
+            seal="matches",
+            seed=args.seed,
+            permutations=args.permutations,
+            min_nights_per_arm=args.min_nights_per_arm,
+            primary_outcome=args.primary_outcome,
+            primary_contrast=args.primary_contrast,
+        )
+    except ScheduleStillSealed as exc:
+        print(f"analyze-nof1: {exc}", file=sys.stderr)
+        return 2
+    except (OSError, KeyError, ValueError) as exc:
+        print(f"analyze-nof1: {exc.args[0] if exc.args else exc}", file=sys.stderr)
+        return 2
+    output_path = report.save(_resolve_output_path(args.output))
+    markdown_path = (
+        report.save_markdown(_resolve_output_path(args.markdown_output)) if args.markdown_output is not None else None
+    )
+    with_data = sum(1 for night in report.nights if night.get("has_data"))
+    print(
+        "nof1 analysis complete "
+        f"schedule={schedule.schedule_id} "
+        f"nights={with_data}/{len(report.nights)} "
+        f"orders={report.settings['possible_orders']} ({report.settings['method']}) "
+        f"limitations={','.join(report.limitation_codes)} "
+        f"output={output_path}"
+        + (f" markdown={markdown_path}" if markdown_path is not None else "")
+        + (f" ({SYNTHETIC_NOTE})" if report.synthetic else "")
+    )
+    return 0
+
+
 def _analyze_cued_uncued(args: argparse.Namespace) -> int:
     from muse_tmr.protocol import (
         load_night_puzzle_session,
@@ -3937,12 +4303,14 @@ def _analyze_cued_uncued(args: argparse.Namespace) -> int:
         build_cued_uncued_analysis,
         load_cue_recall_test,
         load_dream_report,
+        load_incorporation_coding,
         load_morning_retest,
     )
 
     session = load_night_puzzle_session(_resolve_output_path(args.session))
     assignment = load_puzzle_cue_assignment(_resolve_output_path(args.assignment))
-    retest = load_morning_retest(_resolve_output_path(args.retest))
+    retests = tuple(load_morning_retest(_resolve_output_path(path)) for path in args.retest)
+    codings = tuple(load_incorporation_coding(_resolve_output_path(path)) for path in args.coding)
     dream_report = (
         load_dream_report(_resolve_output_path(args.dream_report))
         if args.dream_report is not None
@@ -3968,18 +4336,23 @@ def _analyze_cued_uncued(args: argparse.Namespace) -> int:
         protocol_source = metadata_path.name
     elif protocol_block_of(assignment.to_dict()) is not None:
         protocol, protocol_source = protocol_block_of(assignment.to_dict()), "assignment"
-    report = build_cued_uncued_analysis(
-        session,
-        assignment,
-        retest,
-        dream_report=dream_report,
-        scheduler_events=scheduler_events,
-        cue_recall=cue_recall,
-        protocol=protocol,
-        protocol_source=protocol_source,
-        analysis_id=args.analysis_id,
-        min_group_size=args.min_group_size,
-    )
+    try:
+        report = build_cued_uncued_analysis(
+            session,
+            assignment,
+            retests,
+            dream_report=dream_report,
+            scheduler_events=scheduler_events,
+            cue_recall=cue_recall,
+            incorporation_codings=codings,
+            protocol=protocol,
+            protocol_source=protocol_source,
+            analysis_id=args.analysis_id,
+            min_group_size=args.min_group_size,
+        )
+    except ValueError as exc:
+        print(f"analyze-cued-uncued: {exc}", file=sys.stderr)
+        return 2
     output_path = report.save(_resolve_output_path(args.output))
     markdown_path = None
     if args.markdown_output is not None:
@@ -3989,6 +4362,8 @@ def _analyze_cued_uncued(args: argparse.Namespace) -> int:
         "cued-vs-uncued analysis complete "
         f"session={report.session_id} "
         f"rows={len(report.rows)} "
+        f"waves={','.join(report.wave_metrics)} "
+        f"incorporation={report.incorporation.get('source')} "
         f"limitations={','.join(report.limitation_codes)} "
         f"output={output_path}"
         + (f" markdown={markdown_path}" if markdown_path is not None else "")

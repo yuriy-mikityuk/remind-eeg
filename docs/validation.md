@@ -91,8 +91,11 @@ them as proof of effectiveness.
 | Lucid report rate | `lucid == true` count divided by completed reports | Dream report JSON across sessions | Self-report only. |
 | Cues-heard rate | `cues_heard == true` count divided by completed reports | Dream report JSON across sessions | Use as awareness/context, not as a success claim. |
 | Cue perception and sound awakenings | Reports by `cue_perception` (`not_perceived`, `in_dream`, `awake`, `unsure`, `unknown`) and by `woke_from_sound`, per night arm | Dream report JSON (schema 2), the night's summary `arm` | Self-report. On a sham night a perceived sound is the sham sound; at n = 1 the sleeper may tell the sounds apart. |
-| Delayed retest | The retest metrics of the `day7` and `day10` waves next to the morning one | Retest JSON `retest_wave` (schema 2) | A missing wave is a limitation, not a zero. |
+| Delayed retest | The retest metrics and cued-minus-uncued deltas of the `day7` and `day10` waves next to the morning one | Retest JSON `retest_wave` (schema 2), analysis `wave_metrics` (schema 3) | A missing wave is the limitation `missing_delayed_retest`, not a zero. |
 | Puzzle incorporation rate | Linked puzzle incorporations divided by generated session puzzle count | Dream report JSON, session JSON | Count only links that validate against session puzzle IDs. |
+| Blind incorporation codes | Per puzzle `sound_cue`, `direct_conceptual`, `indirect_conceptual` from a rater who saw only the dream text and the puzzles; incorporated when more than half of the raters coded it; incorporation against solving per wave | Coding sheets of `record-incorporation-coding`, analysis `incorporation` and `incorporation_solved` | Preferred over the sleeper's links. A sleeper who codes their own dreams is blind to which puzzles were cued, not to the dream. |
+| Rater agreement | Percent agreement and Cohen's kappa per category between two raters | `compare-incorporation-codings` JSON | Agreement between two people's codes, not their accuracy; undefined when both gave one answer to every puzzle. |
+| Arm differences of a series | Per outcome the difference of two arms' means with its permutation interval over the orders the schedule could have drawn; lag-1 autocorrelation; the means without the first night | `analyze-nof1` JSON `differences`, `autocorrelation`, `descriptives` | Single-case description after unsealing. With two or three blocks nothing can fall outside an interval; a difference outside one describes the series and is not evidence of an effect. |
 | Retest completion | Retest rows divided by generated session puzzle count | Morning retest JSON, session JSON | Rows must include solved/unsolved, duration, and confidence. |
 | Solve rate by condition | `solved_count / puzzle_count` for cued and uncued groups | Analysis JSON `condition_metrics` | Cued-vs-uncued comparison is descriptive. |
 | Incorporation rate by condition | `incorporated_count / puzzle_count` for cued and uncued groups | Analysis JSON `condition_metrics` | Requires a dream report. |
@@ -117,6 +120,10 @@ Every validation report should include a limitations section. At minimum, consid
 - For nights with an arm: which nights were sham or no-cue, whether the schedule was
   sealed and when it was unsealed, that a sham still makes sound and may be recognised,
   and that at n = 1 the experimenter cannot be blind.
+- For a series: the codes of `analyze-nof1` (`docs/nof1_protocol.md`), among them
+  `unblinded_early`, `carry_over_possible`, `first_night_effect_possible`,
+  `missing_delayed_retest` and `missing_arousal_scoring`, and that every arm comparison
+  inherits the REM detector's open issues (#116, #167).
 
 ## Pilot Gates
 
@@ -158,4 +165,9 @@ Use precise language:
 - A κ from `scripts/validate_rem_detection.py` is a binary REM-vs-not κ against an
   automated stager, as its `kappa_definition` says. Call it that, and do not put it next to
   a five-class κ against PSG or expert scoring, as published for other headbands, as if the
-  two were comparable.
+  two were comparable. A κ from `compare-incorporation-codings` is the agreement of two
+  raters' codes; call it that.
+- An N-of-1 series is described, not tested. Report a difference between arms with its
+  permutation interval and the number of orders behind it, as "observed difference" or
+  "outside the permutation interval"; give no p-value as evidence for an effect at
+  n = 1, and do not call a difference significant.

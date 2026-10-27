@@ -16,13 +16,17 @@ from muse_tmr.protocol import (
     get_protocol_preset,
 )
 from muse_tmr.reports import (
+    CuedUncuedAnalysisReport,
     DreamPuzzleIncorporation,
     DreamReport,
+    IncorporationCodingSheet,
     MorningRetest,
     MorningRetestResult,
     build_cue_recall_test,
     build_cued_uncued_analysis,
+    build_incorporation_coding,
     cue_recall_order,
+    export_blind_coding_packet,
     load_cued_uncued_analysis,
 )
 
@@ -181,7 +185,7 @@ class TestCuedUncuedAnalysis(unittest.TestCase):
             markdown_exists = markdown_path.exists()
 
         self.assertEqual(code, 0)
-        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["schema_version"], 3)
         self.assertEqual(payload["condition_metrics"]["cued"]["solve_rate"], 0.5)
         self.assertTrue(markdown_exists)
         self.assertNotIn("protocol", payload["metadata"])
@@ -218,6 +222,195 @@ class TestCuedUncuedAnalysis(unittest.TestCase):
         self.assertEqual(payload["metadata"]["protocol_source"], "metadata.json")
         self.assertEqual(payload["cue_recall"]["recall_rate"], 1.0)
         self.assertEqual(refused, 2)
+
+
+class TestSchema3(unittest.TestCase):
+    """Retest waves, rater codes and sham plays (#228)."""
+
+    def test_each_wave_gets_its_metrics_and_deltas(self):
+        session, assignment, dream_report, retest = _analysis_inputs()
+        day7 = _retest_wave("day7", solved=("p2", "p3"))
+        report = build_cued_uncued_analysis(session, assignment, (day7, retest), dream_report=dream_report, min_group_size=1)
+
+        self.assertEqual(list(report.wave_metrics), ["morning", "day7"])
+        morning = report.wave_metrics["morning"]
+        self.assertEqual(morning["effect_summary"], report.effect_summary)
+        self.assertEqual(morning["condition_metrics"]["cued"], report.condition_metrics[0].to_dict())
+        later = report.wave_metrics["day7"]
+        self.assertEqual(later["condition_metrics"]["cued"]["solve_rate"], 0.5)
+        self.assertEqual(later["condition_metrics"]["uncued"]["solve_rate"], 0.5)
+        self.assertEqual(later["effect_summary"]["solve_rate_difference_cued_minus_uncued"], 0.0)
+        self.assertEqual(later["reported_at_utc"], day7.reported_at_utc)
+        self.assertEqual(report.rows[0].wave_results["day7"]["solved"], False)
+        self.assertTrue(report.rows[0].solved)
+        missing = next(item for item in report.limitations if item.code == "missing_delayed_retest")
+        self.assertEqual(missing.metadata["missing_waves"], ["day10"])
+        self.assertIn("## Retest Waves", report.to_markdown())
+        with self.assertRaises(ValueError):
+            build_cued_uncued_analysis(session, assignment, (retest, _retest_wave("morning")))
+        only_later = build_cued_uncued_analysis(session, assignment, (day7,))
+        self.assertEqual(only_later.metadata["primary_retest_wave"], "day7")
+        # Without a morning retest the rows are the earliest wave's, whatever the order given.
+        delayed = build_cued_uncued_analysis(session, assignment, (_retest_wave("day10", solved=("p4",)), day7))
+        self.assertEqual(delayed.metadata["primary_retest_wave"], "day7")
+        self.assertEqual(list(delayed.wave_metrics), ["day7", "day10"])
+        self.assertEqual({row.puzzle_id: row.solved for row in delayed.rows},
+                         {"p1": False, "p2": True, "p3": True, "p4": False})
+        complete = build_cued_uncued_analysis(session, assignment, (retest, day7, _retest_wave("day10")))
+        self.assertNotIn("missing_delayed_retest", complete.limitation_codes)
+
+    def test_the_cross_tab_counts_each_waves_own_solves(self):
+        # The dream report links p1 and p3; the morning retest solved p1, the day7 one p2 and p3.
+        session, assignment, dream_report, retest = _analysis_inputs()
+        day7 = _retest_wave("day7", solved=("p2", "p3"))
+        report = build_cued_uncued_analysis(session, assignment, (retest, day7), dream_report=dream_report, min_group_size=1)
+        waves = report.incorporation_solved["waves"]
+        self.assertEqual(waves["morning"]["incorporated"], {"puzzles": 2, "solved": 1, "unsolved": 1, "solve_rate": 0.5})
+        self.assertEqual(waves["morning"]["not_incorporated"], {"puzzles": 2, "solved": 0, "unsolved": 2, "solve_rate": 0.0})
+        self.assertEqual(waves["day7"]["incorporated"], {"puzzles": 2, "solved": 1, "unsolved": 1, "solve_rate": 0.5})
+        self.assertEqual(waves["day7"]["not_incorporated"], {"puzzles": 2, "solved": 1, "unsolved": 1, "solve_rate": 0.5})
+        self.assertEqual(waves["day7"]["by_condition"]["uncued"]["incorporated"]["solved"], 1)
+        self.assertEqual(waves["morning"]["by_condition"]["uncued"]["incorporated"]["solved"], 0)
+
+    def test_rater_codes_win_over_the_sleepers_links(self):
+        session, assignment, dream_report, retest = _analysis_inputs()
+        packet = export_blind_coding_packet(session, dream_report, _catalog())
+        codes = {"p1": (), "p2": ("direct_conceptual",), "p3": (), "p4": ("sound_cue",)}
+        rater_a = build_incorporation_coding(packet, "rater-a", codes)
+        rater_b = build_incorporation_coding(packet, "rater-b", dict(codes, p4=()))
+        report = build_cued_uncued_analysis(
+            session, assignment, retest, dream_report=dream_report, incorporation_codings=(rater_a, rater_b), min_group_size=1
+        )
+
+        self.assertEqual({row.puzzle_id: row.incorporated for row in report.rows}, {"p1": False, "p2": True, "p3": False, "p4": False})
+        self.assertEqual({row.puzzle_id: row.self_linked for row in report.rows}, {"p1": True, "p2": False, "p3": True, "p4": False})
+        self.assertEqual(report.rows[3].rater_codes["any"], 0.5)
+        self.assertEqual(report.incorporation["source"], "raters")
+        self.assertEqual(report.incorporation["rater_ids"], ["rater-a", "rater-b"])
+        self.assertEqual(report.incorporation["split_puzzle_ids"], ["p4"])
+        self.assertEqual(report.effect_summary["incorporation_rate_difference_cued_minus_uncued"], 0.5)
+        cross = report.incorporation_solved["waves"]["morning"]
+        self.assertEqual(cross["incorporated"], {"puzzles": 1, "solved": 0, "unsolved": 1, "solve_rate": 0.0})
+        self.assertEqual(cross["not_incorporated"]["solved"], 1)
+        self.assertEqual(cross["by_condition"]["cued"]["not_incorporated"]["solved"], 1)
+        self.assertIn("rater codes (2 raters)", report.to_markdown())
+        self.assertIn("## Incorporation And Solving", report.to_markdown())
+        other = IncorporationCodingSheet(session_id="night-002", rater_id="rater-c", codings=())
+        with self.assertRaises(ValueError):
+            build_cued_uncued_analysis(session, assignment, retest, incorporation_codings=(other,))
+
+    def test_without_a_dream_report_or_codes_there_is_no_cross_tab(self):
+        session, assignment, _, retest = _analysis_inputs()
+        report = build_cued_uncued_analysis(session, assignment, retest)
+        self.assertEqual(report.incorporation["source"], "none")
+        self.assertEqual(report.incorporation_solved, {"available": False, "source": "none"})
+
+    def test_a_sham_nights_plays_are_not_plays_of_the_cued_sounds(self):
+        session, assignment, dream_report, retest = _analysis_inputs()
+        events = (
+            TmrSchedulerEvent("play", 100.0, cue_id="sham_soft_tone", protocol="puzzle", puzzle_id="p1",
+                              reason_codes=("sham_arm",), arm="sham"),
+            TmrSchedulerEvent("play", 130.0, cue_id="sham_soft_tone", protocol="puzzle", puzzle_id="p2",
+                              reason_codes=("sham_arm",), arm="sham"),
+            TmrSchedulerEvent("play", 160.0, cue_id="sham_soft_tone", protocol="tlr", reason_codes=("sham_arm",), arm="sham"),
+        )
+        report = build_cued_uncued_analysis(session, assignment, retest, dream_report=dream_report, scheduler_events=events)
+
+        self.assertEqual([row.cue_play_count for row in report.rows], [0, 0, 0, 0])
+        self.assertEqual([row.sham_play_count for row in report.rows], [1, 1, 0, 0])
+        self.assertEqual(report.cue_timing["puzzle_play_event_count"], 0)
+        self.assertEqual(report.cue_timing["cued_puzzle_play_count"], 0)
+        self.assertEqual(report.cue_timing["sham_puzzle_play_count"], 2)
+        self.assertEqual(report.cue_timing["arm"], "sham")
+        self.assertIsNone(report.cue_timing["first_puzzle_cue_seconds"])
+        self.assertEqual(report.condition_metrics[0].cue_play_count, 0)
+        self.assertIn("sham_arm", report.limitation_codes)
+        self.assertNotIn("missing_cued_timing", report.limitation_codes)
+        self.assertNotIn("uncued_cue_play_observed", report.limitation_codes)
+        self.assertIn("Sham plays in place of puzzle cues: 2", report.to_markdown())
+        # A sham play that names an uncued puzzle still breaks the contract.
+        stray = events + (
+            TmrSchedulerEvent("play", 190.0, cue_id="sham_soft_tone", protocol="puzzle", puzzle_id="p3",
+                              reason_codes=("sham_arm",), arm="sham"),
+        )
+        broken = build_cued_uncued_analysis(session, assignment, retest, scheduler_events=stray)
+        self.assertIn("uncued_cue_play_observed", broken.limitation_codes)
+        self.assertEqual(broken.cue_timing["uncued_puzzle_play_count"], 1)
+
+    def test_a_no_cue_night_counts_its_virtual_plays(self):
+        session, assignment, _, retest = _analysis_inputs()
+        events = (
+            TmrSchedulerEvent("skip", 100.0, cue_id="cue-p1", protocol="puzzle", puzzle_id="p1",
+                              reason_codes=("no_cue_arm",), metadata={"virtual_play": True}, arm="no_cue"),
+            TmrSchedulerEvent("skip", 130.0, reason_codes=("gate_closed",), arm="no_cue"),
+        )
+        report = build_cued_uncued_analysis(session, assignment, retest, scheduler_events=events)
+        self.assertEqual(report.cue_timing["virtual_puzzle_play_count"], 1)
+        self.assertEqual(report.cue_timing["arm"], "no_cue")
+        self.assertIn("no_cue_arm", report.limitation_codes)
+        self.assertNotIn("missing_cued_timing", report.limitation_codes)
+        with self.assertRaises(ValueError):
+            build_cued_uncued_analysis(
+                session, assignment, retest,
+                scheduler_events=events + (TmrSchedulerEvent("play", 160.0, cue_id="cue-p2", protocol="puzzle", puzzle_id="p2"),),
+            )
+
+    def test_a_schema_2_report_still_loads(self):
+        session, assignment, dream_report, retest = _analysis_inputs()
+        payload = build_cued_uncued_analysis(session, assignment, retest, dream_report=dream_report).to_dict()
+        payload["schema_version"] = 2
+        for key in ("wave_metrics", "incorporation", "incorporation_solved"):
+            payload.pop(key)
+        for row in payload["rows"]:
+            for key in ("self_linked", "rater_codes", "sham_play_count", "wave_results"):
+                row.pop(key)
+        loaded = CuedUncuedAnalysisReport.from_dict(payload)
+        self.assertEqual(loaded.schema_version, 2)
+        self.assertEqual(loaded.wave_metrics, {})
+        self.assertEqual([row.self_linked for row in loaded.rows], [True, False, True, False])
+
+    def test_cli_takes_waves_and_codings(self):
+        session, assignment, dream_report, retest = _analysis_inputs()
+        packet = export_blind_coding_packet(session, dream_report, _catalog())
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            session.save(tmp_path / "session.json")
+            assignment.save(tmp_path / "assignment.json")
+            retest.save(tmp_path / "retest.json")
+            _retest_wave("day7").save(tmp_path / "retest_day7.json")
+            build_incorporation_coding(packet, "rater-a", {"p1": ("sound_cue",), "p2": (), "p3": (), "p4": ()}).save(
+                tmp_path / "coding.json"
+            )
+            base = [
+                "analyze-cued-uncued", str(tmp_path / "session.json"),
+                "--assignment", str(tmp_path / "assignment.json"),
+                "--retest", str(tmp_path / "retest.json"),
+                "--output", str(tmp_path / "analysis.json"),
+            ]
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = main([*base, "--retest", str(tmp_path / "retest_day7.json"), "--coding", str(tmp_path / "coding.json")])
+            payload = json.loads((tmp_path / "analysis.json").read_text(encoding="utf-8"))
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                twice = main([*base, "--retest", str(tmp_path / "retest.json")])
+
+        self.assertEqual(code, 0)
+        self.assertIn("waves=morning,day7 incorporation=raters", out.getvalue())
+        self.assertEqual(sorted(payload["wave_metrics"]), ["day7", "morning"])
+        self.assertEqual(payload["incorporation"]["rater_ids"], ["rater-a"])
+        self.assertEqual(twice, 2)
+
+
+def _retest_wave(wave, solved=()):
+    return MorningRetest(
+        session_id="night-001",
+        retest_wave=wave,
+        reported_at_utc="2026-11-03T08:00:00+00:00",
+        results=tuple(
+            MorningRetestResult(puzzle, "x", puzzle in solved, 30.0, 0.5, cue_id=f"cue-{puzzle}")
+            for puzzle in ("p1", "p2", "p3", "p4")
+        ),
+    )
 
 
 def load_cued_uncued_analysis_round_trip(report):

@@ -180,6 +180,13 @@ Put new engine code in the matching `muse_tmr` subpackage and new commands in
   runner never prints a night's arm or the counts that would give it away, checks the
   sham cue in every arm, and sends nothing to the player in `no_cue`. Keep schedules,
   their salts and everything a series writes under the gitignored `data/`.
+  `prereg_template()` renders the design and the commitment, never an arm, the seed or
+  the salt; a blind coding packet (`muse_tmr.reports.incorporation_coding`) holds the
+  dream text and the puzzles and nothing about cues, the assignment or the arm; and
+  `muse_tmr.reports.nof1_analysis` refuses a sealed schedule, reads the records that
+  exist (night summaries, dream report and retest schema 2, `arousal_proxy_per_cue`)
+  instead of new ones, moves arm labels only the way the schedule draws them, and stays
+  pure Python and descriptive, with no p-value.
 - TLR cue support lives in `muse_tmr.protocol.tlr_protocol`. Keep default cue metadata,
   pre-sleep training events, and REM TLR block planning separate from the final scheduler.
   Training should use `AudioCuePlayer` with mock or dry-run backends in tests and must

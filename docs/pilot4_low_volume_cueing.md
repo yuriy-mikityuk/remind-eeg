@@ -134,8 +134,10 @@ before the night starts, in every arm. The command never prints the arm, and the
 (schema 4) records it with `night_id`, `schedule_commitment_sha256` and the criteria
 `no_play_in_no_cue_arm` and, with a schedule, `arm_matches_sealed_schedule`. On a night
 of a sealed series leave the summary, the logs and the reports closed, and run
-`protocol-fidelity` and `score-cue-arousal` on it, only after `unseal-night-schedule`:
-they name the arm.
+`protocol-fidelity`, `score-cue-arousal` and `analyze-cued-uncued --scheduler-events` on
+it only after `unseal-night-schedule`: they name the arm. Once the series is unsealed,
+`analyze-nof1` reads `pilot4_summary.json` as the night's record, with the awakening
+markers and the arousal proxies next to it (`docs/nof1_protocol.md`, section 7).
 
 ## Emergency Stop
 

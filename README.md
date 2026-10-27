@@ -37,11 +37,11 @@ The pictures show the app on example data.
 - **Multi-modal feature extraction:** EEG band powers (delta–gamma), relative powers, theta–alpha and slow–fast ratios, frontal/posterior asymmetry, an eye-movement proxy; IMU motion/stillness and arousal proxies; PPG heart rate, HR trend, and HRV proxies
 - **Trainable personal REM classifier:** class-balanced logistic regression on hand-annotated epochs, saved as a versioned JSON artifact with calibration metrics, feature importance, and training metrics — on top of a transparent non-ML heuristic baseline
 - **Safety-first cueing:** model probabilities never reach the audio path directly; a `StableRemGate` (minimum stable time, hysteresis, cooldown) and an `ArousalGuard` (motion, alpha, HR-jump, artifact proxies) decide, with hard volume caps, fade in/out, and emergency-stop artifacts; afterwards `score-cue-arousal` counts arousal proxies after each cue against paired quiet controls ([`docs/safety_outcomes.md`](docs/safety_outcomes.md))
-- **Blind experimental protocol:** seeded randomization into cued/uncued puzzle groups, uncued puzzles are never schedulable, the condition is hidden from the subject during morning retests; whole nights can be cue, sham or no-cue nights in counterbalanced, sealed N-of-1 blocks, with a delayed retest a week or ten days later ([`docs/nof1_protocol.md`](docs/nof1_protocol.md))
+- **Blind experimental protocol:** seeded randomization into cued/uncued puzzle groups, uncued puzzles are never schedulable, the condition is hidden from the subject during morning retests; whole nights can be cue, sham or no-cue nights in counterbalanced, sealed N-of-1 blocks, with a delayed retest a week or ten days later, a preregistration template, blind coding of dream incorporation and a per-arm description of the series ([`docs/nof1_protocol.md`](docs/nof1_protocol.md))
 - **Pluggable acquisition:** amused-py BLE (default), OpenMuse LSL, and BrainFlow backends, all mapped to one `MuseFrame` contract; a Polar H10 chest strap can record ECG, RR and chest motion alongside, in its own process
 - **Local app, REMind:** live contact check per sensor, session, night, guided-meditation and calibration recordings that start once the contact holds and run as their own process, a recordings page with the reports and EEG numbers, and auto-update from `main`
 - **Reproducible validation:** five staged pilots, each with a runbook and an automated validator
-- **Engineering hygiene:** 51 CLI commands, pytest suite with CI on GitHub Actions, and a privacy-aware gitignore — volume calibration, puzzle content, and dream reports never leave the machine
+- **Engineering hygiene:** 56 CLI commands, pytest suite with CI on GitHub Actions, and a privacy-aware gitignore — volume calibration, puzzle content, and dream reports never leave the machine
 
 ## Install
 
@@ -140,7 +140,7 @@ A one-way, REM-timed cue protocol combined with puzzle-based TMR. A cue is paire
 2. **Session generation:** a seeded night session of four eligible unsolved puzzles; a second seeded step assigns half to the **cued** group. The scheduler only ever sees the cued IDs, so uncued puzzles physically cannot be played.
 3. **Night:** overnight recording (2–8 h) with real-time REM detection. When the stable gate opens and the arousal guard allows it, the scheduler optionally plays a TLR block, then cued puzzle cues — respecting per-cue intervals, cooldowns, and max-per-block limits, and logging structured `play` / `skip` / `pause` / `stop` events.
 4. **Morning:** dream report (lucidity, cues heard, confidence, free recall, validated per-puzzle links), a sound check that plays each puzzle's sound and asks which puzzle it belongs to, and a **blind**, timed puzzle retest where the cued/uncued condition is never revealed to the subject, from the CLI or the app's Morning tab.
-5. **Analysis:** cued-vs-uncued solve rates, dream-incorporation rates, the sound check's recall rate by condition, retest durations and confidence, and cue timing — intentionally descriptive, with explicit small-sample limitations.
+5. **Analysis:** cued-vs-uncued solve rates, dream-incorporation rates, the sound check's recall rate by condition, retest durations and confidence, and cue timing — intentionally descriptive, with explicit small-sample limitations. Over a sealed series of nights, the same outcomes by arm with permutation intervals and a SCRIBE/CENT reporting checklist.
 
 The timing settings can come from a protocol preset: the parameters of one paper and arm, cited, versioned and hashed into each night's `metadata.json`, or REMind's own defaults (`remind_default_v1`). `muse-tmr protocol-fidelity` then compares a night with its preset. That measures how closely the cue timing followed the paper, not whether anything the paper found happened ([`docs/protocol_presets.md`](docs/protocol_presets.md)).
 
@@ -168,7 +168,7 @@ The same headband also runs guided A/B meditation sessions from the local app: a
 
 ## CLI overview
 
-51 commands under one `muse-tmr` entry point. Full invocations with all flags: [`docs/USAGE.md`](docs/USAGE.md).
+56 commands under one `muse-tmr` entry point. Full invocations with all flags: [`docs/USAGE.md`](docs/USAGE.md).
 
 | Group | Commands |
 | ----- | -------- |
@@ -178,8 +178,8 @@ The same headband also runs guided A/B meditation sessions from the local app: a
 | Audio & cue libraries | `play-test-cue` · `calibrate-volume` · `create-cue-library` · `validate-cue-library` · `list-cues` |
 | TLR cues and protocol presets | `create-tlr-cue` · `train-tlr-cue` · `plan-tlr-block` · `protocol-presets` |
 | Puzzle protocol | `import-puzzles` · `record-puzzle-attempt` · `generate-puzzle-session` · `assign-puzzle-cues` · `record-association-check` |
-| Morning & analysis | `record-dream-report` · `record-cue-recall` · `record-puzzle-retest` · `analyze-cued-uncued` |
-| N-of-1 series | `plan-night-schedule` · `show-night-schedule` · `unseal-night-schedule` |
+| Morning & analysis | `record-dream-report` · `record-cue-recall` · `record-puzzle-retest` · `analyze-cued-uncued` · `export-blind-coding` · `record-incorporation-coding` · `compare-incorporation-codings` |
+| N-of-1 series | `plan-night-schedule` · `show-night-schedule` · `prereg-template` · `unseal-night-schedule` · `analyze-nof1` |
 | Meditation (side track) | `meditation-plan` · `analyze-meditation` · `aggregate-meditation` · `calibration-run` · `calibration-guide` · `calibration-report` |
 | Pilots & validation | `validate-pilot1-recording` · `validate-pilot2-calibration` · `simulate-replay-cues` · `run-pilot4-cueing` · `log-pilot4-awakening` · `run-pilot5-full-night` · `score-cue-arousal` · `protocol-fidelity` |
 | Synthetic nights | `demo` · `synthesize-night` |

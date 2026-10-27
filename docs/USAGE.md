@@ -31,7 +31,9 @@ Complete command and code reference for `muse-tmr`, organized by workflow stage.
 - [Morning dream report](#morning-dream-report)
 - [Morning sound check](#morning-sound-check)
 - [Morning puzzle retest](#morning-puzzle-retest)
+- [Blind incorporation coding](#blind-incorporation-coding)
 - [Cued-vs-uncued analysis](#cued-vs-uncued-analysis)
+- [N-of-1 series analysis](#n-of-1-series-analysis)
 - [Cue-locked arousal proxies](#cue-locked-arousal-proxies)
 - [Protocol fidelity](#protocol-fidelity)
 - [Meditation complexity analysis](#meditation-complexity-analysis)
@@ -491,15 +493,19 @@ The scheduler consumes stable REM gate decisions, optionally emits a TLR block f
 ```bash
 muse-tmr plan-night-schedule --blocks 2 --washout-nights 1
 muse-tmr show-night-schedule data/protocol/night_schedules/<schedule-id>.json
+muse-tmr prereg-template data/protocol/night_schedules/<schedule-id>.json --output data/protocol/night_schedules/<schedule-id>_prereg.md
 muse-tmr run-pilot5-full-night ... --night-schedule data/protocol/night_schedules/<schedule-id>.json --night-id night-001
 muse-tmr unseal-night-schedule data/protocol/night_schedules/<schedule-id>.json
+muse-tmr analyze-nof1 data/protocol/night_schedules/<schedule-id>.json --output data/reports/<schedule-id>_nof1.json
 ```
 
 `plan-night-schedule` draws `--blocks` blocks of one `cue`, one `sham` and one `no_cue` night, counterbalanced so that within each group of three blocks every arm takes every place once, with `--washout-nights` washout nights between two blocks. `--seed` fixes the order; without it a seed is drawn at random and kept only in the schedule. It writes the schedule, with its seed and a random salt, to `data/protocol/night_schedules/<schedule-id>.json` (or `--output`) and its sealed companion next to it as `<name>.sealed.json`, which holds only `commitment_sha256`. It prints the night IDs (`--night-prefix`, default `night-`), the washout nights and the commitment, never an arm or the seed, and never replaces a schedule. `--sham-cue-id` (default `sham_soft_tone`) is the untrained sound the sham nights play.
 
 `show-night-schedule` lists the nights with their blocks and checks the schedule against its companion (`seal=matches`, exit 1 otherwise); the arms show as `sealed` until `unseal-night-schedule`, which checks the commitment, records `unsealed_at_utc` (the first time only) and prints them. `--json` prints either as JSON, `--sealed` names another companion.
 
-`simulate-replay-cues`, `run-pilot4-cueing` and `run-pilot5-full-night` take `--night-schedule` with `--night-id`, or `--arm cue|sham|no_cue` for an open-label night (then `--night-id` is only a label), and `--sham-cue-id`. With a schedule the command checks the commitment first and exits with code 2 for a changed schedule, an unknown night or a washout night. The sham cue, when the night names one, is checked in every arm before anything runs: in the cue library with `protocol: "sham"`, untrained, and a generated tone for Pilot 4 and 5. On a night with an arm the command never prints the arm, nor the play counts, first play, volumes or scorer status that would give it away; the report or summary records `arm`, `night_id` and `schedule_commitment_sha256`, and the criteria `no_play_in_no_cue_arm` and, with a schedule, `arm_matches_sealed_schedule`. The summary, the logs and the reports of a night, and what `protocol-fidelity` and `score-cue-arousal` print, name its arm: in a sealed series leave them closed until `unseal-night-schedule` has run. Without these flags a night runs and logs as before. The runbook is [`nof1_protocol.md`](nof1_protocol.md).
+`prereg-template` checks the schedule against its companion (exit 1 when it changed) and prints, or writes to `--output`, an OSF-style preregistration in Markdown: the design (blocks, arms, washout nights, the night IDs in order, how the order is drawn and how many orders the blocks allow), the `commitment_sha256`, the protocol block of `--protocol-preset` (default `remind_default_v1`) or of the file `--protocol-metadata` names, the measures and the analysis `analyze-nof1` will run, with lines marked _To fill in_ for the hypotheses, whether the seed was given or drawn at random, the primary outcome, the stopping rule and the exclusions. It never prints an arm, the seed or the salt, so it can be filed before the first night; after unsealing it says it is not a preregistration.
+
+`simulate-replay-cues`, `run-pilot4-cueing` and `run-pilot5-full-night` take `--night-schedule` with `--night-id`, or `--arm cue|sham|no_cue` for an open-label night (then `--night-id` is only a label), and `--sham-cue-id`. With a schedule the command checks the commitment first and exits with code 2 for a changed schedule, an unknown night or a washout night. The sham cue, when the night names one, is checked in every arm before anything runs: in the cue library with `protocol: "sham"`, untrained, and a generated tone for Pilot 4 and 5. On a night with an arm the command never prints the arm, nor the play counts, first play, volumes or scorer status that would give it away; the report or summary records `arm`, `night_id` and `schedule_commitment_sha256`, and the criteria `no_play_in_no_cue_arm` and, with a schedule, `arm_matches_sealed_schedule`. The summary, the logs and the reports of a night, and what `protocol-fidelity`, `score-cue-arousal` and `analyze-cued-uncued --scheduler-events` print, name its arm: in a sealed series leave them closed, and those commands unrun, until `unseal-night-schedule` has run. Without these flags a night runs and logs as before. The runbook is [`nof1_protocol.md`](nof1_protocol.md).
 
 ## Morning dream report
 
@@ -552,6 +558,23 @@ Retests save one result per generated session puzzle with response, solved/unsol
 
 `--wave day7` or `--wave day10` records a delayed retest of the same puzzles a week or ten days later (`retest_wave`, schema 2; the default `morning` is the retest the morning after). Save it as `data/reports/night-001_retest_day7.json`, the name the app's Morning tab uses. A schema 1 retest loads as a `morning` one.
 
+## Blind incorporation coding
+
+```bash
+muse-tmr export-blind-coding data/protocol/night-001_puzzles.json \
+  --dream-report data/reports/night-001_dream_report.json \
+  --catalog data/protocol/puzzle_catalog.json \
+  --output data/reports/night-001_blind_coding_packet.json \
+  --markdown-output data/reports/night-001_blind_coding_packet.md
+muse-tmr record-incorporation-coding data/reports/night-001_blind_coding_packet.json \
+  --rater-id rater-a --code p1=direct_conceptual --code p2=none \
+  --output data/reports/night-001_coding_rater-a.json
+muse-tmr compare-incorporation-codings data/reports/night-001_coding_rater-a.json \
+  data/reports/night-001_coding_rater-b.json --output data/reports/night-001_coding_agreement.json
+```
+
+`export-blind-coding` writes a rater's packet (`kind: "blind_coding_packet"`): the dream report's text and the night's puzzles, ID and prompt, in `blind_index` order, the session's order that the retest numbers them by. It holds nothing about cues, the assignment or the arm, and none of the sleeper's own links or answers about sounds; `--markdown-output` writes it for a person to read. `record-incorporation-coding` records one rater's codes, a `--code PUZZLE_ID=CATEGORIES` for every puzzle of the packet with the categories `sound_cue`, `direct_conceptual` and `indirect_conceptual`, comma-separated, or `none`, and `--note PUZZLE_ID=TEXT`; a puzzle left out exits with code 2. `compare-incorporation-codings` takes the sheets of exactly two raters, of one night or more, and prints percent agreement and Cohen's kappa per category and for any category over the puzzles both coded; `--output` saves them as JSON. Kappa is undefined, and printed as `-`, when both raters gave one answer to every puzzle. The runbook: [`nof1_protocol.md`](nof1_protocol.md).
+
 ## Cued-vs-uncued analysis
 
 ```bash
@@ -565,6 +588,21 @@ muse-tmr analyze-cued-uncued data/protocol/night-001_puzzles.json \
 ```
 
 The analysis report compares cued and uncued solve rates, dream incorporation rates, mean retest duration/confidence, and scheduler cue timing. It is intentionally descriptive and records limitations such as small sample size or missing cue logs. `--cue-recall data/reports/night-001_cue_recall.json` adds the morning sound check's recall rate by condition; without it the limitations name `cue_recall_missing`, and a check finished after the retest gives `cue_recall_after_retest`. `--protocol-metadata` takes the night's `protocol` block from its `metadata.json`, Pilot 4/5 summary or Pilot 3 report into `metadata.protocol`; without it the assignment's block is used when it has one.
+
+The report is schema 3 (#228). `--retest` repeats, one file per wave (`morning`, `day7`, `day10`), and `wave_metrics` has each wave's solve rates and cued-minus-uncued deltas; the rows and the top-level metrics stay the morning's, or the earliest wave's without one, and a missing `day7` or `day10` wave adds `missing_delayed_retest`. `--coding` takes rater coding sheets of the night, which decide incorporation in place of the dream report's links (`incorporation.source`: `raters`, `self_report` or `none`), and `incorporation_solved` crosses incorporation with solving per wave. On a sham night the plays of the sham sound count as `sham_play_count`, never as plays of the cued puzzles' sounds, and the limitation `sham_arm` replaces `missing_cued_timing`; a no-cue night gets `no_cue_arm` and its virtual plays. With `--scheduler-events` the report and the printed line name the night's arm (`cue_timing.arm`, and the limitation `sham_arm` or `no_cue_arm`), so on a night of a sealed series run it only after `unseal-night-schedule`. Two retests of one wave, coding sheets of another night or a log of two arms exit with code 2. Reports of schema 1 and 2 still load.
+
+## N-of-1 series analysis
+
+```bash
+muse-tmr analyze-nof1 data/protocol/night_schedules/<schedule-id>.json \
+  --primary-outcome cued_minus_uncued_solve_rate_day7 --primary-contrast cue-no_cue \
+  --output data/reports/<schedule-id>_nof1.json \
+  --markdown-output data/reports/<schedule-id>_nof1.md
+```
+
+`analyze-nof1` describes an N-of-1 series by arm once `unseal-night-schedule` has run: on a sealed schedule it exits with code 2 and names that command, on a changed one with code 1. It finds each block night by its ID: the puzzle session and assignment in `--protocol-dir` (default `data/protocol`), the dream report, the retests, the sound check and the coding sheets in `--reports-dir` (default `data/reports`), and the `pilot4_summary.json` or `pilot5_summary.json` under `--recordings-dir` (default `data/recordings`) whose `night_id` and `schedule_commitment_sha256` are the series'. `--summary` names a night's summary or Pilot 3 report, which then must be the series', and `--coding` a coding sheet kept elsewhere; two files of one kind for one night exit with code 2. A night whose record is a Pilot 3 report is a replay: nothing played, its cues count as `planned_plays`, not plays, and the limitation `replay_nights` names it.
+
+Per night and per arm it gives `lucid`, `cue_perceived` and `woke_from_sound` (dream report), `awakening_markers` (`awakening_events.jsonl`), `incorporation_rate` (rater codes, else the sleeper's links) and `cued_minus_uncued_solve_rate_<wave>` for `morning`, `day7` and `day10`; per arm also the plays, the virtual plays and the arousal proxies per cue of `score-cue-arousal` (the summary's `cue_arousal` block, or the `cue_arousal_report.json` next to the summary or Pilot 3 report it scored). For each outcome and the pairs `cue-no_cue`, `cue-sham` and `sham-no_cue` it gives the difference of the means and a permutation interval: the range of the differences over the arm orders `plan-night-schedule` could have drawn for the blocks, the lowest and the highest 2.5 % cut, every order when there are at most `--permutations` (default 10000), else that many drawn with `--seed` (default 0). Two or three blocks allow 12 orders, too few for anything to fall outside; four allow 72. It also gives each outcome's lag-1 autocorrelation once the arm means are taken out, the means without the series' first night, and the limitations (`--min-nights-per-arm`, default 5, sets `small_n`). No p-value is computed. `--primary-outcome` and `--primary-contrast` (default `cue-no_cue`) mark the preregistered difference; every other one is exploratory. The Markdown report ends with a SCRIBE 2016 / CENT 2015 checklist that marks each item `auto`, `partial` or `manual`. The runbook, with every limitation code: [`nof1_protocol.md`](nof1_protocol.md); the fields: [`data_model.md`](data_model.md).
 
 ## Cue-locked arousal proxies
 
