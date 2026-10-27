@@ -17,7 +17,24 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 from muse_tmr import __version__
 
 # Commands that can play a cue; main() checks their --backend before anything else runs.
-AUDIO_COMMANDS = ("play-test-cue", "train-tlr-cue", "run-pilot4-cueing", "run-pilot5-full-night")
+AUDIO_COMMANDS = (
+    "play-test-cue",
+    "train-tlr-cue",
+    "run-pilot4-cueing",
+    "run-pilot5-full-night",
+    "record-cue-recall",
+)
+# Commands that take --protocol-preset; main() refuses an unknown or non-runnable one first.
+PROTOCOL_PRESET_COMMANDS = (
+    "simulate-replay-cues",
+    "run-pilot4-cueing",
+    "run-pilot5-full-night",
+    "plan-tlr-block",
+    "create-tlr-cue",
+    "generate-puzzle-session",
+    "assign-puzzle-cues",
+)
+PROTOCOL_PRESET_DEFAULT_HELP = "Default: the protocol preset's."
 ALLOW_DRY_RUN_HELP = "Run silently on dry-run when afplay is missing, instead of exiting with code 2."
 # `muse-tmr status` prints it and `muse-tmr --help` ends with it (#232).
 BANNER = f"REMind {__version__}: n = 1 research software, not a medical device"
@@ -52,6 +69,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-update",
         action="store_true",
         help="Fast-forward a clean main checkout to origin/main and restart when idle.",
+    )
+    app_parser.add_argument(
+        "--cue-backend",
+        choices=("system", "afplay", "dry-run", "mock"),
+        default="system",
+        help="Playback backend of the Morning tab's sound check. system and afplay need afplay; "
+        "without it a sound is refused unless --allow-dry-run is given.",
+    )
+    app_parser.add_argument(
+        "--allow-dry-run",
+        action="store_true",
+        help="Run the sound check silently when afplay is missing.",
     )
 
     discover_parser = subparsers.add_parser("discover", help="Discover Muse devices.")
@@ -364,11 +393,7 @@ def build_parser() -> argparse.ArgumentParser:
                                help="Override gate enter threshold (default: preset-aware).")
     pilot3_parser.add_argument("--exit-threshold", type=float, default=None,
                                help="Override gate exit threshold (default: preset-aware).")
-    pilot3_parser.add_argument("--min-stable-seconds", type=float, default=60.0)
-    pilot3_parser.add_argument("--gate-cooldown-seconds", type=float, default=120.0)
-    pilot3_parser.add_argument("--puzzle-cue-interval-seconds", type=float, default=30.0)
-    pilot3_parser.add_argument("--scheduler-cooldown-seconds", type=float, default=120.0)
-    pilot3_parser.add_argument("--max-puzzle-cues-per-block", type=int, default=4)
+    _add_night_protocol_args(pilot3_parser)
     pilot3_parser.add_argument("--disable-arousal-guard", action="store_true")
     pilot3_parser.add_argument(
         "--inject-cues-every-seconds",
@@ -419,11 +444,7 @@ def build_parser() -> argparse.ArgumentParser:
                                help="Override gate enter threshold (default: preset-aware).")
     pilot4_parser.add_argument("--exit-threshold", type=float, default=None,
                                help="Override gate exit threshold (default: preset-aware).")
-    pilot4_parser.add_argument("--min-stable-seconds", type=float, default=60.0)
-    pilot4_parser.add_argument("--gate-cooldown-seconds", type=float, default=120.0)
-    pilot4_parser.add_argument("--puzzle-cue-interval-seconds", type=float, default=30.0)
-    pilot4_parser.add_argument("--scheduler-cooldown-seconds", type=float, default=120.0)
-    pilot4_parser.add_argument("--max-puzzle-cues-per-block", type=int, default=4)
+    _add_night_protocol_args(pilot4_parser)
     pilot4_parser.add_argument("--allow-short", action="store_true", help="Allow short smoke-test cueing runs.")
     pilot4_parser.add_argument("--quiet", action="store_true")
     _add_guard_hr_rule_args(pilot4_parser)
@@ -471,11 +492,7 @@ def build_parser() -> argparse.ArgumentParser:
                                help="Override gate enter threshold (default: preset-aware).")
     pilot5_parser.add_argument("--exit-threshold", type=float, default=None,
                                help="Override gate exit threshold (default: preset-aware).")
-    pilot5_parser.add_argument("--min-stable-seconds", type=float, default=60.0)
-    pilot5_parser.add_argument("--gate-cooldown-seconds", type=float, default=120.0)
-    pilot5_parser.add_argument("--puzzle-cue-interval-seconds", type=float, default=30.0)
-    pilot5_parser.add_argument("--scheduler-cooldown-seconds", type=float, default=120.0)
-    pilot5_parser.add_argument("--max-puzzle-cues-per-block", type=int, default=4)
+    _add_night_protocol_args(pilot5_parser)
     pilot5_parser.add_argument("--allow-short", action="store_true", help="Allow short smoke-test cueing runs.")
     pilot5_parser.add_argument("--quiet", action="store_true")
     _add_guard_hr_rule_args(pilot5_parser)
@@ -542,10 +559,40 @@ def build_parser() -> argparse.ArgumentParser:
         "the recording directory, or the Pilot 3 report's directory.",
     )
 
+    fidelity_parser = subparsers.add_parser(
+        "protocol-fidelity",
+        help="Compare a cueing night's scheduler, audio and gate logs with its protocol preset.",
+    )
+    fidelity_parser.add_argument(
+        "recording_dir",
+        type=Path,
+        help="Pilot 4/5 output directory, or with --pilot3-report the recording it replayed.",
+    )
+    fidelity_parser.add_argument("--pilot3-report", type=Path, help="Read this Pilot 3 report's plan and epochs instead.")
+    fidelity_parser.add_argument(
+        "--protocol-preset",
+        default=None,
+        metavar="NAME",
+        help="Compare with this preset instead of the one the night recorded.",
+    )
+    fidelity_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Where protocol_fidelity.json and .md go. Defaults to the recording directory, or the "
+        "Pilot 3 report's directory.",
+    )
+
     list_cues_parser = subparsers.add_parser("list-cues", help="List cues from a cue metadata library.")
     list_cues_parser.add_argument("input", type=Path, help="Input cue library .json path.")
     list_cues_parser.add_argument("--protocol", choices=("puzzle", "tlr", "test", "generic"))
     list_cues_parser.add_argument("--tag")
+
+    presets_parser = subparsers.add_parser(
+        "protocol-presets",
+        help="List the protocol presets, or print one with its citation, parameters and hash.",
+    )
+    presets_parser.add_argument("name", nargs="?", help="A preset name; prints it as JSON.")
+    presets_parser.add_argument("--json", action="store_true", help="Print the list as JSON.")
 
     create_tlr_parser = subparsers.add_parser(
         "create-tlr-cue",
@@ -553,9 +600,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     create_tlr_parser.add_argument("--output", type=Path, required=True, help="Output cue library .json path.")
     create_tlr_parser.add_argument("--cue-id", default="tlr_soft_tone")
-    create_tlr_parser.add_argument("--frequency-hz", type=float, default=396.0)
-    create_tlr_parser.add_argument("--duration-seconds", type=float, default=1.0)
+    create_tlr_parser.add_argument("--frequency-hz", type=float, default=None, help=PROTOCOL_PRESET_DEFAULT_HELP)
+    create_tlr_parser.add_argument("--duration-seconds", type=float, default=None, help=PROTOCOL_PRESET_DEFAULT_HELP)
     create_tlr_parser.add_argument("--volume-hint", type=float, default=0.05)
+    _add_protocol_preset_arg(create_tlr_parser)
 
     train_tlr_parser = subparsers.add_parser(
         "train-tlr-cue",
@@ -585,10 +633,11 @@ def build_parser() -> argparse.ArgumentParser:
     plan_tlr_parser.add_argument("cue_library", type=Path, help="Input TLR cue library .json path.")
     plan_tlr_parser.add_argument("--cue-id", default="tlr_soft_tone")
     plan_tlr_parser.add_argument("--output", type=Path, required=True, help="Output TLR block plan .json path.")
-    plan_tlr_parser.add_argument("--repetitions", type=int, default=3)
-    plan_tlr_parser.add_argument("--interval-seconds", type=float, default=8.0)
-    plan_tlr_parser.add_argument("--post-block-pause-seconds", type=float, default=10.0)
+    plan_tlr_parser.add_argument("--repetitions", type=int, default=None, help=PROTOCOL_PRESET_DEFAULT_HELP)
+    plan_tlr_parser.add_argument("--interval-seconds", type=float, default=None, help=PROTOCOL_PRESET_DEFAULT_HELP)
+    plan_tlr_parser.add_argument("--post-block-pause-seconds", type=float, default=None, help=PROTOCOL_PRESET_DEFAULT_HELP)
     plan_tlr_parser.add_argument("--disabled", action="store_true")
+    _add_protocol_preset_arg(plan_tlr_parser)
 
     import_puzzles_parser = subparsers.add_parser(
         "import-puzzles",
@@ -604,13 +653,14 @@ def build_parser() -> argparse.ArgumentParser:
     generate_puzzle_session_parser.add_argument("catalog", type=Path, help="Input puzzle catalog .json path.")
     generate_puzzle_session_parser.add_argument("--output", type=Path, required=True, help="Output session .json path.")
     generate_puzzle_session_parser.add_argument("--session-id", required=True)
-    generate_puzzle_session_parser.add_argument("--count", type=int, default=4)
+    generate_puzzle_session_parser.add_argument("--count", type=int, default=None, help=PROTOCOL_PRESET_DEFAULT_HELP)
     generate_puzzle_session_parser.add_argument("--seed", type=int)
     generate_puzzle_session_parser.add_argument(
         "--include-known",
         action="store_true",
         help="Allow known-but-unsolved tasks in the generated session.",
     )
+    _add_protocol_preset_arg(generate_puzzle_session_parser)
 
     attempt_parser = subparsers.add_parser(
         "record-puzzle-attempt",
@@ -656,6 +706,33 @@ def build_parser() -> argparse.ArgumentParser:
     dream_report_parser.add_argument("--catalog", type=Path, help="Optional puzzle catalog for cue IDs.")
     dream_report_parser.add_argument("--report-id", default="")
     dream_report_parser.add_argument("--notes", default="")
+
+    cue_recall_parser = subparsers.add_parser(
+        "record-cue-recall",
+        help="Play each puzzle's sound and record which puzzle you think it belongs to, before the retest.",
+    )
+    cue_recall_parser.add_argument("session", type=Path, help="Input night puzzle session .json path.")
+    cue_recall_parser.add_argument("--catalog", type=Path, required=True, help="Puzzle catalog .json path.")
+    cue_recall_parser.add_argument("--assignment", type=Path, required=True, help="Cued/uncued assignment .json path.")
+    cue_recall_parser.add_argument("--cue-library", type=Path, required=True, help="Cue metadata library .json path.")
+    cue_recall_parser.add_argument("--calibration", type=Path, required=True, help="Volume calibration .json path.")
+    cue_recall_parser.add_argument("--device-name", help="Selected calibration device. Defaults to latest.")
+    cue_recall_parser.add_argument("--output", type=Path, required=True, help="Output cue recall .json path.")
+    cue_recall_parser.add_argument(
+        "--audio-log",
+        type=Path,
+        help="Playback log .jsonl. Defaults to the output path with _audio.jsonl.",
+    )
+    cue_recall_parser.add_argument(
+        "--backend",
+        choices=("system", "afplay", "dry-run", "mock"),
+        default="system",
+        help="Playback backend. system and afplay need afplay and exit with code 2 without it.",
+    )
+    cue_recall_parser.add_argument("--allow-dry-run", action="store_true", help=ALLOW_DRY_RUN_HELP)
+    cue_recall_parser.add_argument("--hard-max-volume", type=float, default=0.20)
+    cue_recall_parser.add_argument("--default-volume", type=float, default=0.02)
+    cue_recall_parser.add_argument("--notes", default="")
 
     retest_parser = subparsers.add_parser(
         "record-puzzle-retest",
@@ -716,6 +793,17 @@ def build_parser() -> argparse.ArgumentParser:
     analysis_parser.add_argument("--markdown-output", type=Path, help="Optional human-readable .md report path.")
     analysis_parser.add_argument("--analysis-id", default="")
     analysis_parser.add_argument("--min-group-size", type=int, default=5)
+    analysis_parser.add_argument(
+        "--cue-recall",
+        type=Path,
+        help="Morning sound-to-puzzle recall test .json (record-cue-recall or the app's Morning tab).",
+    )
+    analysis_parser.add_argument(
+        "--protocol-metadata",
+        type=Path,
+        help="A .json with the night's protocol block: its metadata.json, Pilot 4/5 summary or Pilot 3 "
+        "report. Without it the assignment's block is used when it has one.",
+    )
 
     assignment_parser = subparsers.add_parser(
         "assign-puzzle-cues",
@@ -727,8 +815,10 @@ def build_parser() -> argparse.ArgumentParser:
     assignment_parser.add_argument(
         "--cued-count",
         type=int,
-        help="Override the number of cued puzzles. Defaults to half of the session tasks.",
+        help="Override the number of cued puzzles. Defaults to the protocol preset's, which is half "
+        "of the session tasks unless the preset says otherwise.",
     )
+    _add_protocol_preset_arg(assignment_parser)
 
     meditation_plan_parser = subparsers.add_parser(
         "meditation-plan",
@@ -916,6 +1006,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command in PROTOCOL_PRESET_COMMANDS:
+        # An unknown preset, or one that documents a protocol REMind cannot run, stops
+        # the command before it reads or writes anything.
+        from muse_tmr.protocol import resolve_protocol_preset
+
+        try:
+            resolve_protocol_preset(args.protocol_preset)
+        except (KeyError, ValueError) as exc:
+            print(exc.args[0] if exc.args else str(exc), file=sys.stderr)
+            return 2
     if args.command in AUDIO_COMMANDS:
         # Refuse before any input is read, any file is written or a headband is touched.
         # Pilot 4/5 resolve again inside run_pilot4_cueing_night, which records both names.
@@ -976,6 +1076,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _log_pilot4_awakening(args)
     if args.command == "score-cue-arousal":
         return asyncio.run(_score_cue_arousal(args))
+    if args.command == "protocol-fidelity":
+        return _protocol_fidelity(args)
+    if args.command == "protocol-presets":
+        return _protocol_presets(args)
     if args.command == "list-cues":
         return _list_cues(args)
     if args.command == "create-tlr-cue":
@@ -994,6 +1098,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _record_association_check(args)
     if args.command == "record-dream-report":
         return _record_dream_report(args)
+    if args.command == "record-cue-recall":
+        return _record_cue_recall(args)
     if args.command == "record-puzzle-retest":
         return _record_puzzle_retest(args)
     if args.command == "analyze-cued-uncued":
@@ -1040,6 +1146,8 @@ def _run_app(args: argparse.Namespace) -> int:
             mock_interval_seconds=args.mock_interval_seconds,
             gate_stability_seconds=args.contact_stability_seconds,
             auto_update=args.auto_update,
+            cue_backend=args.cue_backend,
+            allow_dry_run=args.allow_dry_run,
         )
     )
 
@@ -2188,6 +2296,7 @@ async def _simulate_replay_cues(args: argparse.Namespace) -> int:
         f"first_play_seconds={report.metrics.get('first_play_seconds')} "
         f"injected_cues={report.metrics.get('injected_cue_count', 0)} "
         f"audio_playback_executed={report.audio_playback_executed} "
+        f"protocol={report.protocol.get('name')} "
         f"output={output_path}{note}"
     )
     if scheduler_events_output is not None:
@@ -2202,7 +2311,6 @@ async def _replay_cue_report(args: argparse.Namespace):
     from muse_tmr.models import RemGateConfig
     from muse_tmr.presets import preset_provides_optics
     from muse_tmr.protocol import (
-        TmrSchedulerConfig,
         load_night_puzzle_session,
         load_puzzle_catalog,
         load_puzzle_cue_assignment,
@@ -2210,14 +2318,20 @@ async def _replay_cue_report(args: argparse.Namespace):
     from muse_tmr.protocol.arousal_guard import ArousalGuardConfig
     from muse_tmr.validation import simulate_replay_cue_plan
 
+    catalog = load_puzzle_catalog(_resolve_output_path(args.catalog))
+    session = load_night_puzzle_session(_resolve_output_path(args.session))
+    assignment = load_puzzle_cue_assignment(_resolve_output_path(args.assignment))
+    cue_library = load_cue_library(_resolve_output_path(args.cue_library))
+    preset, overrides = _protocol_from_args(args, _NIGHT_PRESET_FLAGS)
+    settings = preset.runner_settings(overrides)
     enter_threshold, exit_threshold = _resolve_gate_thresholds(args)
     optics_capable = preset_provides_optics(getattr(args, "preset", None))
     return await simulate_replay_cue_plan(
         _resolve_output_path(args.input),
-        catalog=load_puzzle_catalog(_resolve_output_path(args.catalog)),
-        session=load_night_puzzle_session(_resolve_output_path(args.session)),
-        assignment=load_puzzle_cue_assignment(_resolve_output_path(args.assignment)),
-        cue_library=load_cue_library(_resolve_output_path(args.cue_library)),
+        catalog=catalog,
+        session=session,
+        assignment=assignment,
+        cue_library=cue_library,
         start_seconds=args.start_seconds,
         end_seconds=args.end_seconds,
         epoch_config=EpochConfig(
@@ -2227,24 +2341,83 @@ async def _replay_cue_report(args: argparse.Namespace):
         gate_config=RemGateConfig(
             enter_threshold=enter_threshold,
             exit_threshold=exit_threshold,
-            min_stable_seconds=args.min_stable_seconds,
+            min_stable_seconds=settings.gate_min_stable_seconds,
             epoch_seconds=args.epoch_seconds,
             cooldown_seconds=args.gate_cooldown_seconds,
             optics_capable=optics_capable,
         ),
-        scheduler_config=TmrSchedulerConfig(
-            puzzle_cue_interval_seconds=args.puzzle_cue_interval_seconds,
-            cooldown_seconds=args.scheduler_cooldown_seconds,
-            max_puzzle_cues_per_block=args.max_puzzle_cues_per_block,
-            enable_tlr_block=False,
-        ),
+        scheduler_config=preset.scheduler_config(enable_tlr_block=False, overrides=overrides),
         arousal_guard_config=ArousalGuardConfig(
             enabled=not args.disable_arousal_guard,
             optics_capable=optics_capable,
             **_guard_hr_rule_config(args),
         ),
         inject_cues_every_seconds=getattr(args, "inject_cues_every_seconds", None),
+        protocol=_protocol_block(preset, overrides, assignment=assignment.metadata),
     )
+
+
+# The flags each command takes from a protocol preset, by RunnerSettings field. Left out
+# (None) a flag takes the preset's value; given, it wins and is recorded as an override.
+_NIGHT_PRESET_FLAGS = {
+    "min_stable_seconds": "gate_min_stable_seconds",
+    "puzzle_cue_interval_seconds": "puzzle_cue_interval_seconds",
+    "scheduler_cooldown_seconds": "scheduler_cooldown_seconds",
+    "max_puzzle_cues_per_block": "max_puzzle_cues_per_block",
+}
+_TLR_BLOCK_PRESET_FLAGS = {
+    "repetitions": "tlr_repetitions",
+    "interval_seconds": "tlr_interval_seconds",
+    "post_block_pause_seconds": "tlr_post_block_pause_seconds",
+}
+_TLR_CUE_PRESET_FLAGS = {
+    "frequency_hz": "tlr_tone_frequency_hz",
+    "duration_seconds": "tlr_tone_duration_seconds",
+}
+
+
+def _protocol_from_args(
+    args: argparse.Namespace,
+    flags: Mapping[str, str],
+    *,
+    extra_overrides: Optional[Mapping[str, object]] = None,
+):
+    """The command's protocol preset and the overrides its explicit flags make."""
+    from muse_tmr.protocol import resolve_protocol_preset
+
+    preset = resolve_protocol_preset(getattr(args, "protocol_preset", None))
+    overrides: Dict[str, object] = {
+        setting: getattr(args, dest)
+        for dest, setting in flags.items()
+        if getattr(args, dest, None) is not None
+    }
+    overrides.update(extra_overrides or {})
+    return preset, overrides
+
+
+def _protocol_block(preset, overrides: Mapping[str, object], **inputs: Optional[Mapping[str, object]]) -> Dict[str, object]:
+    """The preset block a run records, with the blocks its protocol files were made with.
+
+    ``inputs`` maps a file (assignment, tlr_block_plan, ...) to its metadata. A file made
+    with another preset is named on stderr; the run goes on and records it under
+    ``inputs``.
+    """
+    block = preset.manifest(overrides)
+    recorded: Dict[str, object] = {}
+    for name, metadata in inputs.items():
+        protocol = metadata.get("protocol") if isinstance(metadata, Mapping) else None
+        if not isinstance(protocol, Mapping):
+            continue
+        recorded[name] = {key: protocol.get(key) for key in ("name", "version", "content_hash", "effective_hash")}
+        if protocol.get("name") != preset.name:
+            print(
+                f"warning: the {name.replace('_', ' ')} was made with protocol preset {protocol.get('name')}, "
+                f"this run uses {preset.name}",
+                file=sys.stderr,
+            )
+    if recorded:
+        block["inputs"] = recorded
+    return block
 
 
 def _synthesize_night(args: argparse.Namespace) -> int:
@@ -2699,35 +2872,100 @@ async def _run_live_cueing_pilot(
     require_tlr_block: bool,
 ) -> int:
     from muse_tmr.audio import load_cue_library, load_volume_calibrations
-    from muse_tmr.features import EpochConfig
-    from muse_tmr.models import RemGateConfig
     from muse_tmr.protocol import (
-        TmrSchedulerConfig,
         load_night_puzzle_session,
         load_puzzle_catalog,
         load_puzzle_cue_assignment,
         load_tlr_block_plan,
     )
-    from muse_tmr.protocol.arousal_guard import ArousalGuardConfig
-    from muse_tmr.presets import preset_provides_optics
-    from muse_tmr.validation import Pilot4CueingConfig, run_pilot4_cueing_night
+    from muse_tmr.validation import run_pilot4_cueing_night
 
-    duration_seconds = (
-        args.duration_seconds
-        if args.duration_seconds is not None
-        else args.duration_hours * 3600
-    )
     store = load_volume_calibrations(_resolve_output_path(args.calibration))
     calibration = (
         store.latest_for_device(args.device_name)
         if args.device_name is not None
         else store.latest()
     )
-    output_dir = _resolve_output_dir(args.output_dir)
+    catalog = load_puzzle_catalog(_resolve_output_path(args.catalog))
+    session = load_night_puzzle_session(_resolve_output_path(args.session))
+    assignment = load_puzzle_cue_assignment(_resolve_output_path(args.assignment))
+    cue_library = load_cue_library(_resolve_output_path(args.cue_library))
+    tlr_block_plan = (
+        load_tlr_block_plan(_resolve_output_path(args.tlr_block))
+        if enable_tlr_block
+        else None
+    )
+    config = _live_cueing_config(
+        args,
+        pilot_id=pilot_id,
+        summary_filename=summary_filename,
+        enable_tlr_block=enable_tlr_block,
+        require_tlr_block=require_tlr_block,
+        assignment=assignment,
+        tlr_block_plan=tlr_block_plan,
+    )
+    source = _build_source(args, duration_seconds=int(config.duration_seconds))
+    summary = await run_pilot4_cueing_night(
+        source,
+        config=config,
+        catalog=catalog,
+        session=session,
+        assignment=assignment,
+        cue_library=cue_library,
+        calibration=calibration,
+        tlr_block_plan=tlr_block_plan,
+    )
+    print(
+        f"{command_label} complete "
+        f"passed={summary.passed} "
+        f"epochs={summary.epoch_count} "
+        f"stride_seconds={summary.stride_seconds} "
+        f"first_gate_open_seconds={summary.first_gate_open_seconds} "
+        f"first_play_seconds={summary.first_play_seconds} "
+        f"scheduler_play={summary.cue_play_count} "
+        f"tlr_play={summary.tlr_cue_play_count} "
+        f"puzzle_play={summary.puzzle_cue_play_count} "
+        f"audio_status={dict(summary.audio_status_counts)} "
+        f"requested_backend={summary.requested_audio_backend_name} "
+        f"resolved_backend={summary.resolved_audio_backend_name} "
+        f"max_effective_volume={summary.max_effective_volume} "
+        f"emergency_stop={summary.emergency_stop_path} "
+        f"cue_arousal={summary.cue_arousal.get('status')} "
+        f"protocol={config.protocol.get('name')} "
+        f"summary={summary.summary_path}"
+    )
+    return 0 if summary.passed else 1
+
+
+def _live_cueing_config(
+    args: argparse.Namespace,
+    *,
+    pilot_id: str,
+    summary_filename: str,
+    enable_tlr_block: bool,
+    require_tlr_block: bool,
+    assignment=None,
+    tlr_block_plan=None,
+):
+    """The Pilot 4/5 config for ``args``: the protocol preset's gate and scheduler
+    settings, explicit flags over them, and the audio caps from the flags alone."""
+    from muse_tmr.features import EpochConfig
+    from muse_tmr.models import RemGateConfig
+    from muse_tmr.presets import preset_provides_optics
+    from muse_tmr.protocol.arousal_guard import ArousalGuardConfig
+    from muse_tmr.validation import Pilot4CueingConfig
+
+    duration_seconds = (
+        args.duration_seconds
+        if args.duration_seconds is not None
+        else args.duration_hours * 3600
+    )
+    preset, overrides = _protocol_from_args(args, _NIGHT_PRESET_FLAGS)
+    settings = preset.runner_settings(overrides)
     enter_threshold, exit_threshold = _resolve_gate_thresholds(args)
     optics_capable = preset_provides_optics(getattr(args, "preset", None))
-    config = Pilot4CueingConfig(
-        output_dir=output_dir,
+    return Pilot4CueingConfig(
+        output_dir=_resolve_output_dir(args.output_dir),
         duration_seconds=duration_seconds,
         source_name=args.source,
         allow_short=args.allow_short,
@@ -2749,17 +2987,12 @@ async def _run_live_cueing_pilot(
         gate_config=RemGateConfig(
             enter_threshold=enter_threshold,
             exit_threshold=exit_threshold,
-            min_stable_seconds=args.min_stable_seconds,
+            min_stable_seconds=settings.gate_min_stable_seconds,
             epoch_seconds=args.epoch_seconds,
             cooldown_seconds=args.gate_cooldown_seconds,
             optics_capable=optics_capable,
         ),
-        scheduler_config=TmrSchedulerConfig(
-            puzzle_cue_interval_seconds=args.puzzle_cue_interval_seconds,
-            cooldown_seconds=args.scheduler_cooldown_seconds,
-            max_puzzle_cues_per_block=args.max_puzzle_cues_per_block,
-            enable_tlr_block=enable_tlr_block,
-        ),
+        scheduler_config=preset.scheduler_config(enable_tlr_block=enable_tlr_block, overrides=overrides),
         arousal_guard_config=ArousalGuardConfig(
             optics_capable=optics_capable,
             **_guard_hr_rule_config(args),
@@ -2767,42 +3000,13 @@ async def _run_live_cueing_pilot(
         pilot_id=pilot_id,
         summary_filename=summary_filename,
         require_tlr_block=require_tlr_block,
+        protocol=_protocol_block(
+            preset,
+            overrides,
+            assignment=assignment.metadata if assignment is not None else None,
+            tlr_block_plan=tlr_block_plan.metadata if tlr_block_plan is not None else None,
+        ),
     )
-    tlr_block_plan = (
-        load_tlr_block_plan(_resolve_output_path(args.tlr_block))
-        if enable_tlr_block
-        else None
-    )
-    source = _build_source(args, duration_seconds=int(duration_seconds))
-    summary = await run_pilot4_cueing_night(
-        source,
-        config=config,
-        catalog=load_puzzle_catalog(_resolve_output_path(args.catalog)),
-        session=load_night_puzzle_session(_resolve_output_path(args.session)),
-        assignment=load_puzzle_cue_assignment(_resolve_output_path(args.assignment)),
-        cue_library=load_cue_library(_resolve_output_path(args.cue_library)),
-        calibration=calibration,
-        tlr_block_plan=tlr_block_plan,
-    )
-    print(
-        f"{command_label} complete "
-        f"passed={summary.passed} "
-        f"epochs={summary.epoch_count} "
-        f"stride_seconds={summary.stride_seconds} "
-        f"first_gate_open_seconds={summary.first_gate_open_seconds} "
-        f"first_play_seconds={summary.first_play_seconds} "
-        f"scheduler_play={summary.cue_play_count} "
-        f"tlr_play={summary.tlr_cue_play_count} "
-        f"puzzle_play={summary.puzzle_cue_play_count} "
-        f"audio_status={dict(summary.audio_status_counts)} "
-        f"requested_backend={summary.requested_audio_backend_name} "
-        f"resolved_backend={summary.resolved_audio_backend_name} "
-        f"max_effective_volume={summary.max_effective_volume} "
-        f"emergency_stop={summary.emergency_stop_path} "
-        f"cue_arousal={summary.cue_arousal.get('status')} "
-        f"summary={summary.summary_path}"
-    )
-    return 0 if summary.passed else 1
 
 
 def _log_pilot4_awakening(args: argparse.Namespace) -> int:
@@ -2888,6 +3092,192 @@ def _optional_path(value: Optional[Path]) -> Optional[Path]:
     return None if value is None else _resolve_output_path(value)
 
 
+def _protocol_presets(args: argparse.Namespace) -> int:
+    from muse_tmr.protocol import get_protocol_preset, list_protocol_presets
+
+    if args.name:
+        try:
+            preset = get_protocol_preset(args.name)
+        except KeyError as exc:
+            print(f"protocol-presets: {exc.args[0]}", file=sys.stderr)
+            return 2
+        payload = {
+            "content_hash": preset.content_hash(),
+            "manifest": preset.manifest(),
+            "preset": preset.to_dict(),
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
+        return 0
+    rows = [
+        {
+            "name": preset.name,
+            "version": preset.version,
+            "runnable": preset.runnable,
+            "content_hash": preset.content_hash(),
+            "source_checks": sorted({citation.source_check for citation in preset.citations}),
+            "title": preset.title,
+        }
+        for preset in list_protocol_presets()
+    ]
+    if args.json:
+        print(json.dumps(rows, indent=2, ensure_ascii=False))
+        return 0
+    for row in rows:
+        print(
+            f"{row['name']}\tv{row['version']}\t"
+            f"{'runnable' if row['runnable'] else 'documentation only'}\t"
+            f"{row['content_hash'][:12]}\t{','.join(row['source_checks']) or 'no citation'}\t{row['title']}"
+        )
+    return 0
+
+
+def _protocol_fidelity(args: argparse.Namespace) -> int:
+    from muse_tmr.reports.protocol_fidelity import SYNTHETIC_NOTE, build_protocol_fidelity
+
+    recording_dir = _resolve_output_dir(args.recording_dir)
+    pilot3_report = _resolve_output_path(args.pilot3_report) if args.pilot3_report is not None else None
+    if pilot3_report is not None and not pilot3_report.is_file():
+        print(f"protocol-fidelity: no Pilot 3 report at {pilot3_report}", file=sys.stderr)
+        return 2
+    if pilot3_report is None and not recording_dir.is_dir():
+        print(f"protocol-fidelity: no recording directory at {recording_dir}", file=sys.stderr)
+        return 2
+    try:
+        report = build_protocol_fidelity(
+            recording_dir,
+            pilot3_report=pilot3_report,
+            preset_name=args.protocol_preset,
+        )
+    except KeyError as exc:
+        print(f"protocol-fidelity: {exc.args[0] if exc.args else exc}", file=sys.stderr)
+        return 2
+    if args.output_dir is not None:
+        output_dir = _resolve_output_dir(args.output_dir)
+    else:
+        output_dir = pilot3_report.parent if pilot3_report is not None else recording_dir
+    paths = report.save_outputs(output_dir)
+    statuses = " ".join(f"{name}={status}" for name, status in report.statuses().items())
+    note = f" ({SYNTHETIC_NOTE})" if report.synthetic else ""
+    print(
+        "protocol fidelity "
+        f"preset={report.preset['name']} "
+        f"rem_periods={report.summary['rem_periods']} "
+        f"plays={dict(report.summary['plays'])} "
+        f"{statuses} "
+        f"limitations={','.join(report.limitations) or 'none'} "
+        f"report={paths['report']}{note}"
+    )
+    return 0
+
+
+class _InputEnded(Exception):
+    """stdin closed before every sound of the check had an answer."""
+
+
+def _record_cue_recall(args: argparse.Namespace) -> int:
+    from muse_tmr.audio import AudioCuePlayer, load_cue_library, load_volume_calibrations
+    from muse_tmr.protocol import (
+        load_night_puzzle_session,
+        load_puzzle_catalog,
+        load_puzzle_cue_assignment,
+    )
+    from muse_tmr.reports.cue_recall import (
+        CueRecallUnavailable,
+        build_cue_recall_test,
+        cue_recall_playback_config,
+        play_cue_recall_trial,
+        plan_cue_recall,
+    )
+
+    session = load_night_puzzle_session(_resolve_output_path(args.session))
+    catalog = load_puzzle_catalog(_resolve_output_path(args.catalog))
+    assignment = load_puzzle_cue_assignment(_resolve_output_path(args.assignment))
+    assignment.validate_against_session(session)
+    store = load_volume_calibrations(_resolve_output_path(args.calibration))
+    calibration = store.latest_for_device(args.device_name) if args.device_name else store.latest()
+    try:
+        plans = plan_cue_recall(session, catalog, load_cue_library(_resolve_output_path(args.cue_library)))
+    except CueRecallUnavailable as exc:
+        print(f"record-cue-recall: {exc}", file=sys.stderr)
+        return 2
+    output_path = _resolve_output_path(args.output)
+    audio_log = (
+        _resolve_output_path(args.audio_log)
+        if args.audio_log is not None
+        else output_path.with_name(f"{output_path.stem}_audio.jsonl")
+    )
+    player = AudioCuePlayer(
+        cue_recall_playback_config(
+            calibration,
+            hard_max_volume=args.hard_max_volume,
+            default_volume=args.default_volume,
+            log_path=audio_log,
+        ),
+        backend=args.audio_resolution.backend,
+    )
+    options = len(session.puzzle_ids)
+    print("Which puzzle does this sound belong to? Last night's puzzles:")
+    for position, puzzle_id in enumerate(session.puzzle_ids, start=1):
+        print(f"  {position}. {catalog.get_puzzle(puzzle_id).prompt}")
+    started_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    answers: Dict[int, Optional[str]] = {}
+    plays: Dict[int, List[Mapping[str, object]]] = {}
+    try:
+        for plan in plans:
+            plays[plan.trial] = []
+            while True:
+                plays[plan.trial].append(play_cue_recall_trial(player, plan))
+                answer = _ask_cue_recall(plan.trial, len(plans), options)
+                if answer != "replay":
+                    break
+            answers[plan.trial] = None if answer is None else session.puzzle_ids[int(answer) - 1]
+    except _InputEnded:
+        print("record-cue-recall: input ended before every sound had an answer; nothing saved", file=sys.stderr)
+        return 1
+    test = build_cue_recall_test(
+        session,
+        catalog,
+        assignment,
+        answers,
+        plays=plays,
+        started_at_utc=started_at,
+        notes=args.notes,
+        metadata={
+            "audio_log": audio_log.name,
+            "requested_backend": args.backend,
+            "resolved_backend": player.backend.name,
+        },
+    )
+    test.save(output_path)
+    # The answers' correctness and the conditions stay in the file: the retest comes next.
+    print(
+        "cue recall saved "
+        f"session={test.session_id} "
+        f"sounds={test.trial_count} "
+        f"answered={test.answered_count} "
+        f"backend={player.backend.name} "
+        f"output={output_path}"
+    )
+    return 0
+
+
+def _ask_cue_recall(trial: int, total: int, options: int):
+    """A puzzle number, None for "do not know", or "replay"."""
+    prompt = f"Sound {trial} of {total}: puzzle number 1-{options}, r to play it again, Enter if you do not know: "
+    while True:
+        try:
+            text = input(prompt).strip().lower()
+        except EOFError:
+            raise _InputEnded() from None
+        if not text:
+            return None
+        if text in ("r", "replay"):
+            return "replay"
+        if text.isdigit() and 1 <= int(text) <= options:
+            return int(text)
+        print(f"Type a number from 1 to {options}, r, or nothing.")
+
+
 def _list_cues(args: argparse.Namespace) -> int:
     from muse_tmr.audio import load_cue_library
 
@@ -2904,13 +3294,18 @@ def _list_cues(args: argparse.Namespace) -> int:
 def _create_tlr_cue(args: argparse.Namespace) -> int:
     from muse_tmr.protocol import TlrCueConfig, default_tlr_cue_library
 
+    preset, overrides = _protocol_from_args(args, _TLR_CUE_PRESET_FLAGS)
+    tone = preset.tlr_cue_config(cue_id=args.cue_id, overrides=overrides)
     library = default_tlr_cue_library(
         TlrCueConfig(
-            cue_id=args.cue_id,
-            frequency_hz=args.frequency_hz,
-            duration_seconds=args.duration_seconds,
+            cue_id=tone.cue_id,
+            frequency_hz=tone.frequency_hz,
+            duration_seconds=tone.duration_seconds,
+            # The volume hint is this flag's, never the preset's.
             volume_hint=args.volume_hint,
-        )
+            description=tone.description,
+        ),
+        protocol=preset.manifest(overrides),
     )
     output_path = library.save(_resolve_output_path(args.output))
     cue = library.cues[0]
@@ -2920,6 +3315,7 @@ def _create_tlr_cue(args: argparse.Namespace) -> int:
         f"frequency_hz={cue.frequency_hz} "
         f"duration_seconds={cue.duration_seconds} "
         f"volume_hint={cue.volume_hint} "
+        f"protocol={preset.name} "
         f"output={output_path}"
     )
     return 0
@@ -2966,18 +3362,19 @@ def _train_tlr_cue(args: argparse.Namespace) -> int:
 
 def _plan_tlr_block(args: argparse.Namespace) -> int:
     from muse_tmr.audio import load_cue_library
-    from muse_tmr.protocol import TlrBlockConfig, plan_tlr_block
+    from muse_tmr.protocol import plan_tlr_block
 
     library = load_cue_library(_resolve_output_path(args.cue_library))
     cue = library.by_id(args.cue_id)
+    preset, overrides = _protocol_from_args(
+        args,
+        _TLR_BLOCK_PRESET_FLAGS,
+        extra_overrides={"tlr_block_enabled": False} if args.disabled else None,
+    )
     plan = plan_tlr_block(
         cue,
-        config=TlrBlockConfig(
-            enabled=not args.disabled,
-            repetitions=args.repetitions,
-            interval_seconds=args.interval_seconds,
-            post_block_pause_seconds=args.post_block_pause_seconds,
-        ),
+        config=preset.tlr_block_config(overrides),
+        metadata={"protocol": _protocol_block(preset, overrides, tlr_cue=cue.metadata)},
     )
     output_path = plan.save(_resolve_output_path(args.output))
     print(
@@ -2985,6 +3382,7 @@ def _plan_tlr_block(args: argparse.Namespace) -> int:
         f"cue={plan.cue_id} "
         f"events={len(plan.events)} "
         f"puzzle_start_offset={plan.puzzle_cue_start_offset_seconds} "
+        f"protocol={preset.name} "
         f"output={output_path}"
     )
     return 0
@@ -3000,21 +3398,27 @@ def _import_puzzles(args: argparse.Namespace) -> int:
 
 
 def _generate_puzzle_session(args: argparse.Namespace) -> int:
+    from dataclasses import replace
+
     from muse_tmr.protocol import load_puzzle_catalog
 
+    preset, overrides = _protocol_from_args(args, {"count": "puzzle_count"})
+    puzzle_count, _cued = preset.puzzle_counts(overrides)
     catalog = load_puzzle_catalog(_resolve_output_path(args.catalog))
     session = catalog.generate_night_session(
         session_id=args.session_id,
-        puzzle_count=args.count,
+        puzzle_count=puzzle_count,
         selection_seed=args.seed,
         include_known=args.include_known,
     )
+    session = replace(session, metadata={**session.metadata, "protocol": preset.manifest(overrides)})
     output_path = session.save(_resolve_output_path(args.output))
     print(
         "puzzle session generated "
         f"session={session.session_id} "
         f"puzzles={len(session.puzzle_ids)} "
         f"eligible={session.metadata.get('eligible_count')} "
+        f"protocol={preset.name} "
         f"output={output_path}"
     )
     return 0
@@ -3167,8 +3571,10 @@ def _analyze_cued_uncued(args: argparse.Namespace) -> int:
         load_puzzle_cue_assignment,
         load_tmr_scheduler_events,
     )
+    from muse_tmr.protocol import protocol_block_of
     from muse_tmr.reports import (
         build_cued_uncued_analysis,
+        load_cue_recall_test,
         load_dream_report,
         load_morning_retest,
     )
@@ -3186,12 +3592,30 @@ def _analyze_cued_uncued(args: argparse.Namespace) -> int:
         if args.scheduler_events is not None
         else ()
     )
+    cue_recall = (
+        load_cue_recall_test(_resolve_output_path(args.cue_recall))
+        if args.cue_recall is not None
+        else None
+    )
+    protocol, protocol_source = None, None
+    if args.protocol_metadata is not None:
+        metadata_path = _resolve_output_path(args.protocol_metadata)
+        protocol = protocol_block_of(json.loads(metadata_path.read_text(encoding="utf-8")))
+        if protocol is None:
+            print(f"analyze-cued-uncued: no protocol block in {metadata_path}", file=sys.stderr)
+            return 2
+        protocol_source = metadata_path.name
+    elif protocol_block_of(assignment.to_dict()) is not None:
+        protocol, protocol_source = protocol_block_of(assignment.to_dict()), "assignment"
     report = build_cued_uncued_analysis(
         session,
         assignment,
         retest,
         dream_report=dream_report,
         scheduler_events=scheduler_events,
+        cue_recall=cue_recall,
+        protocol=protocol,
+        protocol_source=protocol_source,
         analysis_id=args.analysis_id,
         min_group_size=args.min_group_size,
     )
@@ -3215,10 +3639,13 @@ def _assign_puzzle_cues(args: argparse.Namespace) -> int:
     from muse_tmr.protocol import assign_cued_uncued_puzzles, load_night_puzzle_session
 
     session = load_night_puzzle_session(_resolve_output_path(args.session))
+    preset, overrides = _protocol_from_args(args, {"cued_count": "cued_puzzle_count"})
+    _count, cued_count = preset.puzzle_counts(overrides)
     assignment = assign_cued_uncued_puzzles(
         session,
         seed=args.seed,
-        cued_count=args.cued_count,
+        cued_count=cued_count,
+        protocol=_protocol_block(preset, overrides, session=session.metadata),
     )
     output_path = assignment.save(_resolve_output_path(args.output))
     print(
@@ -3228,6 +3655,7 @@ def _assign_puzzle_cues(args: argparse.Namespace) -> int:
         f"cued={len(assignment.cued_puzzle_ids)} "
         f"uncued={len(assignment.uncued_puzzle_ids)} "
         f"scheduled={len(assignment.scheduled_puzzle_ids)} "
+        f"protocol={preset.name} "
         f"output={output_path}"
     )
     return 0
@@ -3333,6 +3761,29 @@ def _build_source(args: argparse.Namespace, duration_seconds: int):
         duration_seconds=duration_seconds,
         verbose=not getattr(args, "quiet", False),
     )
+
+
+def _add_protocol_preset_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--protocol-preset",
+        default=None,
+        metavar="NAME",
+        help="Protocol preset the protocol settings come from (muse-tmr protocol-presets lists them); "
+        "default remind_default_v1. A flag given explicitly wins and is recorded as an override.",
+    )
+
+
+def _add_night_protocol_args(parser: argparse.ArgumentParser) -> None:
+    """The gate and scheduler flags of a night or a replay, and --protocol-preset.
+
+    The four protocol flags default to None: left out, they take the preset's value.
+    """
+    parser.add_argument("--min-stable-seconds", type=float, default=None, help=PROTOCOL_PRESET_DEFAULT_HELP)
+    parser.add_argument("--gate-cooldown-seconds", type=float, default=120.0)
+    parser.add_argument("--puzzle-cue-interval-seconds", type=float, default=None, help=PROTOCOL_PRESET_DEFAULT_HELP)
+    parser.add_argument("--scheduler-cooldown-seconds", type=float, default=None, help=PROTOCOL_PRESET_DEFAULT_HELP)
+    parser.add_argument("--max-puzzle-cues-per-block", type=int, default=None, help=PROTOCOL_PRESET_DEFAULT_HELP)
+    _add_protocol_preset_arg(parser)
 
 
 def _add_guard_hr_rule_args(parser: argparse.ArgumentParser) -> None:

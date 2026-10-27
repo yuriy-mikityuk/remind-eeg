@@ -6,13 +6,17 @@ import datetime as dt
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, Mapping, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Iterable, Mapping, Optional, Tuple
 
 from muse_tmr.protocol import NightPuzzleSession, PuzzleCueAssignment, TmrSchedulerEvent
 from muse_tmr.reports.dream_report import DreamReport
 from muse_tmr.reports.morning_retest import MorningRetest
 
-ANALYSIS_SCHEMA_VERSION = 1
+if TYPE_CHECKING:
+    from muse_tmr.reports.cue_recall import CueRecallTest
+
+# 2 adds cue_recall, the rows' cue_recalled and metadata.protocol (#231).
+ANALYSIS_SCHEMA_VERSION = 2
 ANALYSIS_CONDITIONS = ("cued", "uncued")
 
 
@@ -30,6 +34,8 @@ class PuzzleAnalysisRow:
     first_cue_time_seconds: Optional[float] = None
     last_cue_time_seconds: Optional[float] = None
     cue_time_seconds: Tuple[float, ...] = ()
+    # Whether the morning sound check placed this puzzle's sound; None without one.
+    cue_recalled: Optional[bool] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "puzzle_id", _required_str(self.puzzle_id, "puzzle_id"))
@@ -62,6 +68,7 @@ class PuzzleAnalysisRow:
             "first_cue_time_seconds": self.first_cue_time_seconds,
             "last_cue_time_seconds": self.last_cue_time_seconds,
             "cue_time_seconds": list(self.cue_time_seconds),
+            "cue_recalled": self.cue_recalled,
         }
 
     @classmethod
@@ -79,6 +86,9 @@ class PuzzleAnalysisRow:
             first_cue_time_seconds=_optional_float(payload.get("first_cue_time_seconds")),
             last_cue_time_seconds=_optional_float(payload.get("last_cue_time_seconds")),
             cue_time_seconds=tuple(float(value) for value in payload.get("cue_time_seconds", ())),
+            cue_recalled=(
+                None if payload.get("cue_recalled") is None else _boolish(payload.get("cue_recalled"))
+            ),
         )
 
 
@@ -184,6 +194,8 @@ class CuedUncuedAnalysisReport:
     analysis_id: str = ""
     generated_at_utc: str = ""
     metadata: Mapping[str, object] = field(default_factory=dict)
+    # The morning sound check by condition, or {"available": False}.
+    cue_recall: Mapping[str, object] = field(default_factory=dict)
     schema_version: int = ANALYSIS_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -217,6 +229,7 @@ class CuedUncuedAnalysisReport:
             },
             "effect_summary": dict(self.effect_summary),
             "cue_timing": dict(self.cue_timing),
+            "cue_recall": dict(self.cue_recall),
             "limitations": [limitation.to_dict() for limitation in self.limitations],
             "metadata": dict(self.metadata),
         }
@@ -238,6 +251,7 @@ class CuedUncuedAnalysisReport:
             f"- Solve-rate delta: {_format_rate(solve_delta)}",
             f"- Incorporation-rate delta: {_format_rate(incorporation_delta)}",
             f"- Puzzle cue plays: {self.cue_timing.get('puzzle_play_event_count', 0)}",
+            f"- Sound check (manipulation check): {_recall_line(self.cue_recall)}",
             "",
             "## Limitations",
         ]
@@ -293,6 +307,7 @@ class CuedUncuedAnalysisReport:
                 for item in payload.get("limitations", ())
             ),
             metadata=dict(payload.get("metadata", {}) or {}),
+            cue_recall=dict(payload.get("cue_recall", {}) or {}),
         )
 
     @classmethod
@@ -307,16 +322,28 @@ def build_cued_uncued_analysis(
     *,
     dream_report: Optional[DreamReport] = None,
     scheduler_events: Iterable[TmrSchedulerEvent] = (),
+    cue_recall: Optional["CueRecallTest"] = None,
+    protocol: Optional[Mapping[str, object]] = None,
+    protocol_source: Optional[str] = None,
     analysis_id: str = "",
     generated_at_utc: str = "",
     min_group_size: int = 5,
 ) -> CuedUncuedAnalysisReport:
+    """The descriptive cued-vs-uncued report of one night.
+
+    ``cue_recall`` is the morning sound check (``reports.cue_recall``); without it, or
+    when it was finished after the retest, the limitations say so. ``protocol`` is the
+    night's protocol preset block, copied into ``metadata.protocol`` with where it came
+    from (``protocol_source``).
+    """
     if min_group_size <= 0:
         raise ValueError("min_group_size must be positive")
     assignment.validate_against_session(session)
     retest.validate_against_session(session)
     if dream_report is not None:
         dream_report.validate_against_session(session)
+    if cue_recall is not None:
+        cue_recall.validate_against_session(session)
     if retest.session_id != session.session_id:
         raise ValueError("retest session_id does not match night puzzle session")
 
@@ -324,6 +351,9 @@ def build_cued_uncued_analysis(
     incorporations = _incorporation_map(dream_report)
     events = tuple(scheduler_events)
     cue_times_by_puzzle, unknown_event_puzzle_ids = _cue_times_by_puzzle(session, events)
+    recalled = (
+        {trial.puzzle_id: trial.correct for trial in cue_recall.trials} if cue_recall is not None else {}
+    )
 
     rows = tuple(
         _build_row(
@@ -332,10 +362,12 @@ def build_cued_uncued_analysis(
             retest_by_id=retest_by_id,
             incorporations=incorporations,
             cue_times_by_puzzle=cue_times_by_puzzle,
+            cue_recalled=recalled.get(puzzle_id),
         )
         for puzzle_id in session.puzzle_ids
     )
     metrics = tuple(_condition_metrics(condition, rows) for condition in ANALYSIS_CONDITIONS)
+    recall_summary = _cue_recall_summary(cue_recall, assignment, retest)
     limitations = _limitations(
         rows,
         metrics,
@@ -343,7 +375,18 @@ def build_cued_uncued_analysis(
         scheduler_events=events,
         unknown_event_puzzle_ids=unknown_event_puzzle_ids,
         min_group_size=min_group_size,
+        recall_summary=recall_summary,
     )
+    metadata: Dict[str, object] = {
+        "assignment_seed": assignment.seed,
+        "dream_report_available": dream_report is not None,
+        "scheduler_events_available": bool(events),
+        "cue_recall_available": cue_recall is not None,
+        "min_group_size": min_group_size,
+    }
+    if protocol:
+        metadata["protocol"] = dict(protocol)
+        metadata["protocol_source"] = protocol_source
     report = CuedUncuedAnalysisReport(
         analysis_id=analysis_id,
         session_id=session.session_id,
@@ -352,13 +395,9 @@ def build_cued_uncued_analysis(
         condition_metrics=metrics,
         effect_summary=_effect_summary(metrics),
         cue_timing=_cue_timing_summary(rows, events),
+        cue_recall=recall_summary,
         limitations=limitations,
-        metadata={
-            "assignment_seed": assignment.seed,
-            "dream_report_available": dream_report is not None,
-            "scheduler_events_available": bool(events),
-            "min_group_size": min_group_size,
-        },
+        metadata=metadata,
     )
     return report
 
@@ -374,6 +413,7 @@ def _build_row(
     retest_by_id: Mapping[str, object],
     incorporations: Mapping[str, object],
     cue_times_by_puzzle: Mapping[str, Tuple[float, ...]],
+    cue_recalled: Optional[bool] = None,
 ) -> PuzzleAnalysisRow:
     retest_result = retest_by_id[puzzle_id]
     incorporation = incorporations.get(puzzle_id)
@@ -394,7 +434,55 @@ def _build_row(
         first_cue_time_seconds=cue_times[0] if cue_times else None,
         last_cue_time_seconds=cue_times[-1] if cue_times else None,
         cue_time_seconds=cue_times,
+        cue_recalled=cue_recalled,
     )
+
+
+def _cue_recall_summary(
+    cue_recall: Optional["CueRecallTest"],
+    assignment: PuzzleCueAssignment,
+    retest: MorningRetest,
+) -> Dict[str, object]:
+    """The sound check by condition: correct trials over trials, a sound not placed counting
+    as wrong; and whether it was finished before the retest was saved."""
+    if cue_recall is None:
+        return {"available": False}
+    before = _before(cue_recall.completed_at_utc, retest.reported_at_utc)
+    by_condition = {}
+    for condition in ANALYSIS_CONDITIONS:
+        trials = [
+            trial
+            for trial in cue_recall.trials
+            if (assignment.is_cued(trial.puzzle_id) if condition == "cued" else assignment.is_uncued(trial.puzzle_id))
+        ]
+        correct = sum(1 for trial in trials if trial.correct)
+        by_condition[condition] = {
+            "trial_count": len(trials),
+            "correct_count": correct,
+            "recall_rate": _rate(correct, len(trials)),
+        }
+    return {
+        "available": True,
+        "trial_count": cue_recall.trial_count,
+        "answered_count": cue_recall.answered_count,
+        "correct_count": cue_recall.correct_count,
+        "recall_rate": cue_recall.recall_rate,
+        "by_condition": by_condition,
+        "recall_rate_difference_cued_minus_uncued": _difference(
+            by_condition["cued"]["recall_rate"], by_condition["uncued"]["recall_rate"]
+        ),
+        "completed_at_utc": cue_recall.completed_at_utc,
+        "retest_reported_at_utc": retest.reported_at_utc,
+        "before_retest": before,
+        "interpretation": "manipulation_check",
+    }
+
+
+def _before(first: str, second: str) -> Optional[bool]:
+    try:
+        return dt.datetime.fromisoformat(first) <= dt.datetime.fromisoformat(second)
+    except (TypeError, ValueError):
+        return None
 
 
 def _condition_metrics(condition: str, rows: Tuple[PuzzleAnalysisRow, ...]) -> ConditionMetrics:
@@ -474,6 +562,7 @@ def _limitations(
     scheduler_events: Tuple[TmrSchedulerEvent, ...],
     unknown_event_puzzle_ids: Tuple[str, ...],
     min_group_size: int,
+    recall_summary: Optional[Mapping[str, object]] = None,
 ) -> Tuple[AnalysisLimitation, ...]:
     limitations = [
         AnalysisLimitation(
@@ -553,6 +642,33 @@ def _limitations(
                 severity="warning",
                 message="Scheduler log includes puzzle events outside this session.",
                 metadata={"puzzle_ids": unknown_event_puzzle_ids},
+            )
+        )
+    recall_summary = recall_summary or {}
+    if not recall_summary.get("available"):
+        limitations.append(
+            AnalysisLimitation(
+                code="cue_recall_missing",
+                severity="warning",
+                message=(
+                    "No morning sound check was supplied, so it is unknown whether each sound still "
+                    "pointed to its puzzle."
+                ),
+            )
+        )
+    elif recall_summary.get("before_retest") is False:
+        limitations.append(
+            AnalysisLimitation(
+                code="cue_recall_after_retest",
+                severity="warning",
+                message=(
+                    "The sound check was finished after the retest was saved, so the retest may have "
+                    "reminded the sleeper of the pairings."
+                ),
+                metadata={
+                    "completed_at_utc": recall_summary.get("completed_at_utc"),
+                    "retest_reported_at_utc": recall_summary.get("retest_reported_at_utc"),
+                },
             )
         )
     return tuple(limitations)
@@ -644,6 +760,15 @@ def _format_rate(value: object) -> str:
     if value is None:
         return "n/a"
     return f"{float(value):.1%}"
+
+
+def _recall_line(summary: Mapping[str, object]) -> str:
+    if not summary.get("available"):
+        return "not supplied"
+    by_condition = summary.get("by_condition", {}) or {}
+    cued = (by_condition.get("cued") or {}).get("recall_rate")
+    uncued = (by_condition.get("uncued") or {}).get("recall_rate")
+    return f"{_format_rate(summary.get('recall_rate'))} placed (cued {_format_rate(cued)}, uncued {_format_rate(uncued)})"
 
 
 def _format_seconds(value: Optional[float]) -> str:

@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import datetime as dt
 import io
@@ -16,12 +17,15 @@ from muse_tmr.cli.main import main as cli_main
 from muse_tmr.data.sample_types import EEGSample, HeartRateSample, IMUSample, MuseFrame, PPGSample
 from muse_tmr.features import EpochBuilder, EpochConfig
 from muse_tmr.models import RemGateConfig, RemPrediction
+from muse_tmr.presets import preset_gate_thresholds
 from muse_tmr.protocol import (
+    ArousalGuardConfig,
     NightPuzzleSession,
     PuzzleCatalog,
     PuzzleCueAssignment,
     PuzzleTask,
     TmrSchedulerConfig,
+    get_protocol_preset,
 )
 from muse_tmr.testing import generate_night
 from muse_tmr.validation import pilot3 as pilot3_module
@@ -544,6 +548,63 @@ class TestPilot3EegOnlyPreset(unittest.TestCase):
                 "repeated_artifact_quality", epoch["arousal_guard_decision"]["reason_codes"]
             )
         self.assertEqual(report["metrics"]["uncued_puzzle_play_count"], 0)
+
+    def _events_bytes(self, *extra_args):
+        events = self.root / f"events_{len(extra_args)}_{abs(hash(extra_args))}.jsonl"
+        self._simulate("p21", "--scheduler-events-output", str(events), *extra_args)
+        return events.read_bytes()
+
+    def test_without_a_preset_the_scheduler_events_are_mains(self):
+        """main's simulate-replay-cues built these configs from its flag defaults."""
+        catalog, session, assignment, cue_library = protocol_fixture()
+        enter, exit_ = preset_gate_thresholds("p21")
+        report = asyncio.run(
+            simulate_replay_cue_plan(
+                self.root / "recording",
+                catalog=catalog,
+                session=session,
+                assignment=assignment,
+                cue_library=cue_library,
+                epoch_config=EpochConfig(epoch_seconds=30.0, stride_seconds=30.0),
+                gate_config=RemGateConfig(
+                    enter_threshold=enter,
+                    exit_threshold=exit_,
+                    min_stable_seconds=60.0,
+                    epoch_seconds=30.0,
+                    cooldown_seconds=120.0,
+                    optics_capable=False,
+                ),
+                scheduler_config=TmrSchedulerConfig(
+                    puzzle_cue_interval_seconds=30.0,
+                    cooldown_seconds=120.0,
+                    max_puzzle_cues_per_block=4,
+                    enable_tlr_block=False,
+                ),
+                arousal_guard_config=ArousalGuardConfig(enabled=True, optics_capable=False),
+            )
+        )
+        expected = report.save_scheduler_events(self.root / "main_events.jsonl").read_bytes()
+        self.assertGreaterEqual(len(report.cue_plan), 1)
+        self.assertEqual(self._events_bytes(), expected)
+        self.assertEqual(self._events_bytes("--protocol-preset", "remind_default_v1"), expected)
+
+    def test_the_report_records_the_preset(self):
+        report = self._simulate("p21")
+        block = report["protocol"]
+        default = get_protocol_preset("remind_default_v1")
+        self.assertEqual((block["name"], block["content_hash"]), ("remind_default_v1", default.content_hash()))
+        self.assertEqual(block["overrides"], {})
+        flagged = self._simulate("p21", "--min-stable-seconds", "90")["protocol"]
+        self.assertEqual(flagged["overrides"], {"gate_min_stable_seconds": 90.0})
+        self.assertEqual(flagged["content_hash"], block["content_hash"])
+        self.assertNotEqual(flagged["effective_hash"], block["effective_hash"])
+
+    def test_a_preset_changes_what_the_replay_plans(self):
+        # 5 min of stable REM before the first cue: this recording has 150 s of it.
+        report = self._simulate("p21", "--protocol-preset", "borghese2022_rem_home")
+        self.assertEqual(report["protocol"]["name"], "borghese2022_rem_home")
+        self.assertEqual(report["metrics"]["cue_plan_count"], 0)
+        self.assertGreaterEqual(self._simulate("p21")["metrics"]["cue_plan_count"], 1)
 
     def test_guard_default_follows_gate_optics_capable(self):
         catalog, session, assignment, cue_library = protocol_fixture()

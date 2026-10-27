@@ -1838,8 +1838,9 @@ function formatStart(startedAt, fallback) {
 }
 
 // --- the morning after a puzzle night --------------------------------------------
-// The dream report and the blind retest save through the same code as the CLI. The
-// server never sends which puzzles were cued, so the page cannot give it away.
+// The dream report, the sound check and the blind retest save through the same code as
+// the CLI. The server never sends which puzzles were cued, so the page cannot give it
+// away: the sound check knows its sounds only by number.
 
 const tabMorning = document.querySelector("#tab-morning");
 const screenMorning = document.querySelector("#screen-morning");
@@ -1854,6 +1855,13 @@ const dreamText = document.querySelector("#dream-text");
 const dreamLinks = document.querySelector("#dream-links");
 const dreamNotes = document.querySelector("#dream-notes");
 const dreamError = document.querySelector("#dream-error");
+const recallForm = document.querySelector("#recall-form");
+const recallStatus = document.querySelector("#recall-status");
+const recallLate = document.querySelector("#recall-late");
+const recallList = document.querySelector("#recall-list");
+const recallNotes = document.querySelector("#recall-notes");
+const recallError = document.querySelector("#recall-error");
+const recallSave = document.querySelector("#recall-save");
 const retestForm = document.querySelector("#retest-form");
 const retestStatus = document.querySelector("#retest-status");
 const retestList = document.querySelector("#retest-list");
@@ -1865,17 +1873,24 @@ let morningNight = null;
 const retestTimers = new Map();
 // Typed since the form was last drawn from what is saved; an app update waits for them.
 let dreamUnsaved = false;
+let recallUnsaved = false;
 let retestUnsaved = false;
+// Per sound number: how often it was played, and when the check began.
+const recallPlays = new Map();
+let recallStartedAt = null;
 
 dreamForm.addEventListener("input", () => {
   dreamUnsaved = true;
+});
+recallForm.addEventListener("input", () => {
+  recallUnsaved = true;
 });
 retestForm.addEventListener("input", () => {
   retestUnsaved = true;
 });
 
 function morningUnsaved() {
-  return dreamUnsaved || retestUnsaved;
+  return dreamUnsaved || recallUnsaved || retestUnsaved;
 }
 
 tabMorning.addEventListener("click", () => showScreen("morning"));
@@ -1928,6 +1943,7 @@ async function loadMorningNight(name) {
   }
   morningNight = night;
   renderDreamForm(morningNight);
+  renderRecallForm(morningNight);
   renderRetestForm(morningNight);
   const missing = [];
   if (!morningNight.catalog_file) {
@@ -2028,6 +2044,109 @@ dreamForm.addEventListener("submit", async (event) => {
     dreamError,
     "dream report",
     renderDreamForm
+  );
+});
+
+function renderRecallForm(night) {
+  const recall = night.cue_recall || { trials: [], available: false, unavailable_reason: null, saved: null };
+  const saved = recall.saved;
+  recallStatus.textContent = recall.available || saved
+    ? savedText(saved)
+    : `The sounds cannot play: ${recall.unavailable_reason}.`;
+  recallLate.hidden = !(night.retest && !saved);
+  recallNotes.value = saved ? saved.notes : "";
+  recallList.innerHTML = "";
+  recallPlays.clear();
+  recallStartedAt = null;
+  recall.trials.forEach((trial) => {
+    recallList.appendChild(recallItem(night, trial.trial, saved ? saved.answers[String(trial.trial)] : undefined, recall.available));
+  });
+  recallError.hidden = true;
+  recallSave.disabled = !recall.available;
+  recallUnsaved = false;
+}
+
+function recallItem(night, number, saved, playable) {
+  const item = document.createElement("li");
+  item.className = "recall-item";
+  item.dataset.trial = String(number);
+  const title = document.createElement("b");
+  title.textContent = `Sound ${number}`;
+  const play = document.createElement("button");
+  play.type = "button";
+  play.textContent = "Play";
+  play.disabled = !playable;
+  play.addEventListener("click", () => playRecallSound(night.name, number, play));
+  const choice = document.createElement("select");
+  choice.setAttribute("aria-label", `Puzzle for sound ${number}`);
+  const options = [["", "Pick the puzzle"]];
+  night.puzzles.forEach((puzzle) => {
+    options.push([puzzle.puzzle_id, `Puzzle ${puzzle.position}: ${puzzle.prompt || puzzle.puzzle_id}`]);
+  });
+  options.push(["unsure", "Not sure"]);
+  options.forEach(([value, label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    choice.appendChild(option);
+  });
+  choice.value = saved === undefined ? "" : saved === null ? "unsure" : saved;
+  item.append(title, play, choice);
+  return item;
+}
+
+async function playRecallSound(night, number, button) {
+  recallError.hidden = true;
+  button.disabled = true;
+  if (recallStartedAt == null) {
+    recallStartedAt = new Date().toISOString();
+  }
+  try {
+    const response = await postJson("/api/morning/cue-recall/play", { night, trial: number });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      recallError.hidden = false;
+      recallError.textContent = payload.error || `${response.status} ${response.statusText}`;
+      return;
+    }
+    recallPlays.set(number, (recallPlays.get(number) || 0) + 1);
+    recallUnsaved = true;
+  } catch (error) {
+    recallError.hidden = false;
+    recallError.textContent = `Could not play sound ${number}: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+recallForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const answers = {};
+  let incomplete = false;
+  recallList.querySelectorAll(".recall-item").forEach((item) => {
+    const value = item.querySelector("select").value;
+    if (value === "") {
+      incomplete = true;
+    }
+    answers[item.dataset.trial] = value === "unsure" ? null : value;
+  });
+  if (incomplete) {
+    recallError.hidden = false;
+    recallError.textContent = "Every sound needs a puzzle, or Not sure.";
+    return;
+  }
+  await saveMorningForm(
+    "/api/morning/cue-recall",
+    {
+      night: morningNight.name,
+      answers,
+      play_counts: Object.fromEntries(recallPlays),
+      started_at_utc: recallStartedAt || "",
+      notes: recallNotes.value
+    },
+    recallError,
+    "sound check",
+    renderRecallForm
   );
 });
 

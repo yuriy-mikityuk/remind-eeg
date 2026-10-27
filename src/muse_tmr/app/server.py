@@ -424,10 +424,16 @@ class AppConfig:
     mock_interval_seconds: float = 1.0
     gate_stability_seconds: float = 5.0
     auto_update: bool = False
+    # The Morning tab's sound check plays through this backend, resolved as the CLI
+    # resolves --backend: system without afplay refuses unless allow_dry_run.
+    cue_backend: str = "system"
+    allow_dry_run: bool = False
 
     def validate(self) -> None:
         if self.source not in {"mock", "amused"}:
             raise ValueError("app source must be mock or amused")
+        if self.cue_backend not in {"system", "afplay", "dry-run", "mock"}:
+            raise ValueError("cue_backend must be one of: system, afplay, dry-run, mock")
         if self.port < 0 or self.port > 65535:
             raise ValueError("port must be between 0 and 65535")
         if self.mock_scenario not in available_mock_contact_scenarios():
@@ -1356,10 +1362,14 @@ class LocalMuseAppState:
             return {"error": str(exc)}, HTTPStatus.NOT_FOUND
 
     def save_morning(self, form: str, body: Mapping[str, Any]) -> Tuple[Mapping[str, Any], HTTPStatus]:
-        """Save the dream report or the blind retest of a puzzle night."""
+        """Save the dream report, the sound check or the blind retest of a puzzle night."""
         from muse_tmr.app import morning
 
-        save = morning.save_dream_report if form == "dream-report" else morning.save_retest
+        save = {
+            "dream-report": morning.save_dream_report,
+            "cue-recall": morning.save_cue_recall,
+            "retest": morning.save_retest,
+        }[form]
         try:
             return save(self._protocol_dir(), self.reports_base(), body), HTTPStatus.OK
         except morning.MorningFileExists as exc:
@@ -1370,6 +1380,34 @@ class LocalMuseAppState:
             return {"error": f"missing {exc}"}, HTTPStatus.BAD_REQUEST
         except (TypeError, ValueError) as exc:
             return {"error": str(exc)}, HTTPStatus.BAD_REQUEST
+
+    def play_cue_recall(self, body: Mapping[str, Any]) -> Tuple[Mapping[str, Any], HTTPStatus]:
+        """Play one sound of the sound check, through the backend resolved as the CLI
+        resolves it; system without afplay is refused unless --allow-dry-run."""
+        from muse_tmr.app import morning
+        from muse_tmr.audio import AudioBackendFallbackError, resolve_audio_backend
+
+        try:
+            resolution = resolve_audio_backend(
+                self.config.cue_backend,
+                allow_dry_run_fallback=self.config.allow_dry_run,
+                option="--cue-backend",
+            )
+        except AudioBackendFallbackError as exc:
+            return {"error": str(exc)}, HTTPStatus.CONFLICT
+        try:
+            payload = morning.play_cue_recall(
+                self._protocol_dir(), self.reports_base(), body, backend=resolution.backend
+            )
+        except morning.UnknownNight as exc:
+            return {"error": str(exc)}, HTTPStatus.NOT_FOUND
+        except morning.CueRecallUnavailable as exc:
+            return {"error": str(exc)}, HTTPStatus.CONFLICT
+        except KeyError as exc:
+            return {"error": f"missing {exc}"}, HTTPStatus.BAD_REQUEST
+        except (TypeError, ValueError) as exc:
+            return {"error": str(exc)}, HTTPStatus.BAD_REQUEST
+        return payload, HTTPStatus.OK
 
     # --- calibration run -----------------------------------------------------
 
@@ -1884,8 +1922,12 @@ class LocalMuseAppHandler(BaseHTTPRequestHandler):
             payload, status = action(body.get("kind"), body.get("name"))
             self._write_json(payload, status=status)
             return
-        if self.path in ("/api/morning/dream-report", "/api/morning/retest"):
+        if self.path in ("/api/morning/dream-report", "/api/morning/cue-recall", "/api/morning/retest"):
             payload, status = state.save_morning(self.path.rsplit("/", 1)[1], self._read_json_body())
+            self._write_json(payload, status=status)
+            return
+        if self.path == "/api/morning/cue-recall/play":
+            payload, status = state.play_cue_recall(self._read_json_body())
             self._write_json(payload, status=status)
             return
         if self.path == "/api/calibration/start":

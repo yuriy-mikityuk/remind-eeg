@@ -270,6 +270,8 @@ class TlrBlockPlan:
     events: Tuple[TlrBlockEvent, ...]
     total_duration_seconds: float
     schema_version: int = TLR_PROTOCOL_SCHEMA_VERSION
+    # The protocol preset block the plan was made with ("protocol"), among others.
+    metadata: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.cue_id.strip():
@@ -290,6 +292,7 @@ class TlrBlockPlan:
             "events": [event.to_dict() for event in self.events],
             "total_duration_seconds": self.total_duration_seconds,
             "puzzle_cue_start_offset_seconds": self.puzzle_cue_start_offset_seconds,
+            "metadata": dict(self.metadata),
         }
 
     def save(self, output_path: Path) -> Path:
@@ -312,6 +315,7 @@ class TlrBlockPlan:
                 for item in payload.get("events", ())
             ),
             total_duration_seconds=float(payload.get("total_duration_seconds", 0.0)),
+            metadata=dict(payload.get("metadata", {}) or {}),
         )
 
     @classmethod
@@ -319,8 +323,16 @@ class TlrBlockPlan:
         return cls.from_dict(json.loads(input_path.expanduser().read_text(encoding="utf-8")))
 
 
-def default_tlr_cue(config: Optional[TlrCueConfig] = None) -> CueMetadata:
+def default_tlr_cue(
+    config: Optional[TlrCueConfig] = None,
+    *,
+    protocol: Optional[Mapping[str, object]] = None,
+) -> CueMetadata:
+    """The generated TLR cue; ``protocol`` is the preset block it was made with."""
     config = config or TlrCueConfig()
+    metadata: Dict[str, object] = {"schema_version": TLR_PROTOCOL_SCHEMA_VERSION}
+    if protocol:
+        metadata["protocol"] = dict(protocol)
     return CueMetadata(
         cue_id=config.cue_id,
         cue_type="generated_tone",
@@ -330,12 +342,16 @@ def default_tlr_cue(config: Optional[TlrCueConfig] = None) -> CueMetadata:
         volume_hint=config.volume_hint,
         tags=("tlr", "generated", "default"),
         description=config.description,
-        metadata={"schema_version": TLR_PROTOCOL_SCHEMA_VERSION},
+        metadata=metadata,
     )
 
 
-def default_tlr_cue_library(config: Optional[TlrCueConfig] = None) -> CueLibrary:
-    cue = default_tlr_cue(config)
+def default_tlr_cue_library(
+    config: Optional[TlrCueConfig] = None,
+    *,
+    protocol: Optional[Mapping[str, object]] = None,
+) -> CueLibrary:
+    cue = default_tlr_cue(config, protocol=protocol)
     return CueLibrary(library_id="tlr_default", cues=(cue,))
 
 
@@ -386,8 +402,11 @@ def plan_tlr_block(
     cue: CueMetadata,
     *,
     config: Optional[TlrBlockConfig] = None,
+    metadata: Optional[Mapping[str, object]] = None,
 ) -> TlrBlockPlan:
+    """The REM TLR block for ``cue``; ``metadata`` (the preset block, say) goes into the plan."""
     config = config or TlrBlockConfig()
+    metadata = dict(metadata or {})
     if cue.protocol != "tlr":
         raise ValueError("TLR block cue must use protocol='tlr'")
     if not config.enabled:
@@ -396,6 +415,7 @@ def plan_tlr_block(
             config=config,
             events=(),
             total_duration_seconds=0.0,
+            metadata=metadata,
         )
 
     events = tuple(
@@ -414,6 +434,7 @@ def plan_tlr_block(
         config=config,
         events=events,
         total_duration_seconds=total_duration,
+        metadata=metadata,
     )
 
 

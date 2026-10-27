@@ -384,7 +384,7 @@ class BackendResolution:
 
 
 def resolve_audio_backend(
-    name: str, *, allow_dry_run_fallback: bool = False
+    name: str, *, allow_dry_run_fallback: bool = False, option: str = "--backend"
 ) -> BackendResolution:
     """Build the backend for ``name`` without swapping real audio for silence.
 
@@ -392,6 +392,7 @@ def resolve_audio_backend(
     become dry-run and ``afplay`` would skip every cue. That raises
     ``AudioBackendFallbackError`` unless ``allow_dry_run_fallback`` is set, which
     returns the dry-run backend instead. Other names go to ``create_audio_backend()``.
+    ``option`` is the flag the error names (``--cue-backend`` in the app).
     Finding ``afplay`` does not show that the intended speaker is connected or audible.
     """
     if name in ("system", "afplay"):
@@ -401,7 +402,7 @@ def resolve_audio_backend(
             backend = DryRunAudioBackend()
         else:
             raise AudioBackendFallbackError(
-                f"--backend {name} needs afplay, which is not on PATH, so no cue would make "
+                f"{option} {name} needs afplay, which is not on PATH, so no cue would make "
                 "a sound. Run it on macOS with /usr/bin on PATH, or add --allow-dry-run "
                 "to run without sound on purpose."
             )

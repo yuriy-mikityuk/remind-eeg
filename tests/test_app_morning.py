@@ -6,15 +6,24 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest.mock import patch
 
 from muse_tmr.app import AppConfig, create_local_app_server, morning
+from muse_tmr.audio import CueLibrary, CueMetadata, MockAudioBackend, VolumeCalibration, save_volume_calibration
 from muse_tmr.protocol import NightPuzzleSession, PuzzleCatalog, PuzzleCueAssignment, PuzzleTask
-from muse_tmr.reports import load_dream_report, load_morning_retest
+from muse_tmr.reports import cue_recall_order, load_cue_recall_test, load_dream_report, load_morning_retest
 
 PUZZLES = ("p1", "p2", "p3", "p4")
 
 
-def write_night(protocol_dir, session_file="night-001_puzzles.json", session_id="night-001", catalog_file="puzzle_catalog.json", assignment=True):
+def write_night(
+    protocol_dir,
+    session_file="night-001_puzzles.json",
+    session_id="night-001",
+    catalog_file="puzzle_catalog.json",
+    assignment=True,
+    cued=("p2", "p3"),
+):
     protocol_dir.mkdir(parents=True, exist_ok=True)
     PuzzleCatalog(
         puzzles=tuple(PuzzleTask(puzzle_id=puzzle, prompt=f"Prompt {puzzle}", solution=f"Answer {puzzle}") for puzzle in PUZZLES)
@@ -22,8 +31,28 @@ def write_night(protocol_dir, session_file="night-001_puzzles.json", session_id=
     NightPuzzleSession(session_id=session_id, puzzle_ids=PUZZLES, puzzle_count=4).save(protocol_dir / session_file)
     if assignment:
         PuzzleCueAssignment(
-            session_id=session_id, cued_puzzle_ids=("p2", "p3"), uncued_puzzle_ids=("p1", "p4"), seed=7
+            session_id=session_id,
+            cued_puzzle_ids=tuple(cued),
+            uncued_puzzle_ids=tuple(puzzle for puzzle in PUZZLES if puzzle not in cued),
+            seed=7,
         ).save(protocol_dir / f"{session_id}_assignment.json")
+
+
+def write_sounds(data_dir, puzzles=PUZZLES):
+    """A cue library in data/cues (a generated tone per puzzle) and a calibration."""
+    CueLibrary(
+        cues=tuple(
+            CueMetadata(puzzle, "generated_tone", 0.2, protocol="puzzle", frequency_hz=300.0 + 100 * index, volume_hint=0.1)
+            for index, puzzle in enumerate(puzzles)
+        )
+    ).save(data_dir / "cues" / "starter.json")
+    save_volume_calibration(VolumeCalibration("Speaker", 0.01, 0.02, 0.04), data_dir / "calibration" / "volume_calibration.json")
+
+
+def recall_body(answers, **overrides):
+    body = {"night": "night-001", "answers": {str(trial): answer for trial, answer in answers.items()}}
+    body.update(overrides)
+    return body
 
 
 def dream_body(**overrides):
@@ -89,6 +118,7 @@ class TestMorningNights(unittest.TestCase):
 
     def test_the_page_never_learns_which_puzzles_were_cued(self):
         write_night(self.protocol)
+        write_sounds(self.protocol.parent)
         morning.save_retest(self.protocol, self.reports, retest_body())
 
         payload = morning.night_payload(self.protocol, self.reports, "night-001")
@@ -99,6 +129,62 @@ class TestMorningNights(unittest.TestCase):
         # The saved file keeps the conditions for the analysis.
         saved = load_morning_retest(self.reports / "night-001_retest.json")
         self.assertEqual({r.puzzle_id: r.cue_condition for r in saved.results}, {"p1": "uncued", "p2": "cued", "p3": "cued", "p4": "uncued"})
+
+    def test_the_sound_check_gives_the_split_away_nowhere(self):
+        """Its payload, the order, number and labels of its sounds and what playing one
+        answers are the same whichever puzzles were cued, and say nothing of the sounds."""
+        seen = {}
+        for split in (("p2", "p3"), ("p1", "p4"), ("p4",)):
+            with tempfile.TemporaryDirectory() as tmp:
+                protocol = Path(tmp) / "data" / "protocol"
+                reports = Path(tmp) / "data" / "reports"
+                write_night(protocol, cued=split)
+                write_sounds(protocol.parent)
+                recall = morning.night_payload(protocol, reports, "night-001")["cue_recall"]
+                plays = [
+                    morning.play_cue_recall(protocol, reports, {"night": "night-001", "trial": trial}, backend=MockAudioBackend())
+                    for trial in (1, 2, 3, 4)
+                ]
+                order = cue_recall_order(morning.find_nights(protocol)[0].session)
+                morning.save_cue_recall(protocol, reports, recall_body({1: order[0], 2: None, 3: "p1", 4: "p1"}))
+                after = morning.night_payload(protocol, reports, "night-001")
+                saved = load_cue_recall_test(reports / "night-001_cue_recall.json")
+            seen[split] = (recall, plays, after["cue_recall"]["trials"], after["cue_recall"]["saved"]["answers"])
+            self.assertEqual(recall["trials"], [{"trial": 1}, {"trial": 2}, {"trial": 3}, {"trial": 4}])
+            self.assertTrue(recall["available"])
+            self.assertEqual(plays[0], {"trial": 1, "status": "played", "backend": "mock"})
+            text = json.dumps([recall, plays, after])
+            for leak in ("cued", "cue_condition", "uncued", "Answer p", "correct", "frequency", "300.0"):
+                self.assertNotIn(leak, text, split)
+            self.assertEqual(after["cue_recall"]["saved"]["answers"], {"1": order[0], "2": None, "3": "p1", "4": "p1"})
+            self.assertTrue(after["cue_recall_saved"])
+            # The file keeps the conditions, for the analysis only.
+            self.assertEqual(
+                {trial.puzzle_id for trial in saved.trials if trial.cue_condition == "cued"}, set(split)
+            )
+        first, *others = seen.values()
+        for other in others:
+            self.assertEqual(other, first)
+
+    def test_a_library_missing_some_sounds_is_reported_without_naming_them(self):
+        write_night(self.protocol)
+        write_sounds(self.protocol.parent, puzzles=("p2", "p3"))
+        recall = morning.night_payload(self.protocol, self.reports, "night-001")["cue_recall"]
+        self.assertFalse(recall["available"])
+        self.assertEqual(len(recall["trials"]), 4)
+        self.assertIn("2 of the night's 4 puzzles", recall["unavailable_reason"])
+        for puzzle in PUZZLES:
+            self.assertNotIn(puzzle, recall["unavailable_reason"])
+        with self.assertRaises(morning.CueRecallUnavailable):
+            morning.play_cue_recall(self.protocol, self.reports, {"night": "night-001", "trial": 1}, backend=MockAudioBackend())
+
+    def test_the_sound_check_needs_a_calibration(self):
+        write_night(self.protocol)
+        write_sounds(self.protocol.parent)
+        (self.protocol.parent / "calibration" / "volume_calibration.json").unlink()
+        recall = morning.night_payload(self.protocol, self.reports, "night-001")["cue_recall"]
+        self.assertFalse(recall["available"])
+        self.assertIn("calibrate-volume", recall["unavailable_reason"])
 
 
 class TestMorningSaving(unittest.TestCase):
@@ -189,6 +275,31 @@ class TestMorningEndpoints(unittest.TestCase):
                 return response.status, json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read().decode("utf-8"))
+
+    def test_the_sound_check_plays_through_the_resolved_backend(self):
+        write_sounds(Path(self._tmp.name) / "data")
+        self.server.app_state.config = AppConfig(port=0, source="mock", cue_backend="mock")
+        status, payload = self.request("/api/morning/cue-recall/play", {"night": "night-001", "trial": 2})
+        self.assertEqual((status, payload), (200, {"trial": 2, "status": "played", "backend": "mock"}))
+        self.assertEqual(self.request("/api/morning/cue-recall/play", {"night": "night-001", "trial": 9})[0], 400)
+        self.assertEqual(self.request("/api/morning/cue-recall/play", {"night": "nope", "trial": 1})[0], 404)
+
+        self.server.app_state.config = AppConfig(port=0, source="mock", cue_backend="system")
+        with patch("muse_tmr.audio.audio_player.shutil.which", return_value=None):
+            status, payload = self.request("/api/morning/cue-recall/play", {"night": "night-001", "trial": 1})
+            self.assertEqual(status, 409)
+            self.assertIn("--cue-backend system needs afplay", payload["error"])
+            self.assertIn("--allow-dry-run", payload["error"])
+            self.server.app_state.config = AppConfig(port=0, source="mock", cue_backend="system", allow_dry_run=True)
+            status, payload = self.request("/api/morning/cue-recall/play", {"night": "night-001", "trial": 1})
+            self.assertEqual((status, payload["backend"]), (200, "dry-run"))
+
+        answers = {1: "p1", 2: "p2", 3: None, 4: "p4"}
+        self.assertEqual(self.request("/api/morning/cue-recall", recall_body(answers))[0], 200)
+        self.assertEqual(self.request("/api/morning/cue-recall", recall_body(answers))[0], 409)
+        self.assertEqual(self.request("/api/morning/cue-recall", recall_body({1: "p1"}, replace=True))[0], 400)
+        status, payload = self.request("/api/morning/night?name=night-001")
+        self.assertEqual(payload["cue_recall"]["saved"]["answers"], {"1": "p1", "2": "p2", "3": None, "4": "p4"})
 
     def test_lists_shows_and_saves_a_night(self):
         status, payload = self.request("/api/morning/nights")

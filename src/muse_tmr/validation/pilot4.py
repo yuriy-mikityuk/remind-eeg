@@ -51,8 +51,9 @@ from muse_tmr.validation.gate_log import (
     write_rem_gate_decisions,
 )
 
-# 2 adds first_epoch_start, rem_gate_decisions_path and cue_arousal (#227).
-PILOT4_SCHEMA_VERSION = 2
+# 2 adds first_epoch_start, rem_gate_decisions_path and cue_arousal (#227); 3 adds
+# protocol, the preset block of the night (#231).
+PILOT4_SCHEMA_VERSION = 3
 # What the sleeper says about an awakening: did a cue wake them?
 AWAKENING_ATTRIBUTIONS = ("yes", "no", "unsure")
 
@@ -101,6 +102,9 @@ class Pilot4CueingConfig:
     require_tlr_block: bool = False
     # Score the night's cue-locked arousal proxies at its end (reports.cue_arousal).
     score_cue_arousal: bool = True
+    # The protocol preset block (ProtocolPreset.manifest()) metadata.json and the
+    # summary record; the configs above are what runs.
+    protocol: Mapping[str, object] = field(default_factory=dict)
 
     def validate(self) -> None:
         if self.duration_seconds <= 0:
@@ -169,6 +173,8 @@ class Pilot4CueingSummary:
     rem_gate_decisions_path: str = ""
     # The scorer's figures for this night (reports.cue_arousal), or its status.
     cue_arousal: Mapping[str, object] = field(default_factory=dict)
+    # The protocol preset block of the night, as in metadata.json.
+    protocol: Mapping[str, object] = field(default_factory=dict)
     generated_at_utc: str = ""
     schema_version: int = PILOT4_SCHEMA_VERSION
     pilot_id: str = "m8_pilot4_low_volume_rem_gated_cueing"
@@ -217,6 +223,7 @@ class Pilot4CueingSummary:
             "first_epoch_start": self.first_epoch_start,
             "rem_gate_decisions_path": self.rem_gate_decisions_path,
             "cue_arousal": dict(self.cue_arousal),
+            "protocol": dict(self.protocol) if self.protocol else None,
             "modality_counts": dict(self.modality_counts),
             "scheduler_event_type_counts": dict(self.scheduler_event_type_counts),
             "audio_status_counts": dict(self.audio_status_counts),
@@ -373,7 +380,15 @@ async def run_pilot4_cueing_night(
     started_monotonic = time.monotonic()
     deadline = started_monotonic + config.duration_seconds
     metadata = await source.connect()
-    _write_metadata(metadata_path, metadata, config, calibration, started_at_dt, resolved_backend.name)
+    _write_metadata(
+        metadata_path,
+        metadata,
+        config,
+        calibration,
+        started_at_dt,
+        resolved_backend.name,
+        tlr_block_plan=tlr_block_plan,
+    )
     _append_jsonl(
         recording_events_path,
         {
@@ -774,6 +789,7 @@ def _build_summary(
         first_play_seconds=state.first_play_seconds,
         first_epoch_start=state.first_epoch_start,
         rem_gate_decisions_path=str(rem_gate_decisions_path),
+        protocol=dict(config.protocol),
         pilot_id=config.pilot_id,
     )
 
@@ -882,10 +898,14 @@ def _write_metadata(
     calibration: VolumeCalibration,
     started_at: dt.datetime,
     resolved_backend_name: str,
+    *,
+    tlr_block_plan: Optional[TlrBlockPlan] = None,
 ) -> None:
     payload = {
         "started_at": started_at.isoformat(),
         "pilot_id": config.pilot_id,
+        "protocol": dict(config.protocol) if config.protocol else None,
+        "tlr_block_plan": tlr_block_plan.to_dict() if tlr_block_plan is not None else None,
         "source": {
             "source_name": metadata.source_name,
             "device_name": metadata.device_name,

@@ -101,6 +101,8 @@ class Pilot3ReplayCueSimulationReport:
     # play events injected into gate-open epochs to check where the cue arousal scorer
     # puts its windows; never from the scheduler and never in scheduler_events or cue_plan.
     injected_cues: Tuple[TmrSchedulerEvent, ...] = ()
+    # The protocol preset block of the run (ProtocolPreset.manifest()), or empty.
+    protocol: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "criteria", tuple(self.criteria))
@@ -133,6 +135,7 @@ class Pilot3ReplayCueSimulationReport:
             "session_id": self.session_id,
             "audio_backend": self.audio_backend,
             "audio_playback_executed": self.audio_playback_executed,
+            "protocol": dict(self.protocol) if self.protocol else None,
             "criteria": [criterion.to_dict() for criterion in self.criteria],
             "metrics": dict(self.metrics),
             "cue_plan": [event.to_dict() for event in self.cue_plan],
@@ -172,6 +175,7 @@ async def simulate_replay_cue_plan(
     scheduler_config: Optional[TmrSchedulerConfig] = None,
     arousal_guard_config: Optional[ArousalGuardConfig] = None,
     inject_cues_every_seconds: Optional[float] = None,
+    protocol: Optional[Mapping[str, object]] = None,
 ) -> Pilot3ReplayCueSimulationReport:
     epoch_config = epoch_config or EpochConfig()
     replay = ReplaySession(
@@ -201,6 +205,7 @@ async def simulate_replay_cue_plan(
         arousal_guard_config=arousal_guard_config,
         stride_seconds=epoch_config.stride_seconds,
         inject_cues_every_seconds=inject_cues_every_seconds,
+        protocol=protocol,
     )
 
 
@@ -218,6 +223,7 @@ def simulate_cue_plan_from_epochs(
     arousal_guard_config: Optional[ArousalGuardConfig] = None,
     stride_seconds: Optional[float] = None,
     inject_cues_every_seconds: Optional[float] = None,
+    protocol: Optional[Mapping[str, object]] = None,
 ) -> Pilot3ReplayCueSimulationReport:
     """Run the detector, gate, guard and scheduler over consecutive epochs of one session.
 
@@ -232,6 +238,9 @@ def simulate_cue_plan_from_epochs(
     play at the end of the epoch, so the cue arousal scorer's windows can be checked on a
     replayed night. They go into ``injected_cues`` only: the scheduler never sees them and
     the scheduler events stay as they are without them.
+
+    ``protocol`` is the preset block (``ProtocolPreset.manifest()``) the report records;
+    the configs passed here are what runs.
     """
     assignment.validate_against_session(session)
     _validate_scheduled_cues(catalog, assignment, cue_library)
@@ -328,6 +337,7 @@ def simulate_cue_plan_from_epochs(
         audio_backend="mock",
         audio_playback_executed=False,
         injected_cues=tuple(injected_cues),
+        protocol=dict(protocol or {}),
     )
 
 

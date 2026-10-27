@@ -599,7 +599,7 @@ class GateLogTest(unittest.IsolatedAsyncioTestCase):
             [(record.gate_open, record.state) for record in pilot4_records],
             [(result.gate_decision.gate_open, result.gate_decision.state) for result in report.epoch_results],
         )
-        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["schema_version"], 3)
         self.assertEqual(payload["first_epoch_start"], 1000.0)
         self.assertEqual(report.metrics["first_epoch_start"], 1000.0)
         self.assertTrue(payload["rem_gate_decisions_path"].endswith(REM_GATE_DECISIONS_FILENAME))
