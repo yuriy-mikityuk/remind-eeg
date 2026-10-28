@@ -748,29 +748,31 @@ def resolve_named_pair(
 ) -> Dict[str, object]:
     """The (enter, exit) of a threshold set and where it came from.
 
-    ``p21`` is the preset's pair. A named set (``boas_v1``) comes from ``presets.py`` once
-    it holds values, and then only for the splits it was fitted on; before that from the
-    fit step of this output directory. NotFittedError when neither has it,
-    SplitOverlapError when ``presets.py`` has it for other splits.
+    ``p21`` is the preset's pair. A named set (``boas_v1``) comes from ``presets.py`` on
+    the splits it was fitted on. On other splits, or while ``presets.py`` holds no values
+    for it, it comes from ``fit``, the fit step of this output directory on these splits,
+    so a pair is never scored on a participant it was fitted on. NotFittedError when
+    neither has it; SplitOverlapError when only ``presets.py`` has it, for other splits.
     """
     if name == P21:
         enter, exit_ = preset_gate_thresholds(P21)
         return {"enter": enter, "exit": exit_, "source": "presets.preset_gate_thresholds('p21')"}
     stored = named_gate_thresholds(name)
-    if stored is not None:
-        if stored.splits_sha256 != splits_sha256:
-            raise SplitOverlapError(
-                f"{name} in presets.py was fitted on the fit fold of splits {stored.splits_sha256[:12]}, "
-                f"not of these ({splits_sha256[:12]}); its report nights may hold participants it was fitted on"
-            )
+    if stored is not None and stored.splits_sha256 == splits_sha256:
         return {"enter": stored.enter_threshold, "exit": stored.exit_threshold, "source": "presets.py"}
     fitted = (fit or {}).get("gate_thresholds", {}).get(name) if fit else None  # type: ignore[union-attr]
-    if not fitted:
-        raise NotFittedError(
-            f"{name} has no values yet: presets.py does not hold them and no fit step has run in this output "
-            "directory; run validate-external with fit nights selected first"
+    if fitted:
+        return {"enter": fitted["enter"], "exit": fitted["exit"], "source": FIT_FILENAME}
+    if stored is not None:
+        raise SplitOverlapError(
+            f"{name} in presets.py was fitted on the fit fold of splits {stored.splits_sha256[:12]}, "
+            f"not of these ({splits_sha256[:12]}), and no fit step has run on these; its report nights may "
+            "hold participants it was fitted on"
         )
-    return {"enter": fitted["enter"], "exit": fitted["exit"], "source": FIT_FILENAME}
+    raise NotFittedError(
+        f"{name} has no values yet: presets.py does not hold them and no fit step has run in this output "
+        "directory; run validate-external with fit nights selected first"
+    )
 
 
 def usable_fit(output_dir: Path, splits_sha: str) -> Tuple[Optional[Dict[str, object]], Optional[str]]:
@@ -874,15 +876,24 @@ def run_external_validation(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # A run without fit nights reports with the fit already here, and only with one made
-    # on these splits by this code, beside the model it records.
+    # on these splits by this code, beside the model it records. A named set that
+    # presets.py holds for other splits needs that fit as much as one without values.
     prior_fit, unusable = usable_fit(output_dir, splits_sha)
     for name in config.gate_thresholds:
-        if name != P21 and not fit_nights and prior_fit is None and named_gate_thresholds(name) is None:
-            raise NotFittedError(
-                f"--gate-thresholds {name} needs the fit step: no fit-fold night is selected and "
-                + (f"{output_dir / FIT_FILENAME} cannot be used: {unusable}" if unusable
-                   else f"{output_dir / FIT_FILENAME} does not exist")
-            )
+        if name == P21 or fit_nights or prior_fit is not None:
+            continue
+        stored = named_gate_thresholds(name)
+        if stored is not None and stored.splits_sha256 == splits_sha:
+            continue
+        pinned = (
+            f"presets.py holds it for the splits {stored.splits_sha256[:12]}, not for these ({splits_sha[:12]}), "
+            if stored is not None else ""
+        )
+        raise NotFittedError(
+            f"--gate-thresholds {name} needs the fit step: {pinned}no fit-fold night is selected and "
+            + (f"{output_dir / FIT_FILENAME} cannot be used: {unusable}" if unusable
+               else f"{output_dir / FIT_FILENAME} does not exist")
+        )
     if unusable and not fit_nights:
         log(f"{FIT_FILENAME} is not used, so the report has no personal model: {unusable}")
 
@@ -1145,6 +1156,14 @@ def _report(config, output_dir: Path, report_nights, by_id, fit, splits, splits_
     if overlap:
         raise SplitOverlapError(f"report nights of participants the fit used: pid {', '.join(overlap)}")
     pairs = {name: resolve_named_pair(name, fit, splits_sha) for name in config.gate_thresholds}
+    for name, pair in pairs.items():
+        stored = named_gate_thresholds(name) if name != P21 else None
+        if stored is not None and pair["source"] == FIT_FILENAME:
+            log(
+                f"{name}: presets.py holds it for the splits {stored.splits_sha256[:12]}; on these "
+                f"({splits_sha[:12]}) the report uses the pair this run's fit step chose, enter {pair['enter']:g} "
+                f"exit {pair['exit']:g} ({FIT_FILENAME})"
+            )
     model = None
     model_sha = None
     personal_pair = None

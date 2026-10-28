@@ -1,0 +1,529 @@
+{
+  "dataset": "boas",
+  "dataset_doi": "10.18112/openneuro.ds005555.v1.1.3",
+  "dataset_id": "ds005555",
+  "dataset_version": "1.1.3",
+  "fit_fraction": 0.5,
+  "folds": {
+    "fit": [
+      {
+        "pid": "2",
+        "recording_id": "sub-4"
+      },
+      {
+        "pid": "3",
+        "recording_id": "sub-5"
+      },
+      {
+        "pid": "5",
+        "recording_id": "sub-7"
+      },
+      {
+        "pid": "90",
+        "recording_id": "sub-9"
+      },
+      {
+        "pid": "91",
+        "recording_id": "sub-10"
+      },
+      {
+        "pid": "8",
+        "recording_id": "sub-11"
+      },
+      {
+        "pid": "91",
+        "recording_id": "sub-13"
+      },
+      {
+        "pid": "9",
+        "recording_id": "sub-14"
+      },
+      {
+        "pid": "10",
+        "recording_id": "sub-15"
+      },
+      {
+        "pid": "12",
+        "recording_id": "sub-18"
+      },
+      {
+        "pid": "93",
+        "recording_id": "sub-19"
+      },
+      {
+        "pid": "13",
+        "recording_id": "sub-20"
+      },
+      {
+        "pid": "93",
+        "recording_id": "sub-21"
+      },
+      {
+        "pid": "15",
+        "recording_id": "sub-23"
+      },
+      {
+        "pid": "16",
+        "recording_id": "sub-24"
+      },
+      {
+        "pid": "17",
+        "recording_id": "sub-25"
+      },
+      {
+        "pid": "18",
+        "recording_id": "sub-26"
+      },
+      {
+        "pid": "21",
+        "recording_id": "sub-29"
+      },
+      {
+        "pid": "94",
+        "recording_id": "sub-30"
+      },
+      {
+        "pid": "95",
+        "recording_id": "sub-31"
+      },
+      {
+        "pid": "83",
+        "recording_id": "sub-32"
+      },
+      {
+        "pid": "22",
+        "recording_id": "sub-34"
+      },
+      {
+        "pid": "83",
+        "recording_id": "sub-35"
+      },
+      {
+        "pid": "87",
+        "recording_id": "sub-38"
+      },
+      {
+        "pid": "85",
+        "recording_id": "sub-39"
+      },
+      {
+        "pid": "83",
+        "recording_id": "sub-41"
+      },
+      {
+        "pid": "87",
+        "recording_id": "sub-43"
+      },
+      {
+        "pid": "23",
+        "recording_id": "sub-44"
+      },
+      {
+        "pid": "24",
+        "recording_id": "sub-45"
+      },
+      {
+        "pid": "26",
+        "recording_id": "sub-46"
+      },
+      {
+        "pid": "87",
+        "recording_id": "sub-47"
+      },
+      {
+        "pid": "28",
+        "recording_id": "sub-48"
+      },
+      {
+        "pid": "88",
+        "recording_id": "sub-50"
+      },
+      {
+        "pid": "88",
+        "recording_id": "sub-53"
+      },
+      {
+        "pid": "88",
+        "recording_id": "sub-54"
+      },
+      {
+        "pid": "77",
+        "recording_id": "sub-55"
+      },
+      {
+        "pid": "77",
+        "recording_id": "sub-57"
+      },
+      {
+        "pid": "80",
+        "recording_id": "sub-60"
+      },
+      {
+        "pid": "80",
+        "recording_id": "sub-62"
+      },
+      {
+        "pid": "32",
+        "recording_id": "sub-67"
+      },
+      {
+        "pid": "33",
+        "recording_id": "sub-68"
+      },
+      {
+        "pid": "34",
+        "recording_id": "sub-69"
+      },
+      {
+        "pid": "35",
+        "recording_id": "sub-70"
+      },
+      {
+        "pid": "38",
+        "recording_id": "sub-73"
+      },
+      {
+        "pid": "41",
+        "recording_id": "sub-76"
+      },
+      {
+        "pid": "45",
+        "recording_id": "sub-80"
+      },
+      {
+        "pid": "48",
+        "recording_id": "sub-82"
+      },
+      {
+        "pid": "50",
+        "recording_id": "sub-83"
+      },
+      {
+        "pid": "53",
+        "recording_id": "sub-86"
+      },
+      {
+        "pid": "54",
+        "recording_id": "sub-87"
+      },
+      {
+        "pid": "58",
+        "recording_id": "sub-91"
+      },
+      {
+        "pid": "60",
+        "recording_id": "sub-93"
+      },
+      {
+        "pid": "63",
+        "recording_id": "sub-96"
+      },
+      {
+        "pid": "65",
+        "recording_id": "sub-98"
+      },
+      {
+        "pid": "69",
+        "recording_id": "sub-102"
+      },
+      {
+        "pid": "73",
+        "recording_id": "sub-105"
+      },
+      {
+        "pid": "74",
+        "recording_id": "sub-106"
+      },
+      {
+        "pid": "98",
+        "recording_id": "sub-115"
+      },
+      {
+        "pid": "98",
+        "recording_id": "sub-116"
+      },
+      {
+        "pid": "98",
+        "recording_id": "sub-117"
+      },
+      {
+        "pid": "100",
+        "recording_id": "sub-121"
+      },
+      {
+        "pid": "101",
+        "recording_id": "sub-122"
+      },
+      {
+        "pid": "15",
+        "recording_id": "sub-124"
+      },
+      {
+        "pid": "108",
+        "recording_id": "sub-128"
+      }
+    ],
+    "report": [
+      {
+        "pid": "89",
+        "recording_id": "sub-1"
+      },
+      {
+        "pid": "89",
+        "recording_id": "sub-2"
+      },
+      {
+        "pid": "1",
+        "recording_id": "sub-3"
+      },
+      {
+        "pid": "4",
+        "recording_id": "sub-6"
+      },
+      {
+        "pid": "6",
+        "recording_id": "sub-8"
+      },
+      {
+        "pid": "92",
+        "recording_id": "sub-12"
+      },
+      {
+        "pid": "11",
+        "recording_id": "sub-16"
+      },
+      {
+        "pid": "92",
+        "recording_id": "sub-17"
+      },
+      {
+        "pid": "14",
+        "recording_id": "sub-22"
+      },
+      {
+        "pid": "19",
+        "recording_id": "sub-27"
+      },
+      {
+        "pid": "20",
+        "recording_id": "sub-28"
+      },
+      {
+        "pid": "84",
+        "recording_id": "sub-33"
+      },
+      {
+        "pid": "84",
+        "recording_id": "sub-36"
+      },
+      {
+        "pid": "86",
+        "recording_id": "sub-37"
+      },
+      {
+        "pid": "86",
+        "recording_id": "sub-40"
+      },
+      {
+        "pid": "84",
+        "recording_id": "sub-42"
+      },
+      {
+        "pid": "29",
+        "recording_id": "sub-49"
+      },
+      {
+        "pid": "30",
+        "recording_id": "sub-51"
+      },
+      {
+        "pid": "31",
+        "recording_id": "sub-52"
+      },
+      {
+        "pid": "78",
+        "recording_id": "sub-56"
+      },
+      {
+        "pid": "78",
+        "recording_id": "sub-58"
+      },
+      {
+        "pid": "79",
+        "recording_id": "sub-59"
+      },
+      {
+        "pid": "79",
+        "recording_id": "sub-61"
+      },
+      {
+        "pid": "81",
+        "recording_id": "sub-63"
+      },
+      {
+        "pid": "82",
+        "recording_id": "sub-64"
+      },
+      {
+        "pid": "81",
+        "recording_id": "sub-65"
+      },
+      {
+        "pid": "82",
+        "recording_id": "sub-66"
+      },
+      {
+        "pid": "36",
+        "recording_id": "sub-71"
+      },
+      {
+        "pid": "37",
+        "recording_id": "sub-72"
+      },
+      {
+        "pid": "39",
+        "recording_id": "sub-74"
+      },
+      {
+        "pid": "40",
+        "recording_id": "sub-75"
+      },
+      {
+        "pid": "42",
+        "recording_id": "sub-77"
+      },
+      {
+        "pid": "43",
+        "recording_id": "sub-78"
+      },
+      {
+        "pid": "44",
+        "recording_id": "sub-79"
+      },
+      {
+        "pid": "46",
+        "recording_id": "sub-81"
+      },
+      {
+        "pid": "51",
+        "recording_id": "sub-84"
+      },
+      {
+        "pid": "52",
+        "recording_id": "sub-85"
+      },
+      {
+        "pid": "55",
+        "recording_id": "sub-88"
+      },
+      {
+        "pid": "56",
+        "recording_id": "sub-89"
+      },
+      {
+        "pid": "57",
+        "recording_id": "sub-90"
+      },
+      {
+        "pid": "59",
+        "recording_id": "sub-92"
+      },
+      {
+        "pid": "61",
+        "recording_id": "sub-94"
+      },
+      {
+        "pid": "62",
+        "recording_id": "sub-95"
+      },
+      {
+        "pid": "64",
+        "recording_id": "sub-97"
+      },
+      {
+        "pid": "66",
+        "recording_id": "sub-99"
+      },
+      {
+        "pid": "67",
+        "recording_id": "sub-100"
+      },
+      {
+        "pid": "68",
+        "recording_id": "sub-101"
+      },
+      {
+        "pid": "71",
+        "recording_id": "sub-103"
+      },
+      {
+        "pid": "72",
+        "recording_id": "sub-104"
+      },
+      {
+        "pid": "75",
+        "recording_id": "sub-107"
+      },
+      {
+        "pid": "76",
+        "recording_id": "sub-108"
+      },
+      {
+        "pid": "96",
+        "recording_id": "sub-109"
+      },
+      {
+        "pid": "96",
+        "recording_id": "sub-110"
+      },
+      {
+        "pid": "96",
+        "recording_id": "sub-111"
+      },
+      {
+        "pid": "97",
+        "recording_id": "sub-112"
+      },
+      {
+        "pid": "97",
+        "recording_id": "sub-113"
+      },
+      {
+        "pid": "97",
+        "recording_id": "sub-114"
+      },
+      {
+        "pid": "99",
+        "recording_id": "sub-118"
+      },
+      {
+        "pid": "99",
+        "recording_id": "sub-119"
+      },
+      {
+        "pid": "99",
+        "recording_id": "sub-120"
+      },
+      {
+        "pid": "102",
+        "recording_id": "sub-123"
+      },
+      {
+        "pid": "104",
+        "recording_id": "sub-125"
+      },
+      {
+        "pid": "106",
+        "recording_id": "sub-126"
+      },
+      {
+        "pid": "107",
+        "recording_id": "sub-127"
+      }
+    ]
+  },
+  "grouping": "pid",
+  "participants_tsv_sha256": "0591b6323bd101af1c6871053aea4351a6cdd12e08f2aeff9a084b4692a03110",
+  "schema_version": 1,
+  "seed": 0
+}

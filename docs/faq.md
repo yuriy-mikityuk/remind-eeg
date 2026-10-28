@@ -4,7 +4,9 @@ Answers to what has come up in the issues, mostly #108, #112, #160 and #167. Dat
 
 ## How accurate is the REM detection?
 
-Nobody knows yet. The only figures come from one EEG-only night, `overnight_20260707` on `p21`, scored against GSSC, an automated stager, not against PSG or a human scorer. The `p21` gate thresholds were tuned on that night and reported on the same night, so they are in-sample. Against GSSC the gate reached a binary REM-vs-not κ of 0.30 with precision 0.30 and recall 0.80 ([PR #115](https://github.com/yuriy-mikityuk/remind-eeg/pull/115)). That κ is not comparable with the five-class κ of sleep-staging papers, such as the vendor's 0.76 for Muse-S against PSG.
+Nobody knows yet for a Muse night. The only Muse figures come from one EEG-only night, `overnight_20260707` on `p21`, scored against GSSC, an automated stager, not against PSG or a human scorer. The `p21` gate thresholds were tuned on that night and reported on the same night, so they are in-sample. Against GSSC the gate reached a binary REM-vs-not κ of 0.30 with precision 0.30 and recall 0.80 ([PR #115](https://github.com/yuriy-mikityuk/remind-eeg/pull/115)). That κ is not comparable with the five-class κ of sleep-staging papers, such as the vendor's 0.76 for Muse-S against PSG.
+
+Against PSG the detector has only been run on another headband. On the open BOAS dataset, a Bitbrain Ikon referenced to the mastoid, with its EEG alone, the gate reached a binary REM κ of 0.155 on 64 nights with a pair fitted on the other 64, and at the `p21` pair, tuned on a Muse night, it hardly opened ([`validation_external.md`](validation_external.md)).
 
 GSSC itself was trained mostly on C3, C4, F3, F4 from NSRR PSG, and there is no published evaluation of it on forehead-only EEG like the Muse AF7/AF8. Earlier versions of the code called the `p21` pair `VALIDATED` and GSSC `frontal-trained`; both words were dropped for that reason. Getting a real reference needs nights scored against PSG or by a person, tracked in [#116](https://github.com/yuriy-mikityuk/remind-eeg/issues/116).
 

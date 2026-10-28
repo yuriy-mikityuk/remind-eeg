@@ -1,12 +1,12 @@
 # Roadmap
 
-Dated 2026-10-27. Each item's issue has its live state; this page sums them up and is updated by hand.
+Dated 2026-10-28. Each item's issue has its live state; this page sums them up and is updated by hand.
 
 ## Where REMind stands
 
 REMind is n = 1 research software, not a medical device, with one maintainer. Where the evidence stands:
 
-- Every accuracy figure comes from one EEG-only night, scored against GSSC, an automated stager used as a proxy, not PSG. The `p21` gate thresholds were tuned on that night and reported on it, so they are not a held-out result.
+- Every accuracy figure for a Muse night comes from one EEG-only night, scored against GSSC, an automated stager used as a proxy, not PSG. The `p21` gate thresholds were tuned on that night and reported on it, so they are not a held-out result. Against PSG the detector has only been run on another headband, in the open BOAS dataset, where it is weak ([`docs/validation_external.md`](docs/validation_external.md)).
 - No night with sleep-time audio has been run. Pilots 4 and 5 exist as tooling only.
 - The heuristic REM detector is effectively one feature, `low_delta_power`. The count of eye-movement deflections meant to replace the saturated eye-movement proxy is computed at weight 0 and has only been checked on synthetic input. [#116](https://github.com/yuriy-mikityuk/remind-eeg/issues/116), open, reweights the detector and re-grids the `p21` thresholds once there are REM-bearing nights to fit them on.
 - How long after REM onset the first cue comes is measured on synthetic input only. [#167](https://github.com/yuriy-mikityuk/remind-eeg/issues/167) was closed by [#242](https://github.com/yuriy-mikityuk/remind-eeg/pull/242) on 2026-10-23, once the gate counted real time at any stride; no real night has measured it.
@@ -18,10 +18,10 @@ The figures and their sources are in the README's [project status](README.md#pro
 
 The research of October 2026 ([`docs/research/2026-10-uniqueness/`](docs/research/2026-10-uniqueness/report.md)) ended in ten initiatives, filed as sub-issues of [EPIC #1](https://github.com/yuriy-mikityuk/remind-eeg/issues/1).
 
-| Initiative | State on 2026-10-27 |
+| Initiative | State on 2026-10-28 |
 |---|---|
 | 1. Replace the saturated eye-movement proxy, refit the detector, publish the first-cue latency ([#225](https://github.com/yuriy-mikityuk/remind-eeg/issues/225)) | 1a, 1b and 1c merged ([#239](https://github.com/yuriy-mikityuk/remind-eeg/pull/239), [#241](https://github.com/yuriy-mikityuk/remind-eeg/pull/241), [#242](https://github.com/yuriy-mikityuk/remind-eeg/pull/242)). The refit, 1d, waits for two or more REM-bearing `p21` nights. |
-| 2. Validate the detector and the gate against PSG consensus on the open BOAS dataset ([#226](https://github.com/yuriy-mikityuk/remind-eeg/issues/226)) | Not started. |
+| 2. Validate the detector and the gate against PSG consensus on the open BOAS dataset ([#226](https://github.com/yuriy-mikityuk/remind-eeg/issues/226)) | The harness in [#268](https://github.com/yuriy-mikityuk/remind-eeg/pull/268), then the run over all 128 nights: its splits, its pooled metrics and the opt-in `boas_v1` pair are committed, and the results are in [`docs/validation_external.md`](docs/validation_external.md). |
 | 3. Cue-locked arousal scoring with quiet control windows ([#227](https://github.com/yuriy-mikityuk/remind-eeg/issues/227)) | The scorer, the gate log and the Pilot 3, 4 and 5 wiring in [#261](https://github.com/yuriy-mikityuk/remind-eeg/pull/261). Scoring a night with sound waits on the maintainer. |
 | 4. Sham and no-cue nights, N-of-1 blocks, delayed retest, blind incorporation coding ([#228](https://github.com/yuriy-mikityuk/remind-eeg/issues/228)) | 4a: sealed night schedules, cue, sham and no-cue arms in the scheduler and the three runners, and the morning's new items (where a sound was heard, sound awakenings, eye-signal times, retests a week and ten days later). 4b: the preregistration template, blind incorporation coding with two-rater kappa, the cued-vs-uncued analysis per retest wave, and `analyze-nof1`, the series by arm with permutation intervals and a SCRIBE/CENT checklist. A sealed series of real nights waits on the maintainer. |
 | 5. Honesty, provenance and positioning pass ([#229](https://github.com/yuriy-mikityuk/remind-eeg/issues/229)) | Merged ([#236](https://github.com/yuriy-mikityuk/remind-eeg/pull/236), [#237](https://github.com/yuriy-mikityuk/remind-eeg/pull/237)). Open only for a re-run of the REM check on the night behind the figures, if that recording turns up. |

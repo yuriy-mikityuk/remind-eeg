@@ -599,10 +599,11 @@ The optics pair is provisional until a night with REM on an optics preset is rec
 `boas_v1` is a named threshold set beside the presets' pairs (`presets.named_gate_thresholds`,
 #226). It is opt-in, through `validate-external --gate-thresholds`, and no live command
 reads it; `preset_gate_thresholds()` never returns it, since a preset also says whether
-optics stream. It holds no values until the BOAS run: until then `validate-external`
-takes the pair its own fit step wrote (`fit.json`), the one of the grid with the highest
-pooled κ on the fit fold. When `presets.py` holds it, it carries the sha256 of the
-`splits.json` it was fitted on, and `validate-external` refuses it on other splits.
+optics stream. It holds the pair the BOAS run of 2026-10-28 fitted, enter 0.40 and exit
+0.35, the one of the grid with the highest pooled κ on the fit fold, with the sha256 of
+the committed `splits.json` it was fitted on. `validate-external` scores that pair on
+those splits only: on other splits it takes the pair its own fit step wrote (`fit.json`),
+and without one it stops before it replays a night.
 `rem_metrics.simulate_gate(..., imu_capable=False)` runs the gate on input whose IMU is
 left out by design, as the BOAS harness feeds the detector the headband EEG alone: the
 missing-IMU reason codes then do not cap confidence, as `optics_capable=False` does for

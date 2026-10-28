@@ -14,6 +14,7 @@ import json
 import math
 import os
 import random
+import re
 import shlex
 import subprocess
 import sys
@@ -37,6 +38,7 @@ from muse_tmr.validation.rem_reference import collect_from_source, file_sha256
 from tests.boas_synthetic import TWO_NIGHTS, NightSpec, write_layout
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+BOAS_RESULTS = REPO_ROOT / "data" / "validation_public" / "boas"
 SKIP_REASON = 'needs the [edf] extra: pip install "remind-eeg[edf]"'
 SHORT = ("W", "N1", "N2", "N2", "R", "R", "R", "N2")
 
@@ -141,9 +143,11 @@ class SplitsTest(unittest.TestCase):
 
 
 class NamedThresholdsTest(unittest.TestCase):
-    def test_boas_v1_is_opt_in_and_has_no_values_yet(self):
+    def test_boas_v1_is_opt_in_and_pinned_to_the_committed_splits(self):
         self.assertEqual(named_gate_threshold_sets(), ("boas_v1",))
-        self.assertIsNone(named_gate_thresholds("boas_v1"))
+        pinned = named_gate_thresholds("boas_v1")
+        self.assertEqual((pinned.enter_threshold, pinned.exit_threshold), (0.40, 0.35))
+        self.assertEqual(pinned.splits_sha256, ext.splits_sha256(ext.load_splits(BOAS_RESULTS / "splits.json")))
         self.assertEqual(preset_gate_thresholds("p21"), (0.90, 0.85))
         self.assertEqual(ext.GATE_THRESHOLD_CHOICES, ("p21", "boas_v1"))
         with self.assertRaises(KeyError):
@@ -151,16 +155,52 @@ class NamedThresholdsTest(unittest.TestCase):
 
     def test_where_a_pair_comes_from(self):
         self.assertEqual(ext.resolve_named_pair("p21", None, "abc")["enter"], 0.90)
-        with self.assertRaisesRegex(ext.NotFittedError, "boas_v1 has no values yet"):
-            ext.resolve_named_pair("boas_v1", None, "abc")
         fit = {"gate_thresholds": {"boas_v1": {"enter": 0.6, "exit": 0.5}}}
-        self.assertEqual(ext.resolve_named_pair("boas_v1", fit, "abc"), {"enter": 0.6, "exit": 0.5, "source": "fit.json"})
+        with mock.patch.dict("muse_tmr.presets._NAMED_GATE_THRESHOLDS", {"boas_v1": None}):
+            with self.assertRaisesRegex(ext.NotFittedError, "boas_v1 has no values yet"):
+                ext.resolve_named_pair("boas_v1", None, "abc")
+            self.assertEqual(ext.resolve_named_pair("boas_v1", fit, "abc"),
+                             {"enter": 0.6, "exit": 0.5, "source": "fit.json"})
 
         stored = {"boas_v1": GateThresholdSet(0.7, 0.6, "abc")}
         with mock.patch.dict("muse_tmr.presets._NAMED_GATE_THRESHOLDS", stored):
-            self.assertEqual(ext.resolve_named_pair("boas_v1", fit, "abc")["source"], "presets.py")
-            with self.assertRaisesRegex(ext.SplitOverlapError, "fitted on the fit fold of splits"):
-                ext.resolve_named_pair("boas_v1", fit, "other")
+            self.assertEqual(ext.resolve_named_pair("boas_v1", fit, "abc"),
+                             {"enter": 0.7, "exit": 0.6, "source": "presets.py"})
+            # On other splits the pair of presets.py is never scored: the fit of these splits, or nothing.
+            self.assertEqual(ext.resolve_named_pair("boas_v1", fit, "other")["source"], "fit.json")
+            with self.assertRaisesRegex(ext.SplitOverlapError, "fitted on the fit fold of splits abc"):
+                ext.resolve_named_pair("boas_v1", None, "other")
+
+
+class CommittedBoasResultsTest(unittest.TestCase):
+    """The splits and pooled metrics of the BOAS run of 2026-10-28, committed under
+    data/validation_public/boas/: the pair presets.py pins is the one they record."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.splits = ext.load_splits(BOAS_RESULTS / "splits.json")
+        cls.metrics = json.loads((BOAS_RESULTS / "metrics.json").read_text(encoding="utf-8"))
+
+    def test_boas_v1_is_the_pair_the_run_fitted_on_these_splits(self):
+        pinned = named_gate_thresholds("boas_v1")
+        self.assertEqual(self.metrics["splits"]["sha256"], ext.splits_sha256(self.splits))
+        self.assertEqual(self.metrics["splits"]["sha256"], pinned.splits_sha256)
+        recorded = self.metrics["gate_thresholds"]["boas_v1"]
+        self.assertEqual((recorded["enter"], recorded["exit"]), (pinned.enter_threshold, pinned.exit_threshold))
+
+    def test_no_participant_is_in_both_folds(self):
+        folds = self.splits["folds"]
+        self.assertFalse({e["pid"] for e in folds["fit"]} & {e["pid"] for e in folds["report"]})
+        self.assertEqual(len(folds["fit"]) + len(folds["report"]), 128)
+        self.assertEqual(self.metrics["nights"]["fit_recordings"], [e["recording_id"] for e in folds["fit"]])
+        self.assertEqual(self.metrics["nights"]["report_recordings"], [e["recording_id"] for e in folds["report"]])
+        self.assertEqual(self.metrics["nights"]["left_out"], {})
+
+    def test_no_local_path_and_no_clock_time_but_the_runs_own(self):
+        strings = list(_strings(self.metrics)) + list(_strings(self.splits))
+        self.assertEqual([text for text in strings if re.search(r"(^|[\s'\"=(])(/|~[\\/]|[A-Za-z]:[\\/])", text)], [])
+        self.assertEqual([text for text in strings if re.search(r"\d:\d\d", text)],
+                         [self.metrics["provenance"]["timestamp_utc"]])
 
 
 class RefusalsTest(unittest.TestCase):
@@ -213,8 +253,14 @@ class RefusalsTest(unittest.TestCase):
 
         code, _, err = _cli(*self._args("--nights", report, "--gate-thresholds", "boas_v1"))
 
+        # presets.py holds boas_v1 for the committed BOAS splits, not for these.
         self.assertEqual(code, 2)
-        self.assertIn("needs the fit step", err)
+        self.assertIn("needs the fit step: presets.py holds it for the splits d7642b15b42e", err)
+        self.assertFalse((self.out / "nights").exists())
+        with mock.patch.dict("muse_tmr.presets._NAMED_GATE_THRESHOLDS", {"boas_v1": None}):
+            code, _, err = _cli(*self._args("--nights", report, "--gate-thresholds", "boas_v1"))
+        self.assertEqual(code, 2)
+        self.assertIn("needs the fit step: no fit-fold night is selected", err)
 
     def test_unknown_nights_missing_splits_and_stager_pythons(self):
         code, _, err = _cli(*self._args())
@@ -277,8 +323,9 @@ class HarnessRunTest(unittest.TestCase):
         cls.fit_night = cls.splits["folds"]["fit"][0]["recording_id"]
         stages = {spec.recording_id: spec.stages for spec in TWO_NIGHTS}[cls.report_night]
         cls.runner = staticmethod(_fake_stager(stages))
+        cls.lines = []
         with contextlib.redirect_stdout(io.StringIO()):
-            cls.result = ext.run_external_validation(cls.config, log=lambda line: None, stager_runner=cls.runner)
+            cls.result = ext.run_external_validation(cls.config, log=cls.lines.append, stager_runner=cls.runner)
         cls.metrics = json.loads((cls.out / "metrics.json").read_text(encoding="utf-8"))
 
     @classmethod
@@ -362,6 +409,26 @@ class HarnessRunTest(unittest.TestCase):
             (self.metrics["gate_thresholds"]["boas_v1"]["enter"], self.metrics["gate_thresholds"]["boas_v1"]["exit"]),
             (fit["gate_thresholds"]["boas_v1"]["enter"], fit["gate_thresholds"]["boas_v1"]["exit"]),
         )
+
+    def test_the_pair_of_presets_py_only_on_the_splits_it_was_fitted_on(self):
+        # The real boas_v1 belongs to the committed BOAS splits: on these synthetic ones the
+        # report took the pair this run's fit step chose, and said so.
+        pinned = named_gate_thresholds("boas_v1")
+        self.assertNotEqual(pinned.splits_sha256, self.result["splits_sha256"])
+        self.assertEqual(self.metrics["gate_thresholds"]["boas_v1"]["source"], "fit.json")
+        self.assertTrue([line for line in self.lines if f"holds it for the splits {pinned.splits_sha256[:12]}" in line])
+
+        # On the splits it was fitted on, presets.py's pair is scored, without a fit there.
+        out = self.tmp / "pinned"
+        config = replace(self.config, output_dir=out, splits_path=self.out / "splits.json", make_splits=False,
+                         nights=(self.report_night,), references=())
+        stored = {"boas_v1": GateThresholdSet(0.3, 0.2, self.result["splits_sha256"])}
+        with mock.patch.dict("muse_tmr.presets._NAMED_GATE_THRESHOLDS", stored):
+            ext.run_external_validation(config, log=lambda line: None)
+        metrics = json.loads((out / "metrics.json").read_text(encoding="utf-8"))
+        self.assertEqual(metrics["gate_thresholds"]["boas_v1"], {"enter": 0.3, "exit": 0.2, "source": "presets.py"})
+        self.assertEqual(metrics["personal_model"], {"status": "not fitted"})
+        self.assertFalse((out / "fit.json").exists())
 
     def test_the_cached_night_holds_no_eeg_and_no_clock_time(self):
         epochs = (self.out / "nights" / self.report_night / "epochs.csv").read_text(encoding="utf-8")
