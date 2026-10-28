@@ -56,12 +56,21 @@ class GateThresholdSet:
 # Named threshold sets beside the presets' pairs (#226). They are opt-in, through
 # `muse-tmr validate-external --gate-thresholds`: preset_gate_thresholds() never returns
 # one and no live command reads them. A preset also says whether optics stream, so a pair
-# fitted on another headband cannot be one. boas_v1 is the pair validate-external fits on
-# the fit folds of BOAS (OpenNeuro ds005555, a Bitbrain Ikon headband referenced to the
-# mastoid, EEG only). It stays None until that run is done; until then validate-external
-# reads the pair its own fit step wrote into its output directory.
+# fitted on another headband cannot be one.
+#
+#   - boas_v1: the pair validate-external fitted on the fit fold of BOAS (OpenNeuro
+#     ds005555 v1.1.3, a Bitbrain Ikon headband referenced to the mastoid, EEG only) in
+#     the run of 2026-10-28 at commit d7485ce: of the fit grid, the pair with the highest
+#     pooled κ of the gate against the PSG consensus on the 64 fit nights (κ 0.110). It
+#     belongs to data/validation_public/boas/splits.json, whose sha256 it carries, and
+#     validate-external uses it on those splits only. A transfer to a frontal montage,
+#     not a pair for a Muse night.
 _NAMED_GATE_THRESHOLDS: Dict[str, Optional[GateThresholdSet]] = {
-    "boas_v1": None,
+    "boas_v1": GateThresholdSet(
+        enter_threshold=0.40,
+        exit_threshold=0.35,
+        splits_sha256="d7642b15b42e00cb735141ab45a8d73ff5bd19a31633644673b4eee11ad9617c",
+    ),
 }
 
 
@@ -95,7 +104,7 @@ def named_gate_threshold_sets() -> Tuple[str, ...]:
 
 
 def named_gate_thresholds(name: str) -> Optional[GateThresholdSet]:
-    """The named set ``name``; None while it has no values yet. KeyError for a name
+    """The named set ``name``; None for one that has no values yet. KeyError for a name
     that is not one (a preset's pair comes from preset_gate_thresholds())."""
     key = name.strip().lower()
     if key not in _NAMED_GATE_THRESHOLDS:
