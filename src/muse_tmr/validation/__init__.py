@@ -1,83 +1,63 @@
-"""Validation helpers for M8 pilot workflows."""
+"""Validation helpers for M8 pilot workflows.
 
-from muse_tmr.validation.gate_log import (
-    GATE_LOG_SCHEMA_VERSION,
-    REM_GATE_DECISIONS_FILENAME,
-    GateDecisionRecord,
-    GateOpenRun,
-    emitting_record,
-    gate_decision_record,
-    gate_open_runs,
-    load_gate_open_runs,
-    load_rem_gate_decisions,
-    run_at,
-    write_rem_gate_decisions,
-)
-from muse_tmr.validation.pilot1 import (
-    DEFAULT_PILOT1_MIN_DURATION_SECONDS,
-    DEFAULT_PILOT1_REQUIRED_MODALITIES,
-    Pilot1Criterion,
-    Pilot1ValidationReport,
-    validate_pilot1_recording,
-)
-from muse_tmr.validation.pilot2 import (
-    DEFAULT_PILOT2_HARD_MAX_VOLUME,
-    Pilot2Criterion,
-    Pilot2ValidationReport,
-    validate_pilot2_calibration,
-)
-from muse_tmr.validation.pilot3 import (
-    Pilot3Criterion,
-    Pilot3EpochResult,
-    Pilot3ReplayCueSimulationReport,
-    simulate_cue_plan_from_epochs,
-    simulate_replay_cue_plan,
-)
-from muse_tmr.validation.pilot4 import (
-    AWAKENING_ATTRIBUTIONS,
-    AwakeningEvent,
-    Pilot4Criterion,
-    Pilot4CueingConfig,
-    Pilot4CueingSummary,
-    append_awakening_event,
-    audio_for_plays,
-    load_awakening_events,
-    run_pilot4_cueing_night,
-)
+The names below load on first use, so that importing one module of this package, such
+as ``rem_metrics``, ``rem_reference`` or ``external_labels``, does not import the pilot
+runners and, through them, the audio and protocol packages (#226).
+"""
 
-__all__ = [
-    "AWAKENING_ATTRIBUTIONS",
-    "DEFAULT_PILOT1_MIN_DURATION_SECONDS",
-    "DEFAULT_PILOT1_REQUIRED_MODALITIES",
-    "DEFAULT_PILOT2_HARD_MAX_VOLUME",
-    "GATE_LOG_SCHEMA_VERSION",
-    "GateDecisionRecord",
-    "GateOpenRun",
-    "Pilot1Criterion",
-    "Pilot1ValidationReport",
-    "Pilot2Criterion",
-    "Pilot2ValidationReport",
-    "Pilot3Criterion",
-    "Pilot3EpochResult",
-    "Pilot3ReplayCueSimulationReport",
-    "AwakeningEvent",
-    "Pilot4Criterion",
-    "Pilot4CueingConfig",
-    "Pilot4CueingSummary",
-    "REM_GATE_DECISIONS_FILENAME",
-    "append_awakening_event",
-    "audio_for_plays",
-    "emitting_record",
-    "gate_decision_record",
-    "gate_open_runs",
-    "load_awakening_events",
-    "load_gate_open_runs",
-    "load_rem_gate_decisions",
-    "run_at",
-    "run_pilot4_cueing_night",
-    "simulate_cue_plan_from_epochs",
-    "simulate_replay_cue_plan",
-    "validate_pilot2_calibration",
-    "validate_pilot1_recording",
-    "write_rem_gate_decisions",
-]
+from __future__ import annotations
+
+import importlib
+from typing import Dict, List
+
+_EXPORTS: Dict[str, str] = {
+    "GATE_LOG_SCHEMA_VERSION": "gate_log",
+    "REM_GATE_DECISIONS_FILENAME": "gate_log",
+    "GateDecisionRecord": "gate_log",
+    "GateOpenRun": "gate_log",
+    "emitting_record": "gate_log",
+    "gate_decision_record": "gate_log",
+    "gate_open_runs": "gate_log",
+    "load_gate_open_runs": "gate_log",
+    "load_rem_gate_decisions": "gate_log",
+    "run_at": "gate_log",
+    "write_rem_gate_decisions": "gate_log",
+    "DEFAULT_PILOT1_MIN_DURATION_SECONDS": "pilot1",
+    "DEFAULT_PILOT1_REQUIRED_MODALITIES": "pilot1",
+    "Pilot1Criterion": "pilot1",
+    "Pilot1ValidationReport": "pilot1",
+    "validate_pilot1_recording": "pilot1",
+    "DEFAULT_PILOT2_HARD_MAX_VOLUME": "pilot2",
+    "Pilot2Criterion": "pilot2",
+    "Pilot2ValidationReport": "pilot2",
+    "validate_pilot2_calibration": "pilot2",
+    "Pilot3Criterion": "pilot3",
+    "Pilot3EpochResult": "pilot3",
+    "Pilot3ReplayCueSimulationReport": "pilot3",
+    "simulate_cue_plan_from_epochs": "pilot3",
+    "simulate_replay_cue_plan": "pilot3",
+    "AWAKENING_ATTRIBUTIONS": "pilot4",
+    "AwakeningEvent": "pilot4",
+    "Pilot4Criterion": "pilot4",
+    "Pilot4CueingConfig": "pilot4",
+    "Pilot4CueingSummary": "pilot4",
+    "append_awakening_event": "pilot4",
+    "audio_for_plays": "pilot4",
+    "load_awakening_events": "pilot4",
+    "run_pilot4_cueing_night": "pilot4",
+}
+
+__all__ = sorted(_EXPORTS)
+
+
+def __getattr__(name: str) -> object:
+    module_name = _EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(f"{__name__}.{module_name}"), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> List[str]:
+    return sorted(set(globals()) | set(_EXPORTS))

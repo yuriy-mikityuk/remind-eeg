@@ -34,8 +34,17 @@ What it reports
       name=w,... replays with other detector weights.
     * provenance: the command line, versions (muse_tmr, git commit, Python,
       numpy, scipy, the stager package, torch, mne), the resample rate, the gate
-      thresholds, the detector weights and which Muse channels the stager was and
-      was not given.
+      thresholds, the detector weights, which Muse channels the stager was and
+      was not given, and the labels file, its sha256 and dataset version.
+
+External labels (#226)
+    --labels <file or BOAS night> scores the detector and the gate against
+    labels instead of a stager: annotate-template rows (.csv/.json), a hypnogram
+    muse_tmr.data.night_events.read_hypnogram reads, or a BOAS night directory
+    (OpenNeuro ds005555 sub-<n>), whose PSG consensus stage_hum is read. The
+    recording can be a BOAS night too; its headband EEG is replayed (EEG only,
+    see docs/validation_external.md). reference.tool is then "external", and with
+    --reference the stager is also scored against the labels (stager_vs_labels).
 
 Honest caveats (printed in the summary too)
     YASA is a PROXY, not PSG truth. Its model wants central electrodes (C3/C4);
@@ -51,6 +60,9 @@ Usage
     # other detector weights; the rest keep their defaults, then all are scaled to sum 1:
     python scripts/validate_rem_detection.py <dir> --reference gssc --preset p21 \
         --weights theta_alpha_ratio=0,rem_event_density=0.2
+    # a BOAS night against its PSG consensus, and GSSC against the same labels:
+    python scripts/validate_rem_detection.py ds005555/sub-3 --labels ds005555/sub-3 \
+        --preset p21 --reference gssc
 """
 
 from __future__ import annotations
@@ -60,12 +72,7 @@ import asyncio
 import csv
 import json
 import math
-import platform
-import shlex
-import subprocess
 import sys
-import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -74,53 +81,47 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from muse_tmr import __version__ as MUSE_TMR_VERSION  # noqa: E402
-from muse_tmr.data.continuous import ContinuousBuilder, ContinuousConfig  # noqa: E402
-from muse_tmr.data.replay import ReplayConfig, ReplaySession  # noqa: E402
-from muse_tmr.features import new_rem_event_tracker  # noqa: E402
-from muse_tmr.features.epochs import EpochBuilder, EpochConfig  # noqa: E402
-from muse_tmr.models import HeuristicRemDetector  # noqa: E402
-from muse_tmr.models.heuristic_rem_detector import (  # noqa: E402
-    DEFAULT_REM_WEIGHTS,
-    HeuristicRemConfig,
-)
+from muse_tmr.data.boas import is_boas_night  # noqa: E402
+from muse_tmr.models.heuristic_rem_detector import DEFAULT_REM_WEIGHTS  # noqa: E402
 from muse_tmr.models.rem_detector import RemPrediction  # noqa: E402
-from muse_tmr.models.rem_gate import RemGateConfig, StableRemGate  # noqa: E402
+from muse_tmr.models.rem_gate import RemGateConfig  # noqa: E402
 from muse_tmr.presets import preset_gate_thresholds, preset_provides_optics  # noqa: E402
-from muse_tmr.validation.rem_metrics import (  # noqa: E402
+from muse_tmr.validation.external_labels import (  # noqa: E402
+    EXTERNAL_KAPPA_DEFINITION,
+    display_stage,
+    load_external_labels,
+)
+from muse_tmr.validation.rem_metrics import (  # noqa: E402,F401
+    GRID_ENTER_THRESHOLDS,
+    GRID_LOWEST_EXIT,
     best_f1_threshold,
     binary_metrics,
+    false_open_minutes,
+    feature_columns,
     gate_open_fraction,
+    grid_exit_thresholds,
+    latency_summary,
+    per_feature_auc,
+    precision_at_recall,
+    rem_onset_latency_seconds,
+    rem_runs,
     roc_auc,
+    simulate_gate,
     threshold_sweep,
 )
-
-EEG_CHANNELS = ("AF7", "AF8", "TP9", "TP10")
-REM_STAGES = ("R", "REM")
-NOMINAL_EEG_RATE_HZ = 256.0
-GAP_FILL_THRESHOLD_SECONDS = 0.5
-# The reconstruction the stager has always been given: frames without AF7 are dropped,
-# a dropout over 0.5 s is zero-filled by host time, and lost subpackets are not filled
-# (an export fills them; keeping them out keeps these metrics comparable with #115/#116).
-STAGER_CONTINUOUS_CONFIG = ContinuousConfig(
-    gap_policy="zero_fill",
-    gap_threshold_seconds=GAP_FILL_THRESHOLD_SECONDS,
-    nominal_rate_hz=NOMINAL_EEG_RATE_HZ,
-    channels=EEG_CHANNELS,
-    reference_channel="AF7",
-    fill_lost_samples=False,
+from muse_tmr.validation.rem_reference import (  # noqa: E402,F401
+    EEG_CHANNELS,
+    StagerError,
+    build_provenance,
+    collect_from_source,
+    night_source,
+    resolve_eog,
+    run_reference,
+    stage_eeg,
 )
 
-# --eog when it is not given. GSSC's README documents horizontal or left/right EOG
-# only, and AF8 is a second EEG channel, so GSSC stages from AF7 alone unless asked;
-# YASA keeps AF8 as its EOG derivation.
-DEFAULT_EOG = {"gssc": "none", "yasa": "AF8"}
+REM_STAGES = ("R", "REM")
 KAPPA_DEFINITION = "binary REM-vs-not κ against an automated stager; not five-class"
-
-# The enter/exit grid: enter 0.70 to 0.95, exit 0.45 up to enter, in steps of 0.05. It
-# holds the historical 0.70/0.45 and both preset pairs (0.90/0.85, 0.80/0.70).
-GRID_ENTER_THRESHOLDS = tuple(round(0.70 + 0.05 * step, 2) for step in range(6))
-GRID_LOWEST_EXIT = 0.45
 
 
 def parse_weights(text: str) -> Dict[str, float]:
@@ -172,53 +173,16 @@ async def _collect(
     epoch_seconds: float,
     weights: Optional[Mapping[str, float]] = None,
 ) -> Dict[str, object]:
-    """Single pass over raw_amused.bin.
+    """Single pass over raw_amused.bin, or the headband EDF of a BOAS night.
 
-    Feeds every MuseFrame to the EpochBuilder (-> heuristic p_rem per epoch)
-    while side-accumulating per-channel EEG samples (uV) for the reference
-    stager. The heuristic epochs are anchored to wall-clock frame timestamps, so
-    to keep YASA's sample-indexed 30s epochs on the SAME clock, we zero-fill any
-    BLE-dropout / AF7-loss gap: array position then maps to real elapsed time and
-    YASA epoch j covers real [t0 + j*30, ...). Without the fill, a mid-night gap
-    would slide every later YASA epoch earlier and mispair the two grids.
+    The heuristic p_rem per epoch and the continuous EEG the stager reads, from
+    muse_tmr.validation.rem_reference.collect_from_source with STAGER_CONTINUOUS_CONFIG.
     ``weights`` replaces the detector's DEFAULT_REM_WEIGHTS (see resolve_weights).
-    The reconstruction is muse_tmr.data.continuous with STAGER_CONTINUOUS_CONFIG.
     """
-    continuous = ContinuousBuilder(STAGER_CONTINUOUS_CONFIG)
-
-    async def teed(stream):
-        async for frame in stream:
-            continuous.add(frame)
-            yield frame
-
-    session = ReplaySession(ReplayConfig(input_path=recording_dir, speed=0.0))
-    await session.connect()
-    detector = HeuristicRemDetector(
-        None if weights is None else HeuristicRemConfig(weights=dict(weights))
-    )
-    rem_tracker = new_rem_event_tracker()
-    builder = EpochBuilder(EpochConfig(epoch_seconds=epoch_seconds, stride_seconds=epoch_seconds))
-    predictions: List[Tuple[float, RemPrediction]] = []
     try:
-        async for epoch in builder.build(teed(session.stream())):
-            prediction = detector.predict_epoch(epoch, rem_tracker=rem_tracker)
-            predictions.append((epoch.start_time, prediction))
-    finally:
-        await session.stop()
-
-    try:
-        eeg = continuous.result().eeg
-    except ValueError:
-        eeg = None
-    if eeg is None or eeg.n_samples == 0 or eeg.t_last <= eeg.t0:
-        raise SystemExit("no usable EEG samples reconstructed from the recording")
-    return {
-        "predictions": predictions,
-        "channels": {name: eeg.channels[name] for name in EEG_CHANNELS},
-        "sfreq": float(eeg.measured_rate_hz),
-        "t0": float(eeg.t0),
-        "n_samples": int(eeg.n_samples),
-    }
+        return await collect_from_source(night_source(recording_dir), epoch_seconds, weights)
+    except (ImportError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
 
 
 def collect(
@@ -229,223 +193,12 @@ def collect(
     return asyncio.run(_collect(recording_dir, epoch_seconds, weights))
 
 
-def resample_for_stager(channels: Dict[str, np.ndarray], sfreq: float, target: float = 100.0) -> Tuple[Dict[str, np.ndarray], float]:
-    """Resample to ~target Hz with a fast polyphase FIR, preserving real duration.
-
-    The Muse's empirical rate is a non-integer, measured per night as ``sfreq``. YASA resamples to 100
-    Hz internally, and doing that from an irrational ratio on a multi-million
-    sample array triggers a pathologically slow full-length FFT resample. Pre-
-    resampling here (polyphase, O(n)) shrinks the array to ~target*duration
-    samples and makes YASA's own step trivial. Duration is preserved, so YASA
-    epoch j still maps to real time [t0 + j*30, ...).
-    """
-    from fractions import Fraction
-
-    from scipy.signal import resample_poly
-
-    frac = Fraction(target / sfreq).limit_denominator(1000)
-    up, down = frac.numerator, frac.denominator
-    resampled = {
-        name: resample_poly(arr.astype(np.float64), up, down).astype(np.float32)
-        for name, arr in channels.items()
-    }
-    # Declare exactly `target` Hz. The polyphase result is ~target (e.g. 99.999),
-    # but a near-unity sfreq makes YASA's internal resample-to-100 pathologically
-    # slow; declaring exactly 100 makes it a no-op. The <0.01% rate error is ~0.4s
-    # of drift over a full night -- far below the 30s epoch grid.
-    return resampled, float(target)
-
-
-def simulate_gate(
-    predictions: Sequence[RemPrediction],
-    epoch_seconds: float,
-    *,
-    optics_capable: bool = True,
-    enter_threshold: Optional[float] = None,
-    exit_threshold: Optional[float] = None,
-) -> List[bool]:
-    """Run the real StableRemGate over the p_rem series, in time order.
-
-    ``optics_capable`` mirrors the session preset: on an EEG-only preset (p21)
-    the missing-cardiac reason codes must not cap confidence, or the gate never
-    opens (see issue #112). ``enter_threshold``/``exit_threshold`` default to the
-    recalibrated RemGateConfig defaults when omitted.
-    """
-    base = RemGateConfig()
-    cfg = RemGateConfig(
-        epoch_seconds=epoch_seconds,
-        optics_capable=optics_capable,
-        enter_threshold=base.enter_threshold if enter_threshold is None else enter_threshold,
-        exit_threshold=base.exit_threshold if exit_threshold is None else exit_threshold,
-    )
-    gate = StableRemGate(cfg)
-    return [gate.update(pred, duration_seconds=epoch_seconds).gate_open for pred in predictions]
-
-
 # --------------------------------------------------------------------------- #
-# Reference stager (subprocess into the isolated YASA venv)
+# Metrics (binary_metrics, roc_auc, threshold_sweep, best_f1_threshold,
+# gate_open_fraction, per_feature_auc and simulate_gate live in
+# muse_tmr.validation.rem_metrics; the stager and the provenance block in
+# muse_tmr.validation.rem_reference)
 # --------------------------------------------------------------------------- #
-# Reference stagers, each shelled into its own isolated venv (schemas identical).
-REFERENCE_SCRIPTS = {"yasa": "_yasa_stage.py", "gssc": "_gssc_stage.py"}
-
-
-def run_reference(
-    reference: str, npz_path: Path, eeg: str, eog: str, python_path: Path
-) -> Dict[str, object]:
-    stager = Path(__file__).resolve().parent / REFERENCE_SCRIPTS[reference]
-    out_path = npz_path.with_suffix(".hypno.json")
-    cmd = [
-        str(python_path), str(stager),
-        "--npz", str(npz_path),
-        "--eeg", eeg,
-        "--eog", eog,
-        "--out", str(out_path),
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise SystemExit(
-            f"{reference} staging failed (exit {result.returncode}).\n"
-            f"cmd: {' '.join(cmd)}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-        )
-    return json.loads(out_path.read_text())
-
-
-def resolve_eog(reference: str, eog: Optional[str]) -> str:
-    """The --eog value for ``reference``: the one given, or that reference's default."""
-    return DEFAULT_EOG[reference] if eog is None else eog
-
-
-def _eog_channel(eog: Optional[str]) -> Optional[str]:
-    """The channel the stager gets as EOG; None for 'none' or '' (as the stagers read it)."""
-    return None if eog is None or str(eog).lower() in ("", "none") else str(eog)
-
-
-def _git_commit() -> Optional[str]:
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True, timeout=10
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    commit = out.stdout.strip()
-    return commit if out.returncode == 0 and commit else None
-
-
-def build_provenance(
-    *,
-    argv: Sequence[str],
-    reference: str,
-    hypno: Mapping[str, object],
-    eeg: str,
-    eog: Optional[str],
-    preset: Optional[str],
-    enter_threshold: float,
-    exit_threshold: float,
-    resample_hz: float,
-    epoch_seconds: float,
-    weights: Optional[Mapping[str, float]] = None,
-    weight_overrides: Optional[Mapping[str, float]] = None,
-) -> Dict[str, object]:
-    """What produced these metrics: command, versions, channels, thresholds, detector
-    weights (``weight_overrides`` as given to --weights, ``weights`` as used), stager.
-
-    The stager versions come from the ``stager`` block the stager script writes into
-    its hypnogram JSON, since it runs in its own venv. They are None when the
-    hypnogram has no such block.
-    """
-    import scipy
-
-    eog_channel = _eog_channel(eog)
-    passed = {eeg} if eog_channel is None else {eeg, eog_channel}
-    stager = hypno.get("stager") or {}
-    return {
-        "command_line": shlex.join(str(arg) for arg in argv),
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "muse_tmr_version": MUSE_TMR_VERSION,
-        "git_commit": _git_commit(),
-        "python": platform.python_version(),
-        "numpy": np.__version__,
-        "scipy": scipy.__version__,
-        "resample_hz": float(resample_hz),
-        "epoch_seconds": float(epoch_seconds),
-        "preset": preset,
-        "enter_threshold": float(enter_threshold),
-        "exit_threshold": float(exit_threshold),
-        "weights": {name: float(w) for name, w in (weights or DEFAULT_REM_WEIGHTS).items()},
-        "weight_overrides": {name: float(w) for name, w in (weight_overrides or {}).items()},
-        "eeg": eeg,
-        "eog": eog_channel,
-        "channels_not_passed": [name for name in EEG_CHANNELS if name not in passed],
-        "stager": {
-            "tool": reference,
-            "package_version": stager.get("package_version"),
-            "torch_version": stager.get("torch_version"),
-            "mne_version": stager.get("mne_version"),
-            "returns_probabilities": stager.get("returns_probabilities"),
-        },
-    }
-
-
-# --------------------------------------------------------------------------- #
-# Metrics (binary_metrics, roc_auc, threshold_sweep, best_f1_threshold and
-# gate_open_fraction live in muse_tmr.validation.rem_metrics)
-# --------------------------------------------------------------------------- #
-def feature_columns(predictions: Sequence[RemPrediction]) -> Dict[str, np.ndarray]:
-    """The per-epoch score_<name> and value_<name> columns, NaN where an epoch lacks one."""
-    rows = [
-        {
-            **{f"score_{name}": value for name, value in pred.feature_scores.items()},
-            **{f"value_{name}": value for name, value in pred.feature_values.items()},
-        }
-        for pred in predictions
-    ]
-    names = sorted({name for row in rows for name in row})
-    return {
-        name: np.array([_as_float(row.get(name)) for row in rows], dtype=float)
-        for name in names
-    }
-
-
-def _as_float(value: object) -> float:
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return float("nan")
-
-
-def feature_metrics(columns: Mapping[str, np.ndarray], y_true: np.ndarray) -> Dict[str, Dict[str, object]]:
-    """ROC-AUC against the reference's REM, min, max and count of finite values per column.
-
-    Epochs where a column is NaN are left out of its numbers. ``saturated`` means every
-    finite value is the same, so the column cannot rank epochs at all, as the
-    eye-movement proxy on a real night (#116). An AUC below 0.5 means the column runs
-    against REM. score_* columns come first.
-    """
-    metrics: Dict[str, Dict[str, object]] = {}
-    for name in sorted(columns, key=lambda column: (not column.startswith("score_"), column)):
-        values = np.asarray(columns[name], dtype=float)
-        finite = np.isfinite(values)
-        count = int(finite.sum())
-        if count:
-            low, high = float(values[finite].min()), float(values[finite].max())
-            auc = roc_auc(y_true[finite], values[finite])
-        else:
-            low = high = auc = float("nan")
-        metrics[name] = {
-            "n": count,
-            "auc": auc,
-            "min": low,
-            "max": high,
-            "saturated": bool(count and low == high),
-        }
-    return metrics
-
-
-def grid_exit_thresholds(enter_threshold: float) -> Tuple[float, ...]:
-    steps = int(round((enter_threshold - GRID_LOWEST_EXIT) / 0.05))
-    return tuple(round(GRID_LOWEST_EXIT + 0.05 * step, 2) for step in range(steps + 1))
-
-
 def gate_grid(
     predictions: Sequence[RemPrediction],
     matched_positions: Sequence[int],
@@ -454,6 +207,7 @@ def gate_grid(
     *,
     optics_capable: bool,
     preset_pair: Tuple[float, float],
+    imu_capable: bool = True,
 ) -> List[Dict[str, object]]:
     """The real StableRemGate for every enter/exit pair of the grid, over the whole p_rem
     series, scored on the matched epochs: gate-open fraction, REM recall and precision
@@ -463,7 +217,7 @@ def gate_grid(
         for exit_ in grid_exit_thresholds(enter):
             opened = simulate_gate(
                 predictions, epoch_seconds, optics_capable=optics_capable,
-                enter_threshold=enter, exit_threshold=exit_,
+                enter_threshold=enter, exit_threshold=exit_, imu_capable=imu_capable,
             )
             g = np.array([1 if opened[i] else 0 for i in matched_positions], dtype=int)
             m = binary_metrics(y_true, g)
@@ -505,12 +259,19 @@ def run(
     reference_python: Path,
     epoch_seconds: float,
     preset: Optional[str] = None,
-    reference: str = "yasa",
+    reference: Optional[str] = "yasa",
     dump_epochs: Optional[Path] = None,
     argv: Optional[Sequence[str]] = None,
     weight_overrides: Optional[Mapping[str, float]] = None,
+    labels: Optional[Path] = None,
 ) -> Dict[str, object]:
-    eog = resolve_eog(reference, eog)
+    """Replay ``recording_dir`` and score the detector and the gate against ``reference``
+    (a stager) or, with ``labels``, against those labels; with both, the stager too is
+    scored against the labels. ``reference`` None runs no stager (labels only)."""
+    if reference is None and labels is None:
+        raise SystemExit("give a reference stager, labels, or both")
+    if reference is not None:
+        eog = resolve_eog(reference, eog)
     weights = resolve_weights(weight_overrides)
     print(f"[1/4] replaying {recording_dir.name}: heuristic p_rem + EEG reconstruction ...", flush=True)
     if weight_overrides:
@@ -528,17 +289,21 @@ def run(
 
     print("[2/4] live-gate simulation over p_rem ...", flush=True)
     optics_capable = preset_provides_optics(preset)
+    # A BOAS night is replayed with its EEG alone (its IMU is not in the units it names),
+    # so missing IMU is by design there and does not cap the gate's confidence.
+    imu_capable = not is_boas_night(recording_dir)
     enter_thr, exit_thr = preset_gate_thresholds(preset)
     preds_only = [p for _, p in predictions]
     gate_open = simulate_gate(
         preds_only, epoch_seconds, optics_capable=optics_capable,
-        enter_threshold=enter_thr, exit_threshold=exit_thr,
+        enter_threshold=enter_thr, exit_threshold=exit_thr, imu_capable=imu_capable,
     )
     n_open = sum(gate_open)
     n_min = round(n_open * epoch_seconds / 60, 1)
     print(
         f"      preset={preset or 'unknown'} optics_capable={optics_capable} "
-        f"enter={enter_thr:g} exit={exit_thr:g}  "
+        + ("" if imu_capable else "imu_capable=False ")
+        + f"enter={enter_thr:g} exit={exit_thr:g}  "
         f"gate opened on {n_open} epochs ({n_min} min)",
         flush=True,
     )
@@ -547,7 +312,7 @@ def run(
         # EEG-only cueing gain is visible in a single run (issue #112).
         cf_open = sum(simulate_gate(
             preds_only, epoch_seconds, optics_capable=True,
-            enter_threshold=enter_thr, exit_threshold=exit_thr,
+            enter_threshold=enter_thr, exit_threshold=exit_thr, imu_capable=imu_capable,
         ))
         cf_min = round(cf_open * epoch_seconds / 60, 1)
         print(
@@ -556,24 +321,32 @@ def run(
             flush=True,
         )
 
-    print(f"[3/4] {reference} reference staging (eeg={eeg}, eog={eog}) ...", flush=True)
-    channels, stage_sfreq = resample_for_stager(channels, sfreq)
-    print(f"      resampled to {stage_sfreq:.2f} Hz for the stager", flush=True)
-    with tempfile.TemporaryDirectory() as tmp:
-        npz_path = Path(tmp) / "eeg.npz"
-        np.savez(
-            npz_path,
-            sfreq=np.float64(stage_sfreq),
-            ch_names=np.array(list(EEG_CHANNELS)),
-            **{name: channels[name] for name in EEG_CHANNELS},
-        )
-        hypno = run_reference(reference, npz_path, eeg, eog, reference_python)
+    hypno: Mapping[str, object] = {}
+    hypno_by_index: Dict[int, Mapping[str, object]] = {}
+    stage_sfreq: Optional[float] = None
+    if reference is not None:
+        print(f"[3/4] {reference} reference staging (eeg={eeg}, eog={eog}) ...", flush=True)
+        try:
+            hypno, stage_sfreq = stage_eeg(channels, sfreq, reference, eeg, eog, reference_python, runner=run_reference)
+        except StagerError as exc:
+            raise SystemExit(str(exc)) from None
+        print(f"      resampled to {stage_sfreq:.2f} Hz for the stager", flush=True)
+        hypno_by_index = {int(e["epoch"]): e for e in hypno["epochs"]}  # type: ignore[union-attr]
+        print(f"      staged {len(hypno_by_index)} epochs; {hypno.get('stage_counts')}", flush=True)
+    external = None
+    if labels is not None:
+        print(("      and " if reference is not None else "[3/4] ") + f"external labels from {labels} ...", flush=True)
+        try:
+            external = load_external_labels(labels)
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"--labels: {exc}") from None
+        print(f"      {external.source}: {len(external.intervals)} intervals; {external.stage_counts()}", flush=True)
     provenance = build_provenance(
         argv=sys.argv if argv is None else argv,
         reference=reference,
         hypno=hypno,
-        eeg=eeg,
-        eog=eog,
+        eeg=eeg if reference is not None else None,
+        eog=eog if reference is not None else None,
         preset=preset,
         enter_threshold=enter_thr,
         exit_threshold=exit_thr,
@@ -581,29 +354,40 @@ def run(
         epoch_seconds=epoch_seconds,
         weights=weights,
         weight_overrides=weight_overrides,
+        labels_source=external.source if external else None,
+        labels_file_sha256=external.sha256 if external else None,
+        dataset_version=external.dataset_version if external else None,
+        stride_seconds=epoch_seconds,
     )
-    hypno_by_index = {int(e["epoch"]): e for e in hypno["epochs"]}
-    print(f"      staged {len(hypno_by_index)} epochs; {hypno.get('stage_counts')}", flush=True)
 
     print("[4/4] aligning epochs and computing metrics ...", flush=True)
     matched = []
     matched_positions = []
     epoch_rows = []
+    stager_pairs: List[Tuple[int, Mapping[str, object]]] = []
     for position, ((start, pred), opened) in enumerate(zip(predictions, gate_open)):
         k = round((start - t0) / epoch_seconds)
-        ref = hypno_by_index.get(k)
-        if ref is None:
-            continue
+        if external is not None:
+            interval = external.interval_for(start, t0=t0, epoch_seconds=epoch_seconds)
+            if interval is None or interval.label == "unknown":
+                continue
+            ref_stage, ref_rem, ref_proba = display_stage(interval), int(interval.label == "probable_rem"), None
+            if k in hypno_by_index:
+                stager_pairs.append((ref_rem, hypno_by_index[k]))
+        else:
+            ref = hypno_by_index.get(k)
+            if ref is None:
+                continue
+            ref_stage, ref_rem, ref_proba = ref["stage"], 1 if ref["stage"] in REM_STAGES else 0, ref.get("proba_rem")
         matched_positions.append(position)
-        ref_rem = 1 if ref["stage"] in REM_STAGES else 0
         matched.append(
             {
                 "epoch": k,
                 "p_rem": float(pred.probability),
                 "gate_open": bool(opened),
-                "ref_stage": ref["stage"],
+                "ref_stage": ref_stage,
                 "ref_rem": ref_rem,
-                "ref_proba_rem": ref.get("proba_rem"),
+                "ref_proba_rem": ref_proba,
             }
         )
         if dump_epochs is not None:
@@ -613,7 +397,7 @@ def run(
                 "p_rem": float(pred.probability),
                 "reason_codes": "|".join(pred.reason_codes),
                 "gate_open": int(bool(opened)),
-                "ref_stage": ref["stage"],
+                "ref_stage": ref_stage,
                 "ref_rem": ref_rem,
             }
             row.update({f"score_{name}": v for name, v in pred.feature_scores.items()})
@@ -631,13 +415,29 @@ def run(
     p = np.array([m["p_rem"] for m in matched], dtype=float)
     g = np.array([1 if m["gate_open"] else 0 for m in matched], dtype=int)
 
-    reference_flags = _reference_flags(hypno.get("stage_counts", {}), int(y.sum()), len(matched))
+    if external is not None:
+        reference_flags = _label_flags(int(y.sum()))
+        reference_block = {"tool": "external", "labels": external.source, "eeg": None, "eog": None, "note": external.note}
+    else:
+        reference_flags = _reference_flags(hypno.get("stage_counts", {}), int(y.sum()), len(matched))  # type: ignore[arg-type]
+        reference_block = {"tool": reference, "eeg": eeg, "eog": hypno.get("eog"), "note": "proxy, not PSG"}
     enter, exit_ = RemGateConfig().enter_threshold, RemGateConfig().exit_threshold
     best_thr, best = best_f1_threshold(y, p)
+    gate_block = {
+        **binary_metrics(y, g),
+        "gate_open_epochs": int(g.sum()),
+        "gate_open_minutes": round(int(g.sum()) * epoch_seconds / 60, 1),
+        "enter_threshold": enter_thr,
+        "exit_threshold": exit_thr,
+        "optics_capable": optics_capable,
+        "preset": preset,
+    }
+    if not imu_capable:
+        gate_block["imu_capable"] = False
     result = {
         "recording": recording_dir.name,
-        "reference": {"tool": reference, "eeg": eeg, "eog": hypno.get("eog"), "note": "proxy, not PSG"},
-        "kappa_definition": KAPPA_DEFINITION,
+        "reference": reference_block,
+        "kappa_definition": EXTERNAL_KAPPA_DEFINITION if external is not None else KAPPA_DEFINITION,
         "provenance": provenance,
         "epochs_matched": len(matched),
         "epoch_seconds": epoch_seconds,
@@ -652,26 +452,80 @@ def run(
             "at_0.5": binary_metrics(y, (p >= 0.5).astype(int)),
             f"best_f1_{best_thr:g}": best,
         },
-        "gate_vs_ref": {
-            **binary_metrics(y, g),
-            "gate_open_epochs": int(g.sum()),
-            "gate_open_minutes": round(int(g.sum()) * epoch_seconds / 60, 1),
-            "enter_threshold": enter_thr,
-            "exit_threshold": exit_thr,
-            "optics_capable": optics_capable,
-            "preset": preset,
-        },
+        "gate_vs_ref": gate_block,
         "threshold_sweep": threshold_sweep(y, p),
-        "feature_metrics": feature_metrics(
+        "feature_metrics": per_feature_auc(
             feature_columns([preds_only[i] for i in matched_positions]), y
         ),
         "gate_grid": gate_grid(
             preds_only, matched_positions, y, epoch_seconds,
-            optics_capable=optics_capable, preset_pair=(enter_thr, exit_thr),
+            optics_capable=optics_capable, preset_pair=(enter_thr, exit_thr), imu_capable=imu_capable,
         ),
         "matched": matched,
     }
+    if external is not None:
+        result["labels_metrics"] = labels_metrics(
+            [(start, opened) for (start, _), opened in zip(predictions, gate_open)],
+            [(m["epoch"], m["ref_rem"], m["gate_open"], m["p_rem"]) for m in matched],
+            t0=t0,
+            epoch_seconds=epoch_seconds,
+        )
+        if reference is not None:
+            result["stager_vs_labels"] = stager_vs_labels(reference, stager_pairs)
     return result
+
+
+def _label_flags(rem_epochs: int) -> List[str]:
+    """External labels are taken as they are; only a night without REM is flagged."""
+    if rem_epochs == 0:
+        return ["zero REM epochs in the labels -- REM precision/recall are undefined"]
+    return []
+
+
+def labels_metrics(
+    decisions: Sequence[Tuple[float, bool]],
+    matched: Sequence[Tuple[int, int, bool, float]],
+    *,
+    t0: float,
+    epoch_seconds: float,
+) -> Dict[str, object]:
+    """Against external labels: precision at recall 0.80 of p_rem, the minutes the gate
+    was open outside the labels' REM, and the latency from the start of each REM run of
+    the labels to the gate's first open decision in it."""
+    y = np.array([row[1] for row in matched], dtype=int)
+    g = np.array([1 if row[2] else 0 for row in matched], dtype=int)
+    p = np.array([row[3] for row in matched], dtype=float)
+    runs = rem_runs([(k * epoch_seconds, (k + 1) * epoch_seconds, bool(rem)) for k, rem, _, _ in matched])
+    latencies = rem_onset_latency_seconds(
+        runs, [(start - t0 + epoch_seconds, is_open) for start, is_open in decisions]
+    )
+    return {
+        "precision_at_recall_0.80": precision_at_recall(y, p, 0.80),
+        "false_open_minutes": false_open_minutes(y, g, epoch_seconds),
+        "rem_onset_latency": {**latency_summary(latencies), "seconds": latencies},
+    }
+
+
+def stager_vs_labels(reference: str, pairs: Sequence[Tuple[int, Mapping[str, object]]]) -> Dict[str, object]:
+    """The stager's REM epochs against the labels' REM, on the epochs both have."""
+    y = np.array([label for label, _ in pairs], dtype=int)
+    s = np.array([1 if epoch["stage"] in REM_STAGES else 0 for _, epoch in pairs], dtype=int)
+    proba = np.array([_proba(epoch.get("proba_rem")) for _, epoch in pairs], dtype=float)
+    finite = np.isfinite(proba)
+    return {
+        "tool": reference,
+        "epochs": int(y.size),
+        **binary_metrics(y, s),
+        "roc_auc": roc_auc(y[finite], proba[finite]) if finite.any() else float("nan"),
+        "precision_at_recall_0.80": precision_at_recall(y, proba, 0.80),
+    }
+
+
+def _proba(value: object) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return float("nan")
 
 
 def _reference_flags(stage_counts: Mapping[str, int], rem_epochs: int, matched: int) -> List[str]:
@@ -719,12 +573,20 @@ REFERENCE_CAVEATS = {
         "  EEG. It is an automated proxy, not PSG. Validate against a few\n"
         "  manually-scored nights before treating its REM calls as ground truth."
     ),
+    "external": (
+        "  CAVEAT: the labels are taken as they are. A BOAS night is a Bitbrain Ikon\n"
+        "  headband referenced to the mastoid, scored against the PSG consensus of three\n"
+        "  scorers: a result on a frontal montage, not on a Muse. One night says little;\n"
+        "  muse-tmr validate-external scores participant-grouped report folds."
+    ),
 }
 
 
 def stager_label(provenance: Mapping[str, object]) -> str:
     """One line on the stager run: tool, versions, the channels it got and the ones it did not."""
     stager = provenance.get("stager") or {}
+    if not stager.get("tool"):
+        return "none; scored against external labels"
     not_passed = ", ".join(provenance.get("channels_not_passed") or []) or "none"
     return (
         f"{stager.get('tool')} {stager.get('package_version') or 'version unknown'} "
@@ -747,7 +609,12 @@ def print_summary(result: Dict[str, object]) -> None:
         f"mean p_rem: {result['mean_p_rem']:.2f}"
     )
     flags = result.get("reference_flags") or []
-    if flags:
+    if flags and tool == "EXTERNAL":
+        print("!" * 78)
+        for f in flags:
+            print(f"  {f}")
+        print("!" * 78)
+    elif flags:
         print("!" * 78)
         print("  DEGENERATE REFERENCE -- the metrics below CANNOT be trusted:")
         for f in flags:
@@ -761,6 +628,13 @@ def print_summary(result: Dict[str, object]) -> None:
     provenance = result.get("provenance")
     if provenance:
         print(f"stager: {stager_label(provenance)}")
+        if provenance.get("labels_source"):
+            version = provenance.get("dataset_version")
+            print(
+                f"labels: {provenance['labels_source']}"
+                + (f", dataset version {version}" if version else "")
+                + f", sha256 {str(provenance.get('labels_file_sha256') or '')[:12]}"
+            )
         if provenance.get("weight_overrides"):
             weights = provenance.get("weights") or {}
             print("detector weights (--weights): " + ", ".join(f"{k}={v:.3f}" for k, v in weights.items()))
@@ -772,14 +646,29 @@ def print_summary(result: Dict[str, object]) -> None:
     g_exit = gate.get("exit_threshold", 0.70)
     g_preset = gate.get("preset") or "unknown"
     g_optics = gate.get("optics_capable", True)
+    g_imu = "" if gate.get("imu_capable", True) else " imu_capable=False"
     print(
-        f"  SYSTEM VIEW - real StableRemGate (preset={g_preset} optics_capable={g_optics} "
+        f"  SYSTEM VIEW - real StableRemGate (preset={g_preset} optics_capable={g_optics}{g_imu} "
         f"enter {g_enter:g} / exit {g_exit:g} / 60s stable / 120s cooldown):"
     )
     print(
         f"    gate opened on {gate['gate_open_epochs']} epochs "
         f"({gate['gate_open_minutes']} min).  vs {tool}-REM: {_fmt(gate)}"
     )
+    extra = result.get("labels_metrics")
+    if extra:
+        at_recall = extra["precision_at_recall_0.80"]
+        latency = extra["rem_onset_latency"]
+        print(
+            f"    p_rem precision at recall 0.80: {_num(at_recall['precision'], 4, 2)} "
+            f"(p_rem >= {_num(at_recall['threshold'], 4, 2)});  gate open outside REM: "
+            f"{extra['false_open_minutes']:.1f} min;  REM-onset latency median "
+            f"{_num(latency['median_s'], 4, 0)} s over {latency['runs_with_open']} of {latency['runs']} REM runs"
+        )
+    stager_block = result.get("stager_vs_labels")
+    if stager_block:
+        print("-" * 78)
+        print(f"  {str(stager_block['tool']).upper()} vs the labels ({stager_block['epochs']} epochs): {_fmt(stager_block)}")
     features = result.get("feature_metrics") or {}
     if features:
         print("-" * 78)
@@ -847,10 +736,19 @@ def main() -> int:
     parser.add_argument(
         "--reference",
         choices=("yasa", "gssc"),
-        default="yasa",
-        help="Offline reference stager. gssc was trained mostly on C3, C4, F3, F4 "
-        "(NSRR PSG) and stages from one EEG channel; no published evaluation on "
-        "forehead-only EEG. Both are automated proxies, not PSG.",
+        default=None,
+        help="Offline reference stager (default yasa, or none with --labels). gssc was trained "
+        "mostly on C3, C4, F3, F4 (NSRR PSG) and stages from one EEG channel; no published "
+        "evaluation on forehead-only EEG. Both are automated proxies, not PSG. With --labels "
+        "the stager is scored against the labels too.",
+    )
+    parser.add_argument(
+        "--labels",
+        type=Path,
+        default=None,
+        help="Score against these labels instead of a stager: annotate-template rows (.csv or "
+        ".json), a hypnogram (.edf, BIDS events .tsv, .csv) or a BOAS night directory "
+        "(OpenNeuro ds005555 sub-<n>), whose PSG consensus stage_hum is read.",
     )
     parser.add_argument(
         "--yasa-python",
@@ -888,13 +786,19 @@ def main() -> int:
     recording_dir = args.recording_dir.resolve()
     if not recording_dir.exists():
         raise SystemExit(f"recording directory not found: {recording_dir}")
+    labels = None
+    if args.labels is not None:
+        labels = args.labels.resolve()
+        if not labels.exists():
+            raise SystemExit(f"--labels not found: {labels}")
 
-    reference_python = args.gssc_python if args.reference == "gssc" else args.yasa_python
-    if not reference_python.exists():
-        venv = ".venv-gssc" if args.reference == "gssc" else ".venv-yasa"
+    reference = args.reference if args.reference is not None or labels is not None else "yasa"
+    reference_python = args.gssc_python if reference == "gssc" else args.yasa_python
+    if reference is not None and not reference_python.exists():
+        venv = ".venv-gssc" if reference == "gssc" else ".venv-yasa"
         raise SystemExit(
-            f"{args.reference} venv python not found: {reference_python}\n"
-            f"Create it with:  python -m venv {venv} && {venv}/bin/pip install {args.reference}"
+            f"{reference} venv python not found: {reference_python}\n"
+            f"Create it with:  python -m venv {venv} && {venv}/bin/pip install {reference}"
         )
 
     # NB: do NOT resolve() the venv python -- it is a symlink to the base
@@ -902,8 +806,9 @@ def main() -> int:
     # yasa/gssc). Invoke the venv path directly so venv detection kicks in.
     result = run(
         recording_dir, args.eeg, args.eog, reference_python, args.epoch_seconds,
-        args.preset, args.reference, args.dump_epochs,
+        args.preset, reference, args.dump_epochs,
         weight_overrides=args.weights,
+        labels=labels,
     )
     print_summary(result)
 

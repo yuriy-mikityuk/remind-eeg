@@ -5,6 +5,7 @@ subprocess replaced by a fake hypnogram, so no YASA or GSSC venv is needed.
 """
 
 import datetime as dt
+import hashlib
 import importlib.util
 import io
 import json
@@ -58,6 +59,11 @@ PROVENANCE_KEYS = {
     "eog",
     "channels_not_passed",
     "stager",
+    # #226: the labels the metrics are against, and the epoch stride.
+    "stride_seconds",
+    "labels_source",
+    "labels_file_sha256",
+    "dataset_version",
 }
 STAGER_KEYS = {"tool", "package_version", "torch_version", "mne_version", "returns_probabilities"}
 
@@ -171,6 +177,12 @@ class ProvenanceTest(unittest.TestCase):
         self.assertEqual(provenance["weight_overrides"], {})
         self.assertEqual(provenance["numpy"], np.__version__)
         self.assertTrue(provenance["timestamp_utc"].endswith("+00:00"))
+        self.assertEqual(provenance["stride_seconds"], 30.0)
+        self.assertIsNone(provenance["labels_source"])
+        self.assertIsNone(provenance["labels_file_sha256"])
+        self.assertIsNone(provenance["dataset_version"])
+        self.assertNotIn("labels_metrics", result)
+        self.assertNotIn("stager_vs_labels", result)
         # The --output file is this dict without "matched"; it has to serialise as is.
         json.dumps({k: v for k, v in result.items() if k != "matched"})
 
@@ -201,6 +213,118 @@ class ProvenanceTest(unittest.TestCase):
         self.assertIn("binary REM-vs-not κ against an automated stager; not five-class", page)
         self.assertIn("Stager gssc 0.0.9-fake", page)
         self.assertIn("channels not given to it: AF8, TP9, TP10", page)
+
+
+def _write_labels(path, stages):
+    """A hypnogram CSV with start_s/end_s from the recording start, one row per epoch."""
+    lines = ["epoch,start_s,end_s,stage"]
+    lines += [f"{k},{k * 30.0},{(k + 1) * 30.0},{stage}" for k, stage in enumerate(stages)]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _run_labels(labels, reference=None):
+    calls = []
+
+    def fake_reference(ref, npz_path, eeg, eog_arg, python_path):
+        calls.append(ref)
+        return _fake_hypnogram(ref, eog_arg)
+
+    argv = ["scripts/validate_rem_detection.py", "night", "--labels", str(labels)]
+    with mock.patch.object(vrd, "collect", _fake_collect), mock.patch.object(vrd, "run_reference", fake_reference):
+        with redirect_stdout(io.StringIO()):
+            result = vrd.run(
+                Path("synthetic_night"), "AF7", None, Path(sys.executable), 30.0,
+                "p21", reference, None, argv=argv, labels=labels,
+            )
+    return result, calls
+
+
+class ExternalLabelsTest(unittest.TestCase):
+    """--labels scores against labels instead of a stager, and a stager against them (#226)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        # Epoch 0 is not scored ("?"); REM on 4 to 7, as the fake predictions and stager have it.
+        stages = ["?"] + ["REM" if k in REM_EPOCHS else "N2" for k in range(1, N_EPOCHS)]
+        self.labels = _write_labels(self.root / "hypnogram.csv", stages)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_labels_alone_skip_the_stager(self):
+        result, calls = _run_labels(self.labels)
+
+        self.assertEqual(calls, [])
+        self.assertEqual(result["reference"]["tool"], "external")
+        self.assertEqual(result["reference"]["labels"], "labels:hypnogram.csv")
+        self.assertEqual(result["kappa_definition"], "binary REM-vs-not κ against external labels; not five-class")
+        self.assertEqual(result["epochs_matched"], N_EPOCHS - 1)
+        self.assertEqual(result["ref_rem_epochs"], len(REM_EPOCHS))
+        provenance = result["provenance"]
+        self.assertEqual(set(provenance), PROVENANCE_KEYS)
+        self.assertEqual(provenance["labels_source"], "labels:hypnogram.csv")
+        self.assertEqual(
+            provenance["labels_file_sha256"], hashlib.sha256(self.labels.read_bytes()).hexdigest()
+        )
+        self.assertIsNone(provenance["stager"]["tool"])
+        self.assertIsNone(provenance["resample_hz"])
+        self.assertEqual(provenance["channels_not_passed"], [])
+        self.assertNotIn("stager_vs_labels", result)
+        # The fake p_rem is 0.95 on the REM epochs, so p_rem ranks them perfectly; the p21
+        # gate opens on the second REM epoch, so the first REM run is found 60 s in.
+        self.assertEqual(result["roc_auc"], 1.0)
+        extra = result["labels_metrics"]
+        self.assertEqual(extra["precision_at_recall_0.80"]["precision"], 1.0)
+        self.assertEqual(extra["false_open_minutes"], 0.0)
+        self.assertEqual(extra["rem_onset_latency"]["seconds"], [60.0])
+        json.dumps({k: v for k, v in result.items() if k != "matched"})
+
+    def test_labels_with_a_stager_score_the_stager_too(self):
+        result, calls = _run_labels(self.labels, reference="gssc")
+
+        self.assertEqual(calls, ["gssc"])
+        self.assertEqual(result["reference"]["tool"], "external")
+        self.assertEqual(result["provenance"]["stager"]["tool"], "gssc")
+        stager = result["stager_vs_labels"]
+        self.assertEqual(stager["tool"], "gssc")
+        self.assertEqual(stager["epochs"], N_EPOCHS - 1)
+        self.assertEqual((stager["tp"], stager["fp"], stager["fn"]), (len(REM_EPOCHS), 0, 0))
+        self.assertEqual(stager["kappa"], 1.0)
+
+    def test_summary_and_html_name_the_labels(self):
+        result, _ = _run_labels(self.labels, reference="gssc")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            vrd.print_summary(result)
+        text = output.getvalue()
+        self.assertIn("REM detection vs EXTERNAL reference", text)
+        self.assertIn("labels: labels:hypnogram.csv", text)
+        self.assertIn("GSSC vs the labels", text)
+
+        page = html_report.build_html(result)
+        self.assertIn("vs external labels (labels:hypnogram.csv)", page)
+        self.assertIn("External labels, taken as they are", page)
+        self.assertIn("GSSC against the same labels", page)
+        self.assertNotIn("proxy reference, not PSG", page)
+
+    def test_the_cli_runs_no_stager_with_labels_alone(self):
+        argv = ["validate_rem_detection.py", "rec", "--labels", str(self.labels)]
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(vrd, "run") as run:
+            run.side_effect = SystemExit(0)
+            with mock.patch.object(Path, "exists", return_value=True), self.assertRaises(SystemExit):
+                vrd.main()
+        self.assertIsNone(run.call_args.args[6])
+        self.assertEqual(run.call_args.kwargs["labels"], self.labels.resolve())
+
+        argv = ["validate_rem_detection.py", "rec"]
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(vrd, "run") as run:
+            run.side_effect = SystemExit(0)
+            with mock.patch.object(Path, "exists", return_value=True), self.assertRaises(SystemExit):
+                vrd.main()
+        self.assertEqual(run.call_args.args[6], "yasa")
+        self.assertIsNone(run.call_args.kwargs["labels"])
 
 
 class RefitToolingTest(unittest.TestCase):

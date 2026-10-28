@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from muse_tmr import __version__
+from muse_tmr.presets import named_gate_threshold_sets
 
 # Commands that can play a cue; main() checks their --backend before anything else runs.
 AUDIO_COMMANDS = (
@@ -360,6 +361,63 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--learning-rate", type=float, default=0.05)
     train_parser.add_argument("--l2-penalty", type=float, default=0.01)
     train_parser.add_argument("--threshold", type=float, default=0.5)
+    train_parser.add_argument(
+        "--init",
+        type=Path,
+        help="Warm start from this model artifact, such as the one validate-external trains on BOAS: start "
+        "from its coefficients and pull toward them instead of toward 0. Takes its features; a --feature "
+        "set that differs is refused.",
+    )
+
+    external_parser = subparsers.add_parser(
+        "validate-external",
+        help="Score the REM detector and gate against the PSG consensus of an open dataset (BOAS, OpenNeuro ds005555).",
+    )
+    external_parser.add_argument("--dataset", choices=("boas",), default="boas")
+    external_parser.add_argument("--root", type=Path, required=True, help="The dataset's root, holding participants.tsv.")
+    external_parser.add_argument(
+        "--splits",
+        type=Path,
+        required=True,
+        help="The splits.json to read, or with --make-splits to write (an existing file must hold the same splits).",
+    )
+    external_parser.add_argument(
+        "--make-splits",
+        action="store_true",
+        help="Put the participants into fit and report folds with --seed, every night of a pid in one fold.",
+    )
+    external_parser.add_argument("--seed", type=int, default=0)
+    external_parser.add_argument(
+        "--fit-fraction", type=float, default=0.5, help="Share of the nights in the fit fold (default 0.5)."
+    )
+    external_parser.add_argument(
+        "--gate-thresholds",
+        action="append",
+        choices=("p21",) + named_gate_threshold_sets(),
+        help="Threshold set of the gate over the heuristic's p_rem; repeat for several. Default: all. boas_v1 "
+        "is fitted on the fit fold, opt-in, and never a live default.",
+    )
+    external_parser.add_argument(
+        "--reference",
+        action="append",
+        choices=("gssc", "yasa"),
+        help="Also score this stager against the consensus on the report fold; repeat for both.",
+    )
+    external_parser.add_argument("--gssc-python", type=Path, help="Python of the GSSC venv. Default: .venv-gssc/bin/python.")
+    external_parser.add_argument("--yasa-python", type=Path, help="Python of the YASA venv. Default: .venv-yasa/bin/python.")
+    external_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="Where the nights, the fit and metrics.json go, e.g. data/validation_public/boas/.",
+    )
+    external_parser.add_argument(
+        "--nights", help="Only these recordings, comma-separated (sub-3,sub-4): a smoke run on part of the dataset."
+    )
+    external_parser.add_argument("--jobs", type=int, default=1, help="Nights replayed at once (default 1).")
+    external_parser.add_argument(
+        "--rescore", action="store_true", help="Replay and stage every night again, cached or not."
+    )
 
     play_parser = subparsers.add_parser("play-test-cue", help="Play a low-volume test cue.")
     play_parser.add_argument("--frequency-hz", type=float, default=440.0)
@@ -1361,6 +1419,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _import_recording(args)
     if args.command == "train-rem-classifier":
         return _train_rem_classifier(args)
+    if args.command == "validate-external":
+        return _validate_external(args, sys.argv[1:] if argv is None else argv)
     if args.command == "play-test-cue":
         return _play_test_cue(args)
     if args.command == "calibrate-volume":
@@ -2607,11 +2667,26 @@ def _train_rem_classifier(args: argparse.Namespace) -> int:
     from muse_tmr.models import (
         DEFAULT_PERSONAL_REM_FEATURES,
         PersonalRemClassifierConfig,
+        PersonalRemModel,
         train_personal_rem_classifier,
     )
+    from muse_tmr.validation.rem_reference import file_sha256
 
-    annotations = load_rem_annotations(_resolve_output_path(args.annotations))
-    feature_names = tuple(args.features) if args.features else DEFAULT_PERSONAL_REM_FEATURES
+    annotations_path = _resolve_output_path(args.annotations)
+    annotations = load_rem_annotations(annotations_path)
+    init = None
+    init_path = None
+    if args.init is not None:
+        init_path = _resolve_output_path(args.init)
+        try:
+            init = PersonalRemModel.load(init_path)
+        except (OSError, KeyError, ValueError) as exc:
+            print(f"train-rem-classifier: --init {init_path}: {exc}", file=sys.stderr)
+            return 2
+    if args.features:
+        feature_names = tuple(args.features)
+    else:
+        feature_names = tuple(init.feature_names) if init is not None else DEFAULT_PERSONAL_REM_FEATURES
     config = PersonalRemClassifierConfig(
         feature_names=feature_names,
         learning_rate=args.learning_rate,
@@ -2620,7 +2695,20 @@ def _train_rem_classifier(args: argparse.Namespace) -> int:
         decision_threshold=args.threshold,
         min_training_rows=args.min_training_rows,
     )
-    model = train_personal_rem_classifier(annotations, config=config)
+    training_data: Dict[str, object] = {
+        "annotations": {"name": annotations_path.name, "sha256": file_sha256(annotations_path)},
+        # Names only: a recording id from annotate-template is its directory's full path.
+        "recording_ids": sorted({Path(row.recording_id).name for row in annotations if row.is_training_label}),
+    }
+    if init_path is not None:
+        training_data["init_artifact"] = {"name": init_path.name, "sha256": file_sha256(init_path)}
+    try:
+        model = train_personal_rem_classifier(annotations, config=config, init=init, training_data=training_data)
+    except ValueError as exc:
+        if init is None:
+            raise
+        print(f"train-rem-classifier: {exc}", file=sys.stderr)
+        return 2
     output_path = model.save(_resolve_output_path(args.output))
     summary = model.training_summary
     metrics = summary.metrics if summary is not None else {}
@@ -2635,9 +2723,91 @@ def _train_rem_classifier(args: argparse.Namespace) -> int:
         f"balanced_accuracy={metrics.get('balanced_accuracy', 'nan')} "
         f"brier={metrics.get('brier_score', 'nan')} "
         f"group_holdout={group_metrics.get('status', 'nan')} "
-        f"output={output_path}"
+        + (f"init={init_path.name} " if init_path is not None else "")
+        + f"output={output_path}"
     )
     return 0
+
+
+def _validate_external(args: argparse.Namespace, argv: Sequence[str]) -> int:
+    from muse_tmr.validation.external_labels import (
+        GATE_THRESHOLD_CHOICES,
+        ExternalValidationConfig,
+        run_external_validation,
+    )
+    from muse_tmr.validation.rem_reference import StagerError
+
+    references = tuple(dict.fromkeys(args.reference or ()))
+    pythons = {}
+    for reference in references:
+        given = args.gssc_python if reference == "gssc" else args.yasa_python
+        # Not resolved: the venv's python is a symlink, and resolving it drops the venv.
+        pythons[reference] = (
+            given.expanduser() if given is not None else _default_path_base() / f".venv-{reference}" / "bin" / "python"
+        )
+    nights = None
+    if args.nights:
+        nights = tuple(name.strip() for name in args.nights.split(",") if name.strip())
+    config = ExternalValidationConfig(
+        root=_resolve_output_path(args.root),
+        output_dir=_resolve_output_path(args.output_dir),
+        splits_path=_resolve_output_path(args.splits),
+        dataset=args.dataset,
+        make_splits=args.make_splits,
+        seed=args.seed,
+        fit_fraction=args.fit_fraction,
+        gate_thresholds=tuple(dict.fromkeys(args.gate_thresholds or GATE_THRESHOLD_CHOICES)),
+        references=references,
+        reference_pythons=pythons,
+        nights=nights,
+        jobs=args.jobs,
+        rescore=args.rescore,
+        argv=("muse-tmr",) + tuple(str(arg) for arg in argv),
+    )
+    try:
+        result = run_external_validation(config, log=lambda line: print(line, flush=True))
+    except (OSError, ImportError, StagerError, ValueError) as exc:
+        print(f"validate-external: {exc}", file=sys.stderr)
+        return 2
+    note = " (synthetic input, not sleep)" if result.get("synthetic") else ""
+    systems = result.get("systems") or {}
+    if systems:
+        print(f"{'system':<18} {'nights':>6} {'kappa':>6} {'F1':>5} {'prec':>5} {'P@R.8':>6} {'lat_med_s':>9} {'false_min':>9}")
+        for name, pooled in systems.items():
+            latency = pooled.get("rem_onset_latency", {})
+            false_open = pooled.get("false_open_minutes_per_night", {})
+            print(
+                f"{name:<18} {pooled.get('nights', 0):>6} {_cell(pooled.get('kappa'), 6, 3)} "
+                f"{_cell(pooled.get('f1'), 5, 2)} {_cell(pooled.get('precision'), 5, 2)} "
+                f"{_cell(pooled.get('precision_at_recall_0.80', {}).get('precision'), 6, 2)} "
+                f"{_cell(latency.get('median_s'), 9, 0)} {_cell(false_open.get('mean'), 9, 1)}"
+            )
+    failed = result.get("failed") or {}
+    report_nights = [name for name, night in result["nights"].items() if night.get("fold") == "report"]
+    if report_nights and not result.get("metrics"):
+        # Every report night selected was left out, so there is nothing to report.
+        errors = {name: (str(failed.get(name, "")).strip().splitlines() or [""])[0] for name in report_nights}
+        print(
+            "validate-external: every report-fold night failed, so no metrics.json was written: "
+            + "; ".join(f"{name}: {error}" for name, error in errors.items())
+            + note,
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"validate-external complete splits={result['splits']} splits_sha256={str(result['splits_sha256'])[:12]} "
+        f"nights={len(result['nights'])} output={result['output_dir']}"
+        + (f" left_out={len(failed)}" if failed else "")
+        + (f" metrics={result['metrics']}" if result.get("metrics") else " (no report-fold night selected)")
+        + note
+    )
+    return 0
+
+
+def _cell(value: object, width: int, decimals: int) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
+        return f"{'n/a':>{width}}"
+    return f"{float(value):>{width}.{decimals}f}"
 
 
 def _play_test_cue(args: argparse.Namespace) -> int:

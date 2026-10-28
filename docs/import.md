@@ -42,7 +42,7 @@ The CSV formats are read in frames of up to 12 rows, split where the times jump 
 
 ## Channel maps for EDF
 
-Without `--channel-map` an EDF is read by the labels `export-edf` writes. `--channel-map boas-headband` reads the headband files of the BOAS dataset ([OpenNeuro ds005555](https://github.com/OpenNeuroDatasets/ds005555)), `sub-*_task-Sleep_acq-headband_eeg.edf`: `HB_1` and `HB_2` (near AF7 and AF8, against the left mastoid) as AF7 and AF8, `HB_IMU_1` to `3` as the accelerometer, `HB_IMU_4` to `6` as the gyroscope and `HB_PULSE` as a pulse channel, all recorded at 256 Hz; nights without IMU or pulse read the same way. Any other file takes `LABEL=TARGET,...` with targets `eeg:NAME`, `accel:x`, `gyro:z`, `ppg:NAME` or `skip`; a target without a kind is EEG.
+Without `--channel-map` an EDF is read by the labels `export-edf` writes. `--channel-map boas-headband` reads the headband files of the BOAS dataset ([OpenNeuro ds005555](https://github.com/OpenNeuroDatasets/ds005555)), `sub-*_task-Sleep_acq-headband_eeg.edf`: `HB_1` and `HB_2` (near AF7 and AF8, against the left mastoid) as AF7 and AF8, `HB_IMU_1` to `3` as the accelerometer, `HB_IMU_4` to `6` as the gyroscope and `HB_PULSE` as a pulse channel, all recorded at 256 Hz; nights without IMU or pulse read the same way. On the nights checked for #226 the IMU is not in the units its header names, so the motion features of an imported BOAS night mean nothing; `validate-external` reads the EEG alone ([`validation_external.md`](validation_external.md)). Any other file takes `LABEL=TARGET,...` with targets `eeg:NAME`, `accel:x`, `gyro:z`, `ppg:NAME` or `skip`; a target without a kind is EEG.
 
 ## Hypnograms from other tools
 

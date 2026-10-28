@@ -87,6 +87,8 @@ def run_fast_tests():
         'tests.test_rem_validation_provenance',
         'tests.test_synthetic_night',
         'tests.test_rem_metrics',
+        'tests.test_boas_dataset',
+        'tests.test_external_labels',
         'tests.test_packaging',
     ]
     

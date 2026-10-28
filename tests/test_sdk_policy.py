@@ -40,6 +40,26 @@ class TestSdkPolicy(unittest.TestCase):
         self.assertTrue(policy.is_forbidden("data/recordings/imported/night/decoded_frames.jsonl"))
         self.assertTrue(policy.is_forbidden("night.edf"))
 
+    def test_only_the_boas_splits_and_pooled_metrics_are_publishable(self):
+        policy = _load_policy_script()
+
+        # validate-external writes data/validation_public/boas/ (#226); the maintainer
+        # decided that only these two files are committed.
+        self.assertFalse(policy.is_forbidden("data/validation_public/boas/splits.json"))
+        self.assertFalse(policy.is_forbidden("data/validation_public/boas/metrics.json"))
+        for path in (
+            "data/validation_public/boas/nights/sub-3/epochs.csv",
+            "data/validation_public/boas/nights/sub-3/report.json",
+            "data/validation_public/boas/fit.json",
+            "data/validation_public/boas/per_night_metrics.json",
+            "data/validation_public/boas/boas_v1_personal_rem_model.json",
+            "data/validation_public/boas/metrics.json.tmp",
+            "data/validation_public/other/metrics.json",
+            "data/validation_public/README.md",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(policy.is_forbidden(path))
+
     def test_sdk_stub_source_file_is_allowed(self):
         policy = _load_policy_script()
 
