@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 from unittest import mock
 
@@ -119,6 +119,24 @@ class SplitsTest(unittest.TestCase):
             path.write_text(json.dumps({"schema_version": 99}), encoding="utf-8")
             with self.assertRaises(ValueError):
                 ext.load_splits(path)
+
+    def test_a_crlf_checkout_of_the_splits_has_their_sha256(self):
+        splits = ext.make_splits(_nights(["7", "8"]), seed=0)
+        with tempfile.TemporaryDirectory() as tmp:
+            lf = Path(tmp) / "lf" / "splits.json"
+            sha = ext.write_splits(splits, lf)
+            crlf = Path(tmp) / "crlf" / "splits.json"
+            crlf.parent.mkdir()
+            crlf.write_bytes(lf.read_bytes().replace(b"\n", b"\r\n"))
+
+            self.assertEqual(sha, file_sha256(lf))
+            self.assertNotEqual(file_sha256(crlf), sha)
+            self.assertEqual(ext.write_splits(splits, crlf), sha)
+            self.assertEqual(ext.splits_sha256(ext.load_splits(crlf)), sha)
+            stored = {"boas_v1": GateThresholdSet(0.7, 0.6, sha)}
+            with mock.patch.dict("muse_tmr.presets._NAMED_GATE_THRESHOLDS", stored):
+                pair = ext.resolve_named_pair("boas_v1", None, ext.splits_sha256(ext.load_splits(crlf)))
+            self.assertEqual(pair["source"], "presets.py")
 
 
 class NamedThresholdsTest(unittest.TestCase):
@@ -272,6 +290,17 @@ class HarnessRunTest(unittest.TestCase):
         self.assertEqual(self.metrics["nights"]["report_recordings"], [self.report_night])
         self.assertEqual(self.metrics["nights"]["fit_recordings"], [self.fit_night])
         self.assertEqual(self.result["splits_sha256"], file_sha256(self.out / "splits.json"))
+
+    def test_splits_read_from_a_crlf_checkout_have_the_same_sha256(self):
+        out = self.tmp / "crlf"
+        out.mkdir()
+        (out / "splits.json").write_bytes((self.out / "splits.json").read_bytes().replace(b"\n", b"\r\n"))
+        config = replace(self.config, output_dir=out, splits_path=out / "splits.json", make_splits=False,
+                         nights=(self.fit_night,), references=())
+
+        result = ext.run_external_validation(config, log=lambda line: None)
+
+        self.assertEqual(result["splits_sha256"], self.result["splits_sha256"])
 
     def test_everything_says_synthetic(self):
         for path in (self.out / "metrics.json", self.out / "fit.json", self.out / "splits.json",

@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import bisect
 import csv
+import hashlib
 import json
 import math
 import os
@@ -315,9 +316,15 @@ def splits_text(splits: Mapping[str, object]) -> str:
     return json.dumps(splits, indent=2, sort_keys=True) + "\n"
 
 
+def splits_sha256(splits: Mapping[str, object]) -> str:
+    """The sha256 of ``splits`` as ``splits_text()`` writes them: the sha256 of the
+    splits.json it wrote, and the same for a checkout that turned its line ends into CRLF."""
+    return hashlib.sha256(splits_text(splits).encode("utf-8")).hexdigest()
+
+
 def write_splits(splits: Mapping[str, object], path: Path) -> str:
-    """Write ``splits`` to ``path`` unless an equal file is there; its sha256.
-    ValueError when ``path`` holds other splits."""
+    """Write ``splits`` to ``path`` unless an equal file is there; their sha256
+    (``splits_sha256()``). ValueError when ``path`` holds other splits."""
     path = Path(path).expanduser()
     text = splits_text(splits)
     if path.exists():
@@ -327,7 +334,7 @@ def write_splits(splits: Mapping[str, object], path: Path) -> str:
             )
     else:
         _atomic_write(path, text)
-    return file_sha256(path)
+    return splits_sha256(splits)
 
 
 def load_splits(path: Path) -> Dict[str, object]:
@@ -905,7 +912,8 @@ def _resolve_splits(config, root: Path, nights, version) -> Tuple[Dict[str, obje
         return splits, write_splits(splits, splits_path)
     if not splits_path.is_file():
         raise ValueError(f"splits not found: {splits_path}; make them with --make-splits --seed N")
-    return load_splits(splits_path), file_sha256(splits_path)
+    splits = load_splits(splits_path)
+    return splits, splits_sha256(splits)
 
 
 def _run_jobs(jobs: Sequence[NightJob], workers: int, log, stager_runner) -> Dict[str, Dict[str, object]]:
