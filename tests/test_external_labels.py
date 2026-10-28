@@ -408,6 +408,35 @@ class HarnessRunTest(unittest.TestCase):
             again = ext.run_external_validation(config, log=lambda line: None)
         self.assertFalse(any(night["cached"] for night in again["nights"].values()))
 
+    def test_a_report_only_run_takes_only_a_fit_of_these_splits_and_this_code(self):
+        out = self.tmp / "report_only"
+        config = replace(self.config, output_dir=out, splits_path=out / "splits.json", references=())
+        ext.run_external_validation(config, log=lambda line: None)
+        report_only = replace(config, nights=(self.report_night,))
+        model = out / "boas_v1_personal_rem_model.json"
+
+        ext.run_external_validation(report_only, log=lambda line: None)
+        metrics = json.loads((out / "metrics.json").read_text(encoding="utf-8"))
+        self.assertEqual(metrics["gate_thresholds"]["boas_v1"]["source"], "fit.json")
+        self.assertEqual(metrics["personal_model"]["sha256"], file_sha256(model))
+        self.assertEqual(ext.usable_fit(out, "other"), (None, "it was fitted on other splits"))
+
+        other_code = {"muse_tmr_version": "x", "git_commit": "y", "harness_schema": 1}
+        lines = []
+        with mock.patch.object(ext, "code_version", lambda: other_code):
+            with self.assertRaisesRegex(ext.NotFittedError, "fitted with another code version"):
+                ext.run_external_validation(report_only, log=lines.append)
+            ext.run_external_validation(replace(report_only, gate_thresholds=("p21",)), log=lines.append)
+        metrics = json.loads((out / "metrics.json").read_text(encoding="utf-8"))
+        self.assertEqual(metrics["personal_model"], {"status": "not fitted"})
+        self.assertNotIn("personal", metrics["systems"])
+        self.assertTrue(any("fit.json is not used" in line for line in lines))
+
+        # A run that stopped between the model and fit.json leaves a model fit.json does not record.
+        model.write_text(model.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(ext.NotFittedError, "is not the model it records"):
+            ext.run_external_validation(report_only, log=lambda line: None)
+
     def test_the_report_refuses_participants_the_fit_used(self):
         fit = json.loads((self.out / "fit.json").read_text(encoding="utf-8"))
         pid = {spec.recording_id: spec.pid for spec in TWO_NIGHTS}[self.report_night]

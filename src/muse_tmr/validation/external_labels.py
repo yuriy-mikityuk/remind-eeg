@@ -772,6 +772,25 @@ def resolve_named_pair(
     return {"enter": fitted["enter"], "exit": fitted["exit"], "source": FIT_FILENAME}
 
 
+def usable_fit(output_dir: Path, splits_sha: str) -> Tuple[Optional[Dict[str, object]], Optional[str]]:
+    """``fit.json`` of ``output_dir`` when a report may use it: fitted on the splits of
+    sha256 ``splits_sha`` with this code version, and its personal model the file beside
+    it. Else None and why not; (None, None) when there is no ``fit.json``."""
+    path = Path(output_dir) / FIT_FILENAME
+    if not path.is_file():
+        return None, None
+    fit = _read_json(path)
+    if fit.get("splits_sha256") != splits_sha:
+        return None, "it was fitted on other splits"
+    if fit.get("code") != code_version():
+        return None, "it was fitted with another code version"
+    personal = fit.get("personal")
+    model = Path(output_dir) / PERSONAL_MODEL_FILENAME
+    if personal and (not model.is_file() or file_sha256(model) != personal.get("sha256")):  # type: ignore[union-attr]
+        return None, f"{PERSONAL_MODEL_FILENAME} is not the model it records"
+    return fit, None
+
+
 # --------------------------------------------------------------------------- #
 # The run
 # --------------------------------------------------------------------------- #
@@ -853,15 +872,18 @@ def run_external_validation(
     report_nights = [name for name in selected if folds[name] == "report"]
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    prior_fit = _read_json(output_dir / FIT_FILENAME) if (output_dir / FIT_FILENAME).is_file() else None
-    if prior_fit is not None and prior_fit.get("splits_sha256") != splits_sha:
-        prior_fit = None
+    # A run without fit nights reports with the fit already here, and only with one made
+    # on these splits by this code, beside the model it records.
+    prior_fit, unusable = usable_fit(output_dir, splits_sha)
     for name in config.gate_thresholds:
         if name != P21 and not fit_nights and prior_fit is None and named_gate_thresholds(name) is None:
             raise NotFittedError(
                 f"--gate-thresholds {name} needs the fit step: no fit-fold night is selected and "
-                f"{output_dir / FIT_FILENAME} does not exist for these splits"
+                + (f"{output_dir / FIT_FILENAME} cannot be used: {unusable}" if unusable
+                   else f"{output_dir / FIT_FILENAME} does not exist")
             )
+    if unusable and not fit_nights:
+        log(f"{FIT_FILENAME} is not used, so the report has no personal model: {unusable}")
 
     key = {"splits_sha256": splits_sha, **code_version()}
     jobs = [
@@ -1000,7 +1022,10 @@ def _fit(output_dir: Path, fit_nights, by_id, splits, splits_sha: str, synthetic
         PersonalRemClassifierConfig(feature_names=EEG_PERSONAL_REM_FEATURES, group_column="pid"),
         training_data=training_data,
     )
-    model_path = model.save(output_dir / PERSONAL_MODEL_FILENAME)
+    # As PersonalRemModel.save() writes it, but atomically. fit.json, written after it,
+    # records its sha256, so a run that stops in between leaves a fit no report uses.
+    model_path = output_dir / PERSONAL_MODEL_FILENAME
+    _atomic_write(model_path, json.dumps(model.to_dict(), indent=2, sort_keys=True))
     personal_series = [
         ([str(row["label"]) for row in rows], personal_predictions(model, rows)) for rows in rows_by_night.values()
     ]
@@ -1081,8 +1106,12 @@ def _report(config, output_dir: Path, report_nights, by_id, fit, splits, splits_
         raise SplitOverlapError(f"report nights of participants the fit used: pid {', '.join(overlap)}")
     pairs = {name: resolve_named_pair(name, fit, splits_sha) for name in config.gate_thresholds}
     model = None
+    model_sha = None
     personal_pair = None
     if fit and fit.get("personal") and (output_dir / PERSONAL_MODEL_FILENAME).is_file():
+        model_sha = file_sha256(output_dir / PERSONAL_MODEL_FILENAME)
+        if model_sha != fit["personal"]["sha256"]:
+            raise NotFittedError(f"{PERSONAL_MODEL_FILENAME} is not the model {FIT_FILENAME} records")
         model = PersonalRemModel.load(output_dir / PERSONAL_MODEL_FILENAME)
         model_pids = set(str(pid) for pid in (model.training_data or {}).get("pids", []))
         if model_pids & {str(by_id[name].pid) for name in report_nights}:
@@ -1203,7 +1232,7 @@ def _report(config, output_dir: Path, report_nights, by_id, fit, splits, splits_
                                  "source": FIT_FILENAME}} if personal_pair else {}),
             },
             "personal_model": (
-                {"artifact": PERSONAL_MODEL_FILENAME, "sha256": fit["personal"]["sha256"],
+                {"artifact": PERSONAL_MODEL_FILENAME, "sha256": model_sha,
                  "feature_names": fit["personal"]["feature_names"]}
                 if model is not None else {"status": "not fitted"}
             ),
