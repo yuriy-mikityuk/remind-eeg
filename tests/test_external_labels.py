@@ -303,12 +303,16 @@ class HarnessRunTest(unittest.TestCase):
         self.assertEqual(result["splits_sha256"], self.result["splits_sha256"])
 
     def test_everything_says_synthetic(self):
+        report, fit = self.out / "nights" / self.report_night, self.out / "nights" / self.fit_night
         for path in (self.out / "metrics.json", self.out / "fit.json", self.out / "splits.json",
-                     self.out / "per_night_metrics.json", self.out / "nights" / self.report_night / "report.json"):
-            with self.subTest(path=path.name):
+                     self.out / "per_night_metrics.json", report / "report.json", report / "night.json",
+                     report / "gssc.json", report / "yasa.json", fit / "night.json"):
+            with self.subTest(path=str(path.relative_to(self.out))):
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 self.assertIs(payload["synthetic"], True)
                 self.assertEqual(payload["note"], "synthetic input, not sleep")
+        model = json.loads((self.out / "boas_v1_personal_rem_model.json").read_text(encoding="utf-8"))
+        self.assertEqual(model["training_data"]["note"], "synthetic input, not sleep")
         self.assertTrue(self.result["synthetic"])
 
     def test_metrics_cover_every_system_and_are_strict_json(self):

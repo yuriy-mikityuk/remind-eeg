@@ -403,7 +403,8 @@ def code_version() -> Dict[str, object]:
 
 @dataclass(frozen=True)
 class NightJob:
-    """One night for ``score_night()``: what to compute and where to keep it."""
+    """One night for ``score_night()``: what to compute and where to keep it.
+    ``synthetic`` labels its JSON files ``synthetic input, not sleep``."""
 
     night: BoasNight
     fold: str
@@ -412,6 +413,7 @@ class NightJob:
     references: Tuple[str, ...] = ()
     reference_pythons: Mapping[str, str] = field(default_factory=dict)
     rescore: bool = False
+    synthetic: bool = False
 
 
 def night_dir(output_dir: Path, recording_id: str) -> Path:
@@ -481,21 +483,26 @@ def score_night(job: NightJob, *, stager_runner: Optional[Callable] = None) -> D
                 for epoch in hypno["epochs"]  # type: ignore[union-attr]
             ],
         }
-        _atomic_write(out / f"{reference}.json", json.dumps(payload, indent=1, sort_keys=True) + "\n")
+        _atomic_write(
+            out / f"{reference}.json", json.dumps(_labelled(payload, job.synthetic), indent=1, sort_keys=True) + "\n"
+        )
         parts[reference] = {
             "file": f"{reference}.json",
             "settings": settings,
             "seconds": round(time.perf_counter() - started, 3),
         }
-    manifest = {
-        "schema_version": HARNESS_SCHEMA_VERSION,
-        "recording_id": job.night.recording_id,
-        "pid": job.night.pid,
-        "fold": job.fold,
-        "key": dict(job.key),
-        "labels": {"epochs": len(labels), "scored": sum(1 for row in labels if row.label in SCORED_LABELS)},
-        "parts": parts,
-    }
+    manifest = _labelled(
+        {
+            "schema_version": HARNESS_SCHEMA_VERSION,
+            "recording_id": job.night.recording_id,
+            "pid": job.night.pid,
+            "fold": job.fold,
+            "key": dict(job.key),
+            "labels": {"epochs": len(labels), "scored": sum(1 for row in labels if row.label in SCORED_LABELS)},
+            "parts": parts,
+        },
+        job.synthetic,
+    )
     _atomic_write(manifest_path, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return {**manifest, "skipped": False}
 
@@ -866,6 +873,7 @@ def run_external_validation(
             references=tuple(config.references) if folds[name] == "report" else (),
             reference_pythons={reference: str(path) for reference, path in config.reference_pythons.items()},
             rescore=config.rescore,
+            synthetic=synthetic,
         )
         for name in selected
     ]
