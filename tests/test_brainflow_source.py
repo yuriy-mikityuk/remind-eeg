@@ -1,9 +1,11 @@
+import asyncio
 import math
 import unittest
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from muse_tmr.sources import brainflow_source
 from muse_tmr.sources.brainflow_source import (
     BrainFlowDependencyError,
     BrainFlowSource,
@@ -216,21 +218,37 @@ class TestBrainFlowSource(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(source.disconnect_reason, "connect_timeout")
 
-    async def test_stop_applies_configured_session_cooldown(self):
-        board = FakeBrainFlowBoard({})
-        backend = FakeBrainFlowBackend(board)
+    async def _sleeps_during_stop(self, cooldown_seconds):
         source = BrainFlowSource(
-            BrainFlowSourceConfig(
-                session_cooldown_seconds=0.01,
-            ),
-            brainflow_backend=backend,
+            BrainFlowSourceConfig(session_cooldown_seconds=cooldown_seconds),
+            brainflow_backend=FakeBrainFlowBackend(FakeBrainFlowBoard({})),
         )
         await source.connect()
 
-        started = time.monotonic()
-        await source.stop()
+        # Record the delays instead of timing stop() with the wall clock: on
+        # Windows time.monotonic() ticks at about 15.6 ms. The stop/release
+        # polling still yields to the loop so its worker threads can finish.
+        real_sleep = asyncio.sleep
+        delays = []
 
-        self.assertGreaterEqual(time.monotonic() - started, 0.01)
+        async def recording_sleep(delay, *args, **kwargs):
+            delays.append(delay)
+            await real_sleep(0)
+
+        with patch.object(brainflow_source.asyncio, "sleep", recording_sleep):
+            await source.stop()
+        return delays
+
+    async def test_stop_applies_configured_session_cooldown(self):
+        delays = await self._sleeps_during_stop(30.0)
+
+        self.assertEqual(delays.count(30.0), 1)
+        self.assertEqual(delays[-1], 30.0)
+
+    async def test_stop_skips_sleep_without_session_cooldown(self):
+        delays = await self._sleeps_during_stop(0.0)
+
+        self.assertNotIn(0.0, delays)
 
 
 class TestBrainFlowSourceConfigValidation(unittest.TestCase):
