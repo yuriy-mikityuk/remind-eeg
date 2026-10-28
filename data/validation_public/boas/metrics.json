@@ -1,0 +1,691 @@
+{
+  "code": {
+    "git_commit": "d7485ce02e754ed6ad9fd76ba98c1a58e1cc4b26",
+    "harness_schema": 1,
+    "muse_tmr_version": "0.3.0"
+  },
+  "dataset": {
+    "doi": "10.18112/openneuro.ds005555.v1.1.3",
+    "id": "ds005555",
+    "name": "The Bitbrain Open Access Sleep (BOAS) dataset",
+    "url": "https://github.com/OpenNeuroDatasets/ds005555",
+    "version": "1.1.3"
+  },
+  "detector": {
+    "channels": {
+      "HB_1": "AF7",
+      "HB_2": "AF8"
+    },
+    "epoch_seconds": 30.0,
+    "gate": {
+      "imu_capable": false,
+      "optics_capable": false
+    },
+    "modalities": [
+      "eeg"
+    ]
+  },
+  "gate_thresholds": {
+    "boas_v1": {
+      "enter": 0.4,
+      "exit": 0.35,
+      "source": "fit.json"
+    },
+    "p21": {
+      "enter": 0.9,
+      "exit": 0.85,
+      "source": "presets.preset_gate_thresholds('p21')"
+    },
+    "personal": {
+      "enter": 0.25,
+      "exit": 0.15,
+      "source": "fit.json"
+    }
+  },
+  "kappa_definition": "binary REM-vs-not \u03ba against the PSG consensus (BOAS stage_hum); not five-class",
+  "labels": "stage_hum: 0 wake, 1 to 3 nrem, 4 REM; 8 (PSG disconnection), -2 and missing are not scored",
+  "limitations": [
+    "transfer_not_muse: a Bitbrain Ikon headband referenced to the mastoid, not a Muse referenced near Fpz",
+    "eeg_only: the headband IMU is not in the units its files name, so the detector runs without its stillness term and the gate without motion blocks",
+    "binary_kappa: REM against not REM, not five-class",
+    "offline_stagers: GSSC and YASA read the whole night; their latency is not that of a causal gate",
+    "stage_ai_trained_on_boas: stage_ai comes from Bitbrain's network, trained on BOAS itself in cross-validation folds; it is context, not a baseline"
+  ],
+  "nights": {
+    "fit_recordings": [
+      "sub-4",
+      "sub-5",
+      "sub-7",
+      "sub-9",
+      "sub-10",
+      "sub-11",
+      "sub-13",
+      "sub-14",
+      "sub-15",
+      "sub-18",
+      "sub-19",
+      "sub-20",
+      "sub-21",
+      "sub-23",
+      "sub-24",
+      "sub-25",
+      "sub-26",
+      "sub-29",
+      "sub-30",
+      "sub-31",
+      "sub-32",
+      "sub-34",
+      "sub-35",
+      "sub-38",
+      "sub-39",
+      "sub-41",
+      "sub-43",
+      "sub-44",
+      "sub-45",
+      "sub-46",
+      "sub-47",
+      "sub-48",
+      "sub-50",
+      "sub-53",
+      "sub-54",
+      "sub-55",
+      "sub-57",
+      "sub-60",
+      "sub-62",
+      "sub-67",
+      "sub-68",
+      "sub-69",
+      "sub-70",
+      "sub-73",
+      "sub-76",
+      "sub-80",
+      "sub-82",
+      "sub-83",
+      "sub-86",
+      "sub-87",
+      "sub-91",
+      "sub-93",
+      "sub-96",
+      "sub-98",
+      "sub-102",
+      "sub-105",
+      "sub-106",
+      "sub-115",
+      "sub-116",
+      "sub-117",
+      "sub-121",
+      "sub-122",
+      "sub-124",
+      "sub-128"
+    ],
+    "headband": {
+      "nights_mostly_without_eeg": 1,
+      "scored_epochs": 60012,
+      "without_eeg_scores": 1801
+    },
+    "left_out": {},
+    "report": 64,
+    "report_recordings": [
+      "sub-1",
+      "sub-2",
+      "sub-3",
+      "sub-6",
+      "sub-8",
+      "sub-12",
+      "sub-16",
+      "sub-17",
+      "sub-22",
+      "sub-27",
+      "sub-28",
+      "sub-33",
+      "sub-36",
+      "sub-37",
+      "sub-40",
+      "sub-42",
+      "sub-49",
+      "sub-51",
+      "sub-52",
+      "sub-56",
+      "sub-58",
+      "sub-59",
+      "sub-61",
+      "sub-63",
+      "sub-64",
+      "sub-65",
+      "sub-66",
+      "sub-71",
+      "sub-72",
+      "sub-74",
+      "sub-75",
+      "sub-77",
+      "sub-78",
+      "sub-79",
+      "sub-81",
+      "sub-84",
+      "sub-85",
+      "sub-88",
+      "sub-89",
+      "sub-90",
+      "sub-92",
+      "sub-94",
+      "sub-95",
+      "sub-97",
+      "sub-99",
+      "sub-100",
+      "sub-101",
+      "sub-103",
+      "sub-104",
+      "sub-107",
+      "sub-108",
+      "sub-109",
+      "sub-110",
+      "sub-111",
+      "sub-112",
+      "sub-113",
+      "sub-114",
+      "sub-118",
+      "sub-119",
+      "sub-120",
+      "sub-123",
+      "sub-125",
+      "sub-126",
+      "sub-127"
+    ]
+  },
+  "per_feature_auc": {
+    "score_eye_movement_proxy": {
+      "auc": 0.5000742296027656,
+      "max": 1.0,
+      "min": 0.0,
+      "n": 56783,
+      "saturated": false
+    },
+    "score_low_delta_power": {
+      "auc": 0.5532139050911347,
+      "max": 1.0,
+      "min": 0.0,
+      "n": 58211,
+      "saturated": false
+    },
+    "score_rem_event_density": {
+      "auc": 0.6369643072045836,
+      "max": 1.0,
+      "min": 0.0,
+      "n": 56783,
+      "saturated": false
+    },
+    "score_theta_alpha_ratio": {
+      "auc": 0.5726399769964293,
+      "max": 1.0,
+      "min": 0.0,
+      "n": 58211,
+      "saturated": false
+    },
+    "value_eeg_coverage": {
+      "auc": 0.5,
+      "max": 1.0,
+      "min": 1.0,
+      "n": 60012,
+      "saturated": true
+    },
+    "value_eye_movement_proxy": {
+      "auc": 0.368901800990893,
+      "max": 351.41624399086595,
+      "min": 0.01656941388177348,
+      "n": 56783,
+      "saturated": false
+    },
+    "value_heart_rate_coverage": {
+      "auc": 0.5,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 60012,
+      "saturated": true
+    },
+    "value_hr_trend_bpm_per_min": {
+      "auc": null,
+      "max": null,
+      "min": null,
+      "n": 0,
+      "saturated": false
+    },
+    "value_imu_coverage": {
+      "auc": 0.5,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 60012,
+      "saturated": true
+    },
+    "value_mean_hr_bpm": {
+      "auc": null,
+      "max": null,
+      "min": null,
+      "n": 0,
+      "saturated": false
+    },
+    "value_motion_level": {
+      "auc": null,
+      "max": null,
+      "min": null,
+      "n": 0,
+      "saturated": false
+    },
+    "value_ppg_coverage": {
+      "auc": 0.5,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 60012,
+      "saturated": true
+    },
+    "value_relative_delta_power": {
+      "auc": 0.39522232336735746,
+      "max": 0.9977387352193389,
+      "min": 0.0361971952412155,
+      "n": 58211,
+      "saturated": false
+    },
+    "value_rem_event_count": {
+      "auc": 0.6402940868441258,
+      "max": 20.0,
+      "min": 0.0,
+      "n": 56783,
+      "saturated": false
+    },
+    "value_rem_event_density": {
+      "auc": 0.6400954832431692,
+      "max": 40.714285714285715,
+      "min": 0.0,
+      "n": 56783,
+      "saturated": false
+    },
+    "value_rem_event_threshold_uv": {
+      "auc": 0.37942650484578033,
+      "max": 518.4777956722622,
+      "min": 10.0,
+      "n": 56783,
+      "saturated": false
+    },
+    "value_rem_event_warmup": {
+      "auc": 0.4985596543170361,
+      "max": 1.0,
+      "min": 0.0,
+      "n": 60012,
+      "saturated": false
+    },
+    "value_rmssd_ms": {
+      "auc": null,
+      "max": null,
+      "min": null,
+      "n": 0,
+      "saturated": false
+    },
+    "value_stillness_score": {
+      "auc": null,
+      "max": null,
+      "min": null,
+      "n": 0,
+      "saturated": false
+    },
+    "value_theta_alpha_ratio": {
+      "auc": 0.5857098940701011,
+      "max": 40.96802127011511,
+      "min": 0.11993408801226094,
+      "n": 58211,
+      "saturated": false
+    }
+  },
+  "personal_model": {
+    "artifact": "boas_v1_personal_rem_model.json",
+    "feature_names": [
+      "p_rem",
+      "feature_score_low_delta_power",
+      "feature_score_theta_alpha_ratio",
+      "feature_score_rem_event_density",
+      "feature_value_relative_delta_power",
+      "feature_value_theta_alpha_ratio",
+      "feature_value_rem_event_density",
+      "feature_value_eeg_coverage"
+    ],
+    "sha256": "402bbcffbaacfcd3705c21cc555b2f5f74d8e2f2d9d4999190089c8ab443b7c2"
+  },
+  "provenance": {
+    "channels_not_passed": [],
+    "command_line": "muse-tmr validate-external --dataset boas --root '<root>' --splits '<splits>' --make-splits --seed 0 --fit-fraction 0.5 --gate-thresholds p21 --gate-thresholds boas_v1 --reference gssc --gssc-python '<gssc-python>' --reference yasa --yasa-python '<yasa-python>' --output-dir '<output-dir>' --jobs 3",
+    "dataset_version": "1.1.3",
+    "eeg": null,
+    "enter_threshold": 0.9,
+    "eog": null,
+    "epoch_seconds": 30.0,
+    "exit_threshold": 0.85,
+    "git_commit": "d7485ce02e754ed6ad9fd76ba98c1a58e1cc4b26",
+    "labels_file_sha256": null,
+    "labels_source": "boas:stage_hum",
+    "muse_tmr_version": "0.3.0",
+    "numpy": "2.5.4",
+    "preset": "p21",
+    "python": "3.12.3",
+    "resample_hz": null,
+    "scipy": "1.18.1",
+    "stager": {
+      "mne_version": null,
+      "package_version": null,
+      "returns_probabilities": null,
+      "tool": null,
+      "torch_version": null
+    },
+    "stride_seconds": 30.0,
+    "timestamp_utc": "2026-10-28T04:10:47+00:00",
+    "weight_overrides": {},
+    "weights": {
+      "eye_movement_proxy": 0.0,
+      "hr_trend": 0.06666666666666667,
+      "hr_variability": 0.13333333333333333,
+      "low_delta_power": 0.3333333333333333,
+      "rem_event_density": 0.0,
+      "stillness": 0.26666666666666666,
+      "theta_alpha_ratio": 0.2
+    }
+  },
+  "schema_version": 1,
+  "splits": {
+    "file": "splits.json",
+    "fit_fraction": 0.5,
+    "grouping": "pid",
+    "seed": 0,
+    "sha256": "d7642b15b42e00cb735141ab45a8d73ff5bd19a31633644673b4eee11ad9617c"
+  },
+  "stagers": {
+    "gssc": {
+      "eeg": "AF7",
+      "eog": "none",
+      "mne_version": "1.12.1",
+      "package_version": "0.0.9",
+      "resample_hz": 100.0,
+      "returns_probabilities": false,
+      "tool": "gssc",
+      "torch_version": "2.12.1"
+    },
+    "yasa": {
+      "eeg": "AF7",
+      "eog": "AF8",
+      "mne_version": "1.12.1",
+      "package_version": "0.7.0",
+      "resample_hz": 100.0,
+      "returns_probabilities": true,
+      "tool": "yasa",
+      "torch_version": null
+    }
+  },
+  "systems": {
+    "gssc": {
+      "description": "GSSC on HB_1 (AF7), an offline stager that reads the whole night",
+      "pooled": {
+        "accuracy": 0.9439250779049809,
+        "epochs": 60009,
+        "f1": 0.8361493889078248,
+        "false_open_minutes_per_night": {
+          "mean": 15.0546875,
+          "median": 6.25,
+          "nights": 64,
+          "q1": 3.375,
+          "q3": 12.25
+        },
+        "fn": 1438,
+        "fp": 1927,
+        "kappa": 0.8023469679236167,
+        "kappa_per_night": {
+          "median": 0.8803811948707096,
+          "nights_defined": 64,
+          "q1": 0.7900919466947659,
+          "q3": 0.9218258461236827
+        },
+        "nights": 64,
+        "open_epochs": 10513,
+        "open_fraction": 0.1751903881084504,
+        "precision": 0.8167031294587653,
+        "precision_at_recall_0.80": {
+          "precision": 0.8167031294587653,
+          "recall": 0.8565442936951316,
+          "threshold": 1.0
+        },
+        "recall": 0.8565442936951316,
+        "reference_rem_epochs": 10024,
+        "rem_onset_latency": {
+          "median_s": 30.0,
+          "q1_s": 30.0,
+          "q3_s": 30.0,
+          "runs": 398,
+          "runs_with_open": 352
+        },
+        "roc_auc": 0.9089963641127454,
+        "tn": 48058,
+        "tp": 8586
+      }
+    },
+    "heuristic_boas_v1": {
+      "description": "heuristic detector, gate at boas_v1 (fitted on the fit fold)",
+      "pooled": {
+        "accuracy": 0.7704625741518363,
+        "epochs": 60012,
+        "f1": 0.29188300005140594,
+        "false_open_minutes_per_night": {
+          "mean": 51.484375,
+          "median": 22.0,
+          "nights": 64,
+          "q1": 9.25,
+          "q3": 63.625
+        },
+        "fn": 7185,
+        "fp": 6590,
+        "kappa": 0.15506798291320603,
+        "kappa_per_night": {
+          "median": 0.08113113147718808,
+          "nights_defined": 64,
+          "q1": -0.01060072313496014,
+          "q3": 0.33169592148338395
+        },
+        "nights": 64,
+        "open_epochs": 9429,
+        "open_fraction": 0.15711857628474304,
+        "precision": 0.3010923745890338,
+        "precision_at_recall_0.80": {
+          "precision": 0.19299552906110284,
+          "recall": 0.9043296089385475,
+          "threshold": 0.375
+        },
+        "recall": 0.283220271348763,
+        "reference_rem_epochs": 10024,
+        "rem_onset_latency": {
+          "median_s": 60.0,
+          "q1_s": 30.0,
+          "q3_s": 360.0,
+          "runs": 398,
+          "runs_with_open": 165
+        },
+        "roc_auc": 0.613481286785764,
+        "tn": 43398,
+        "tp": 2839
+      }
+    },
+    "heuristic_p21": {
+      "description": "heuristic detector, gate at the p21 pair",
+      "pooled": {
+        "accuracy": 0.8326334733053389,
+        "epochs": 60012,
+        "f1": 0.0003980891719745223,
+        "false_open_minutes_per_night": {
+          "mean": 0.171875,
+          "median": 0.0,
+          "nights": 64,
+          "q1": 0.0,
+          "q3": 0.0
+        },
+        "fn": 10022,
+        "fp": 22,
+        "kappa": -0.0004001597133571944,
+        "kappa_per_night": {
+          "median": 0.0,
+          "nights_defined": 64,
+          "q1": 0.0,
+          "q3": 0.0
+        },
+        "nights": 64,
+        "open_epochs": 24,
+        "open_fraction": 0.0003999200159968006,
+        "precision": 0.08333333333333333,
+        "precision_at_recall_0.80": {
+          "precision": 0.19299552906110284,
+          "recall": 0.9043296089385475,
+          "threshold": 0.375
+        },
+        "recall": 0.00019952114924181964,
+        "reference_rem_epochs": 10024,
+        "rem_onset_latency": {
+          "median_s": 270.0,
+          "q1_s": 270.0,
+          "q3_s": 270.0,
+          "runs": 398,
+          "runs_with_open": 1
+        },
+        "roc_auc": 0.613481286785764,
+        "tn": 49966,
+        "tp": 2
+      }
+    },
+    "personal": {
+      "description": "personal model trained on the fit fold, gate at its own pair (fitted on the fit fold)",
+      "pooled": {
+        "accuracy": 0.8304339132173565,
+        "epochs": 60012,
+        "f1": 0.4926712533652408,
+        "false_open_minutes_per_night": {
+          "mean": 39.7890625,
+          "median": 33.0,
+          "nights": 64,
+          "q1": 16.625,
+          "q3": 49.75
+        },
+        "fn": 5083,
+        "fp": 5093,
+        "kappa": 0.3908766735762113,
+        "kappa_per_night": {
+          "median": 0.40409782125377586,
+          "nights_defined": 64,
+          "q1": 0.23842673456509372,
+          "q3": 0.546416273668274
+        },
+        "nights": 64,
+        "open_epochs": 10034,
+        "open_fraction": 0.1671998933546624,
+        "precision": 0.49242575244169823,
+        "precision_at_recall_0.80": {
+          "precision": 0.28410499840589465,
+          "recall": 0.8000798084596967,
+          "threshold": 0.14071156315170277
+        },
+        "recall": 0.4929169992019154,
+        "reference_rem_epochs": 10024,
+        "rem_onset_latency": {
+          "median_s": 90.0,
+          "q1_s": 30.0,
+          "q3_s": 180.0,
+          "runs": 398,
+          "runs_with_open": 323
+        },
+        "roc_auc": 0.7623202373837079,
+        "tn": 44895,
+        "tp": 4941
+      }
+    },
+    "stage_ai": {
+      "description": "Bitbrain's network on the headband (BOAS stage_ai), trained on BOAS itself; context only",
+      "pooled": {
+        "accuracy": 0.953365900980494,
+        "epochs": 57726,
+        "f1": 0.8663621922160446,
+        "false_open_minutes_per_night": {
+          "mean": 12.7109375,
+          "median": 8.75,
+          "nights": 64,
+          "q1": 3.0,
+          "q3": 17.875
+        },
+        "fn": 1065,
+        "fp": 1627,
+        "kappa": 0.8381435515695571,
+        "kappa_per_night": {
+          "median": 0.8371607515657618,
+          "nights_defined": 63,
+          "q1": 0.7779122996643035,
+          "q3": 0.9011187640221432
+        },
+        "nights": 64,
+        "open_epochs": 10353,
+        "open_fraction": 0.1793472611994595,
+        "precision": 0.8428474838211146,
+        "precision_at_recall_0.80": {
+          "precision": 0.8428474838211146,
+          "recall": 0.89122663670718,
+          "threshold": 1.0
+        },
+        "recall": 0.89122663670718,
+        "reference_rem_epochs": 9791,
+        "rem_onset_latency": {
+          "median_s": 30.0,
+          "q1_s": 30.0,
+          "q3_s": 60.0,
+          "runs": 394,
+          "runs_with_open": 360
+        },
+        "roc_auc": 0.9286424202624249,
+        "tn": 46308,
+        "tp": 8726
+      }
+    },
+    "yasa": {
+      "description": "YASA on HB_1 (AF7) with HB_2 (AF8) as EOG, an offline stager that reads the whole night",
+      "pooled": {
+        "accuracy": 0.9167666466706659,
+        "epochs": 60012,
+        "f1": 0.7195238362625639,
+        "false_open_minutes_per_night": {
+          "mean": 10.765625,
+          "median": 7.25,
+          "nights": 64,
+          "q1": 4.0,
+          "q3": 13.625
+        },
+        "fn": 3617,
+        "fp": 1378,
+        "kappa": 0.6715607542581177,
+        "kappa_per_night": {
+          "median": 0.741623875988595,
+          "nights_defined": 64,
+          "q1": 0.4964557627012053,
+          "q3": 0.8475154324671343
+        },
+        "nights": 64,
+        "open_epochs": 7785,
+        "open_fraction": 0.1297240551889622,
+        "precision": 0.8229929351316635,
+        "precision_at_recall_0.80": {
+          "precision": 0.7122180784940508,
+          "recall": 0.8001795690343176,
+          "threshold": 0.17663881609762794
+        },
+        "recall": 0.6391660015961692,
+        "reference_rem_epochs": 10024,
+        "rem_onset_latency": {
+          "median_s": 30.0,
+          "q1_s": 30.0,
+          "q3_s": 90.0,
+          "runs": 398,
+          "runs_with_open": 317
+        },
+        "roc_auc": 0.9437399662670837,
+        "tn": 48610,
+        "tp": 6407
+      }
+    }
+  }
+}
