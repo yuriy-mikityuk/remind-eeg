@@ -2786,9 +2786,10 @@ def _validate_external(args: argparse.Namespace, argv: Sequence[str]) -> int:
     report_nights = [name for name, night in result["nights"].items() if night.get("fold") == "report"]
     if report_nights and not result.get("metrics"):
         # Every report night selected was left out, so there is nothing to report.
+        errors = {name: (str(failed.get(name, "")).strip().splitlines() or [""])[0] for name in report_nights}
         print(
             "validate-external: every report-fold night failed, so no metrics.json was written: "
-            + "; ".join(f"{name}: {(str(failed.get(name, '')).strip().splitlines() or [''])[0]}" for name in report_nights)
+            + "; ".join(f"{name}: {error}" for name, error in errors.items())
             + note,
             file=sys.stderr,
         )
