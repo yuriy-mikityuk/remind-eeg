@@ -463,6 +463,27 @@ class HarnessRunTest(unittest.TestCase):
         self.assertEqual((out_dir / "splits.json").read_text(encoding="utf-8"),
                          (self.out / "splits.json").read_text(encoding="utf-8"))
 
+    def test_the_cli_fails_when_every_report_night_fails(self):
+        out_dir = self.tmp / "cli_failed"
+        args = ("--root", str(self.root), "--splits", str(out_dir / "splits.json"), "--output-dir", str(out_dir),
+                "--gate-thresholds", "p21")
+
+        def failing(reference, npz_path, eeg, eog, python_path):
+            raise ext.StagerError(f"{reference} staging failed (exit 1).\ncmd: {python_path}")
+
+        with mock.patch("muse_tmr.validation.rem_reference.run_reference", failing):
+            code, out, err = _cli(*args, "--make-splits", "--reference", "gssc", "--gssc-python", sys.executable)
+
+        self.assertEqual(code, 1)
+        self.assertIn(f"every report-fold night failed, so no metrics.json was written: {self.report_night}: "
+                      "StagerError: gssc staging failed (exit 1).", err)
+        self.assertNotIn("no report-fold night selected", out)
+        self.assertFalse((out_dir / "metrics.json").exists())
+
+        code, out, _ = _cli(*args, "--nights", self.fit_night)
+        self.assertEqual(code, 0)
+        self.assertIn("(no report-fold night selected)", out)
+
 
 @unittest.skipUnless(edf_available(), SKIP_REASON)
 class FailedNightTest(unittest.TestCase):

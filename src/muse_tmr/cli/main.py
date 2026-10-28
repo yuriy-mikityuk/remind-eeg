@@ -2782,9 +2782,21 @@ def _validate_external(args: argparse.Namespace, argv: Sequence[str]) -> int:
                 f"{_cell(pooled.get('precision_at_recall_0.80', {}).get('precision'), 6, 2)} "
                 f"{_cell(latency.get('median_s'), 9, 0)} {_cell(false_open.get('mean'), 9, 1)}"
             )
+    failed = result.get("failed") or {}
+    report_nights = [name for name, night in result["nights"].items() if night.get("fold") == "report"]
+    if report_nights and not result.get("metrics"):
+        # Every report night selected was left out, so there is nothing to report.
+        print(
+            "validate-external: every report-fold night failed, so no metrics.json was written: "
+            + "; ".join(f"{name}: {(str(failed.get(name, '')).strip().splitlines() or [''])[0]}" for name in report_nights)
+            + note,
+            file=sys.stderr,
+        )
+        return 1
     print(
         f"validate-external complete splits={result['splits']} splits_sha256={str(result['splits_sha256'])[:12]} "
         f"nights={len(result['nights'])} output={result['output_dir']}"
+        + (f" left_out={len(failed)}" if failed else "")
         + (f" metrics={result['metrics']}" if result.get("metrics") else " (no report-fold night selected)")
         + note
     )

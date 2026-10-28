@@ -90,7 +90,7 @@ For every system and report night, on the epochs whose consensus is scored:
 
 Pooled figures put the report nights' epochs together; κ also comes as its median over nights. Every prediction of the detector, the personal model and the gate for an epoch depends on that epoch and the ones before it only (`tests/test_external_labels.py` checks it). The IMU and pulse `BoasHeadbandSession` can emit are resampled over the whole file and so read a little past each frame, but the detector does not get them.
 
-`metrics.json` also counts, under `nights.headband`, the scored epochs on which the detector had no EEG score at all (flat, clipped or missing headband EEG), and the nights where that was more than half of them; those epochs stay in the metrics, as a live night would have them. A night whose files cannot be read, or on which a stager fails, is left out of the fit and the report and named under `nights.left_out`, so one bad file does not end an unattended run.
+`metrics.json` also counts, under `nights.headband`, the scored epochs on which the detector had no EEG score at all (flat, clipped or missing headband EEG), and the nights where that was more than half of them; those epochs stay in the metrics, as a live night would have them. A night whose files cannot be read, or on which a stager fails, is left out of the fit and the report and named under `nights.left_out`, so one bad file does not end an unattended run. When every report-fold night the run selected is left out, it writes no `metrics.json`, names them and exits with code 1.
 
 ## What this cannot say
 
