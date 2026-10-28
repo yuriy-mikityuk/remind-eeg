@@ -145,8 +145,8 @@ LIMITATIONS = (
     "stillness term and the gate without motion blocks",
     "binary_kappa: REM against not REM, not five-class",
     "offline_stagers: GSSC and YASA read the whole night; their latency is not that of a causal gate",
-    "stage_ai_trained_on_boas: stage_ai comes from Bitbrain's network, trained and cross-validated on BOAS "
-    "itself; it is context, not a baseline",
+    "stage_ai_trained_on_boas: stage_ai comes from Bitbrain's network, trained on BOAS itself in "
+    "cross-validation folds; it is context, not a baseline",
 )
 
 
