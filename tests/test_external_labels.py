@@ -514,6 +514,17 @@ class FailedNightTest(unittest.TestCase):
             self.assertEqual(fit["fit_recordings"], [fit_nights[1]])
 
 
+class SystemNightTest(unittest.TestCase):
+    def test_a_decision_counts_at_the_end_of_its_epoch(self):
+        night = ext.score_system_night(
+            "night", ["nrem", "probable_rem", "probable_rem", "probable_rem"], [False, False, True, True],
+            [0.1, 0.2, 0.9, 0.9],
+        )
+        # The REM run starts at 30 s; the system first opens in epoch 2, decided at its end, 90 s.
+        self.assertEqual(night.latencies, [60.0])
+        self.assertEqual(night.false_open_min, 0.0)
+
+
 class PublicReasonTest(unittest.TestCase):
     def test_a_left_out_night_is_named_without_paths(self):
         home = str(Path.home())
@@ -699,6 +710,43 @@ class LabelsOnASyntheticNightTest(unittest.TestCase):
         self.assertEqual(result["ref_rem_epochs"], self.stages.count("R"))
         self.assertIn("rem_onset_latency", result["labels_metrics"])
         self.assertTrue(math.isfinite(result["roc_auc"]))
+
+    def test_annotate_template_rows_in_host_time_as_labels(self):
+        hypnogram = self.night.recording_dir / "hypnogram.csv"
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = Path(tmp) / "rows.csv"
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["annotate-template", str(self.night.recording_dir), "--output", str(rows),
+                                       "--from-hypnogram", str(hypnogram)]), 0)
+                self.assertTrue(all(interval.absolute for interval in ext.load_external_labels(rows).intervals))
+                results = [
+                    self.vrd.run(self.night.recording_dir, "AF7", None, Path(sys.executable), 30.0, "p21", None, None,
+                                 argv=["validate_rem_detection.py"], labels=labels)
+                    for labels in (rows, hypnogram)
+                ]
+
+        from_rows, from_hypnogram = results
+        self.assertEqual(from_rows["provenance"]["labels_source"], "labels:rows.csv")
+        self.assertGreaterEqual(from_rows["epochs_matched"], len(self.stages) - 1)
+        for key in ("epochs_matched", "ref_rem_epochs", "gate_vs_ref", "labels_metrics"):
+            with self.subTest(key=key):
+                self.assertEqual(from_rows[key], from_hypnogram[key])
+
+    @unittest.skipUnless(edf_available(), SKIP_REASON)
+    def test_a_boas_night_runs_on_its_eeg_with_the_gate_imu_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = NightSpec("sub-1", "1", stages=SHORT, seed=3, with_imu=True, unscored=(1,))
+            root = write_layout(Path(tmp) / "ds", (spec,))
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                result = self.vrd.run(root / "sub-1", "AF7", None, Path(sys.executable), 30.0, "p21", None, None,
+                                      argv=["validate_rem_detection.py"], labels=root / "sub-1")
+
+        self.assertIn("imu_capable=False", printed.getvalue())
+        self.assertIs(result["gate_vs_ref"]["imu_capable"], False)
+        self.assertEqual(result["reference"]["labels"], "boas:stage_hum")
+        self.assertEqual(result["provenance"]["dataset_version"], "1.1.3")
+        self.assertEqual(result["epochs_matched"], len(SHORT) - 1)
+        self.assertEqual(result["ref_rem_epochs"], SHORT.count("R"))
 
     def test_boas_labels_read_from_a_night_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
