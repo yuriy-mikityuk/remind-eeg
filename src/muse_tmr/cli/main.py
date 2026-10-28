@@ -1420,7 +1420,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command == "train-rem-classifier":
         return _train_rem_classifier(args)
     if args.command == "validate-external":
-        return _validate_external(args)
+        return _validate_external(args, sys.argv[1:] if argv is None else argv)
     if args.command == "play-test-cue":
         return _play_test_cue(args)
     if args.command == "calibrate-volume":
@@ -2729,7 +2729,7 @@ def _train_rem_classifier(args: argparse.Namespace) -> int:
     return 0
 
 
-def _validate_external(args: argparse.Namespace) -> int:
+def _validate_external(args: argparse.Namespace, argv: Sequence[str]) -> int:
     from muse_tmr.validation.external_labels import (
         GATE_THRESHOLD_CHOICES,
         ExternalValidationConfig,
@@ -2762,7 +2762,7 @@ def _validate_external(args: argparse.Namespace) -> int:
         nights=nights,
         jobs=args.jobs,
         rescore=args.rescore,
-        argv=("muse-tmr",) + tuple(sys.argv[1:]),
+        argv=("muse-tmr",) + tuple(str(arg) for arg in argv),
     )
     try:
         result = run_external_validation(config, log=lambda line: print(line, flush=True))

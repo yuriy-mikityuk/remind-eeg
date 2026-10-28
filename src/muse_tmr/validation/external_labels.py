@@ -33,6 +33,7 @@ import json
 import math
 import os
 import random
+import re
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -975,6 +976,45 @@ def _failed(job: NightJob, exc: BaseException) -> Dict[str, object]:
     return {"recording_id": job.night.recording_id, "fold": job.fold, "error": f"{type(exc).__name__}: {exc}"}
 
 
+# metrics.json is committed, so what it says about the run names no local path.
+# A path in an error text starts with "/" at the start of a word, with "~/" or with a drive.
+_ABSOLUTE_PATH = re.compile(r"(?:(?<![\w.~\\/-])/|~[\\/]|\b[A-Za-z]:[\\/])[^\s'\"]*")
+
+
+def public_command(config: ExternalValidationConfig) -> Tuple[str, ...]:
+    """The command of ``config`` as ``metrics.json`` records it: its options, with
+    ``<root>``, ``<splits>``, ``<output-dir>`` and ``<gssc-python>`` or ``<yasa-python>``
+    in place of the paths. Each night's ``report.json`` keeps the command as given."""
+    argv = ["muse-tmr", "validate-external", "--dataset", config.dataset, "--root", "<root>", "--splits", "<splits>"]
+    if config.make_splits:
+        argv += ["--make-splits", "--seed", str(config.seed), "--fit-fraction", f"{config.fit_fraction:g}"]
+    for name in config.gate_thresholds:
+        argv += ["--gate-thresholds", name]
+    for reference in config.references:
+        argv += ["--reference", reference, f"--{reference}-python", f"<{reference}-python>"]
+    argv += ["--output-dir", "<output-dir>"]
+    if config.nights is not None:
+        argv += ["--nights", ",".join(config.nights)]
+    argv += ["--jobs", str(config.jobs)] + (["--rescore"] if config.rescore else [])
+    return tuple(argv)
+
+
+def public_reason(error: str) -> str:
+    """What ``metrics.json`` says about a night it left out: the first line of the error,
+    every absolute path in it cut to its last part. The log and ``per_night_metrics.json``
+    keep the whole text."""
+    line = next((text.strip() for text in str(error).splitlines() if text.strip()), "")
+    home = str(Path.home())
+    if len(home) > 1:
+        line = line.replace(home, "~")
+    return _ABSOLUTE_PATH.sub(lambda match: _last_part(match.group(0)), line)
+
+
+def _last_part(path: str) -> str:
+    parts = [part for part in re.split(r"[\\/]", path) if part]
+    return parts[-1] if parts else path
+
+
 def _progress(index: int, total: int, manifest: Mapping[str, object]) -> str:
     if manifest.get("error"):
         return f"[{index}/{total}] {manifest['recording_id']} ({manifest['fold']}) failed, left out: {manifest['error']}"
@@ -1223,7 +1263,7 @@ def _report(config, output_dir: Path, report_nights, by_id, fit, splits, splits_
                 "report": len(report_nights),
                 "report_recordings": report_nights,
                 "fit_recordings": list((fit or {}).get("fit_recordings", [])),
-                "left_out": dict(failed or {}),
+                "left_out": {name: public_reason(error) for name, error in (failed or {}).items()},
                 "headband": headband,
             },
             "gate_thresholds": {
@@ -1238,7 +1278,7 @@ def _report(config, output_dir: Path, report_nights, by_id, fit, splits, splits_
             ),
             "stagers": stager_blocks,
             "provenance": build_provenance(
-                argv=config.argv,
+                argv=public_command(config),
                 reference=None,
                 hypno={},
                 eeg=None,
@@ -1265,8 +1305,11 @@ def _report(config, output_dir: Path, report_nights, by_id, fit, splits, splits_
     _atomic_write(output_dir / METRICS_FILENAME, json.dumps(_json_safe(metrics), indent=2, sort_keys=True) + "\n")
     _atomic_write(
         output_dir / PER_NIGHT_FILENAME,
-        json.dumps(_json_safe(_labelled({"splits_sha256": splits_sha, "nights": per_night}, synthetic)),
-                   indent=2, sort_keys=True) + "\n",
+        json.dumps(
+            _json_safe(_labelled({"splits_sha256": splits_sha, "nights": per_night, "left_out": dict(failed or {})},
+                                 synthetic)),
+            indent=2, sort_keys=True,
+        ) + "\n",
     )
     log(f"report on {len(report_nights)} nights written: {output_dir / METRICS_FILENAME}")
     return metrics

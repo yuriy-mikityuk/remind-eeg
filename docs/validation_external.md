@@ -70,11 +70,11 @@ All of them go into `--output-dir`. Under `data/validation_public/boas/` only th
 | File | Content | Committed |
 | --- | --- | --- |
 | `splits.json` | Seed, fit fraction, dataset version and DOI, sha256 of `participants.tsv`, and the recordings and `pid`s of each fold | yes |
-| `metrics.json` | Pooled metrics per system, per-feature AUC, the thresholds used and where they came from, the splits' sha256, the code version, provenance, the stagers' versions and the limitations | yes |
+| `metrics.json` | Pooled metrics per system, per-feature AUC, the thresholds used and where they came from, the splits' sha256, the code version, provenance, the stagers' versions and the limitations. It names no local path: the command in its provenance has `<root>`, `<splits>`, `<output-dir>` and `<gssc-python>` or `<yasa-python>` for the paths, and a night left out gets the first line of its error with every path cut to its last part | yes |
 | `fit.json` | `boas_v1` and the personal model's pair with their grids, the fit recordings and participants | no |
 | `boas_v1_personal_rem_model.json` | The personal model, version 2, with `training_data` | no |
-| `per_night_metrics.json` | Every system's metrics per report night | no |
-| `nights/<sub>/` | `epochs.csv`, `night.json`, the stagers' hypnograms, `report.json` and `report_epochs.csv` | no |
+| `per_night_metrics.json` | Every system's metrics per report night, and the whole error of each night left out | no |
+| `nights/<sub>/` | `epochs.csv`, `night.json`, the stagers' hypnograms, `report.json` (with the command as given) and `report_epochs.csv` | no |
 
 A dataset whose `dataset_description.json` says `synthetic: true`, as the layouts of the tests do, gets `synthetic input, not sleep` in every JSON it writes.
 

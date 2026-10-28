@@ -14,6 +14,7 @@ import json
 import math
 import os
 import random
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -490,6 +491,74 @@ class FailedNightTest(unittest.TestCase):
             self.assertEqual(list(metrics["nights"]["left_out"]), [broken])
             fit = json.loads((out / "fit.json").read_text(encoding="utf-8"))
             self.assertEqual(fit["fit_recordings"], [fit_nights[1]])
+
+
+class PublicReasonTest(unittest.TestCase):
+    def test_a_left_out_night_is_named_without_paths(self):
+        home = str(Path.home())
+        cases = {
+            "StagerError: gssc staging failed (exit 1).\ncmd: /opt/v/bin/python /Users/x/scripts/_gssc_stage.py":
+                "StagerError: gssc staging failed (exit 1).",
+            "FileNotFoundError: [Errno 2] No such file or directory: '/data/ds/sub-3/eeg/sub-3_eeg.edf'":
+                "FileNotFoundError: [Errno 2] No such file or directory: 'sub-3_eeg.edf'",
+            f"StagerError: gssc staging could not start: [Errno 2] No such file: '{home}/venvs/gssc/bin/python'":
+                "StagerError: gssc staging could not start: [Errno 2] No such file: 'python'",
+            "OSError: C:\\Users\\someone\\ds\\sub-1\\eeg\\x.edf is locked": "OSError: x.edf is locked",
+            "ValueError: sub-3: PSG epoch 4 lasts 20 s, not 30 s; 1/2 of them":
+                "ValueError: sub-3: PSG epoch 4 lasts 20 s, not 30 s; 1/2 of them",
+        }
+        for error, expected in cases.items():
+            with self.subTest(error=error):
+                self.assertEqual(ext.public_reason(error), expected)
+
+
+@unittest.skipUnless(edf_available(), SKIP_REASON)
+class PublicMetricsTest(unittest.TestCase):
+    """metrics.json gets committed, so it names no local path (synthetic input, not sleep)."""
+
+    def test_metrics_json_names_no_local_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            specs = tuple(NightSpec(f"sub-{index}", str(index), stages=SHORT, seed=index) for index in (1, 2, 3, 4))
+            root = write_layout(tmp / "ds", specs)
+            out = tmp / "out"
+            stager = _fake_stager(SHORT)
+            calls = []
+
+            def fails_once(reference, npz_path, eeg, eog, python_path):
+                calls.append(reference)
+                if len(calls) == 1:
+                    raise ext.StagerError(
+                        f"{reference} staging failed (exit 1).\ncmd: {python_path} /Users/someone/scripts/_gssc_stage.py "
+                        f"--npz {npz_path}\nstdout:\n{root}\nstderr:\n{Path.home()}"
+                    )
+                return stager(reference, npz_path, eeg, eog, python_path)
+
+            args = ("--root", str(root), "--splits", str(out / "splits.json"), "--make-splits", "--output-dir", str(out),
+                    "--reference", "gssc", "--gssc-python", sys.executable, "--gate-thresholds", "p21")
+            with mock.patch("muse_tmr.validation.rem_reference.run_reference", fails_once):
+                code, _, _ = _cli(*args)
+
+            self.assertEqual(code, 0)
+            text = (out / "metrics.json").read_text(encoding="utf-8")
+            for private in (str(root), str(out), str(tmp), sys.executable, str(Path.home()), "/Users/"):
+                self.assertNotIn(private, text)
+            metrics = json.loads(text)
+            report = [entry["recording_id"] for entry in ext.load_splits(out / "splits.json")["folds"]["report"]]
+            self.assertEqual(metrics["nights"]["left_out"], {report[0]: "StagerError: gssc staging failed (exit 1)."})
+            self.assertEqual(metrics["nights"]["report_recordings"], report[1:])
+            self.assertEqual(
+                metrics["provenance"]["command_line"],
+                "muse-tmr validate-external --dataset boas --root '<root>' --splits '<splits>' --make-splits --seed 0 "
+                "--fit-fraction 0.5 --gate-thresholds p21 --reference gssc --gssc-python '<gssc-python>' "
+                "--output-dir '<output-dir>' --jobs 1",
+            )
+            # The local files keep the whole error and the command as given to main().
+            per_night = json.loads((out / "per_night_metrics.json").read_text(encoding="utf-8"))
+            self.assertIn("cmd:", per_night["left_out"][report[0]])
+            night_report = json.loads((out / "nights" / report[1] / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(night_report["provenance"]["command_line"],
+                             shlex.join(("muse-tmr", "validate-external") + args))
 
 
 class _FrameSource(BaseMuseSource):
