@@ -572,10 +572,11 @@ class PublicMetricsTest(unittest.TestCase):
                 code, _, _ = _cli(*args)
 
             self.assertEqual(code, 0)
-            text = (out / "metrics.json").read_text(encoding="utf-8")
+            metrics = json.loads((out / "metrics.json").read_text(encoding="utf-8"))
+            strings = list(_strings(metrics))
             for private in (str(root), str(out), str(tmp), sys.executable, str(Path.home()), "/Users/"):
-                self.assertNotIn(private, text)
-            metrics = json.loads(text)
+                with self.subTest(private=private):
+                    self.assertFalse([text for text in strings if private in text])
             report = [entry["recording_id"] for entry in ext.load_splits(out / "splits.json")["folds"]["report"]]
             self.assertEqual(metrics["nights"]["left_out"], {report[0]: "StagerError: gssc staging failed (exit 1)."})
             self.assertEqual(metrics["nights"]["report_recordings"], report[1:])
@@ -591,6 +592,19 @@ class PublicMetricsTest(unittest.TestCase):
             night_report = json.loads((out / "nights" / report[1] / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(night_report["provenance"]["command_line"],
                              shlex.join(("muse-tmr", "validate-external") + args))
+
+
+def _strings(payload):
+    """Every key and text value of a JSON payload, as written before escaping."""
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            yield str(key)
+            yield from _strings(value)
+    elif isinstance(payload, list):
+        for value in payload:
+            yield from _strings(value)
+    elif isinstance(payload, str):
+        yield payload
 
 
 class _FrameSource(BaseMuseSource):
